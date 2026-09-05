@@ -69,6 +69,7 @@ These runs use real prompt encoding unless noted. Keep width `1280`, height `704
 | Platform | Preset / route | Prompt | Platform cleanup | Encode pass | Transformer setup | Denoise | Pass 1 | VAE | Total | Peak VRAM | Peak RAM | Notes |
 | --- | --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
 | Windows | `auto -> one_shot_fast` | real | standby purge before run, after text encoder, before transformer | `72.0s` | `29.76s` DDO setup, `21.47s` pin, `7.80s` resident modules | `14.83s` | `52.6s` | `4.9s` | `133.2s` | `6.45 GB` | `27.38 GB` | Run 1 after package split. Planner detected `43.53 GB` available RAM and selected `snap_to_full_pin` for `18.5181 GB`; runtime copy `0.3153s / 148.1445 GB`. |
+| Windows | `auto -> one_shot_fast` | real, simulated 32 GB RAM | standby purge before run, after text encoder, before transformer | `79.6s` | `8.43s` DDO setup, pin skipped, `7.93s` resident modules | `114.70s` | `132.2s` | `2.6s` | `217.2s` | `6.41 GB` | `28.22 GB` | RAM-aware safety path. Planner used `available_system_ram_gb=32.0`, usable `24.0 GB`, required `30.0234 GB`, selected `skip_insufficient_ram`; runtime copy rose to `110.1362s / 148.1445 GB`. |
 
 ## Validation Matrix
 

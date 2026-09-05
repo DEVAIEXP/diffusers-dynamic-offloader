@@ -61,6 +61,15 @@ Potential report sections:
 - WSL/Linux validation matrix
 - Quantized model compatibility risks
 
+
+## Platform Validation Runs
+
+These runs use real prompt encoding unless noted. Keep width `1280`, height `704`, steps `8`, seed `43`, BF16, native attention, and generation repeats `1` fixed across platforms.
+
+| Platform | Preset / route | Prompt | Platform cleanup | Encode pass | Transformer setup | Denoise | Pass 1 | VAE | Total | Peak VRAM | Peak RAM | Notes |
+| --- | --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| Windows | `auto -> one_shot_fast` | real | standby purge before run, after text encoder, before transformer | `72.0s` | `29.76s` DDO setup, `21.47s` pin, `7.80s` resident modules | `14.83s` | `52.6s` | `4.9s` | `133.2s` | `6.45 GB` | `27.38 GB` | Run 1 after package split. Planner detected `43.53 GB` available RAM and selected `snap_to_full_pin` for `18.5181 GB`; runtime copy `0.3153s / 148.1445 GB`. |
+
 ## Validation Matrix
 
 Use these as the next closed test ladder. Keep Windows as the development gate; repeat WSL/Ubuntu only after a Windows

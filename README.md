@@ -47,7 +47,20 @@ enable_dynamic_offload(
 )
 ```
 
-The lower-level `DynamicOffloadSettings` and `apply_dynamic_offload` APIs remain available for experiments, but runners should prefer `enable_dynamic_offload(...)`.
+The official Diffusers group offload path is also exposed through DDO so runners do not need to import Diffusers hooks directly:
+
+```python
+from diffusers_dynamic_offloader import enable_diffusers_group_offload
+
+enable_diffusers_group_offload(
+    transformer,
+    offload_type="block_level",
+    use_stream=True,
+    record_stream=True,
+)
+```
+
+The lower-level `DynamicOffloadSettings` and `apply_dynamic_offload` APIs remain available for experiments, but runners should prefer the high-level helpers.
 ## Environment Prefixes
 
 Library settings use `DDO_*`.

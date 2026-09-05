@@ -551,6 +551,12 @@ class DynamicOffloadApplyResult:
 
 
 @dataclass
+class DiffusersGroupOffloadResult:
+    module: nn.Module
+    event_payload: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
 class DynamicOffloadState:
     entries: list[DynamicOffloadPlanEntry] = field(default_factory=list)
     module_count: int = 0
@@ -1406,6 +1412,53 @@ def apply_dynamic_offload(module: nn.Module, config: DynamicOffloadConfig | None
     hook = DynamicOffloadHook(config)
     registry.register_hook(hook, _DYNAMIC_OFFLOAD_HOOK)
     return hook
+
+
+def enable_diffusers_group_offload(
+    module: nn.Module,
+    *,
+    onload_device: str | torch.device = "cuda:0",
+    offload_device: str | torch.device = "cpu",
+    offload_type: str = "leaf_level",
+    use_stream: bool = True,
+    record_stream: bool = False,
+    low_cpu_mem_usage: bool = True,
+    num_blocks_per_group: int = 1,
+    apply_hook: bool = True,
+    record_event: Any | None = None,
+    event_name: str = "setup_diffusers_group_offload",
+) -> DiffusersGroupOffloadResult:
+    """Apply the official Diffusers group offload helper with DDO-style reporting."""
+    start = time.perf_counter()
+    kwargs: dict[str, Any] = {
+        "onload_device": torch.device(onload_device),
+        "offload_device": torch.device(offload_device),
+        "offload_type": offload_type,
+        "use_stream": use_stream,
+        "record_stream": record_stream,
+        "low_cpu_mem_usage": low_cpu_mem_usage,
+    }
+    if offload_type == "block_level":
+        kwargs["num_blocks_per_group"] = num_blocks_per_group
+
+    if apply_hook:
+        from diffusers.hooks import apply_group_offloading
+
+        apply_group_offloading(module, **kwargs)
+
+    event_payload = {
+        "offload_type": offload_type,
+        "use_stream": use_stream,
+        "record_stream": record_stream,
+        "low_cpu_mem_usage": low_cpu_mem_usage,
+    }
+    if offload_type == "block_level":
+        event_payload["num_blocks_per_group"] = num_blocks_per_group
+
+    if record_event is not None:
+        record_event(event_name, time.perf_counter() - start, **event_payload)
+
+    return DiffusersGroupOffloadResult(module=module, event_payload=event_payload)
 
 
 def enable_dynamic_offload(

@@ -5,6 +5,7 @@ import torch.nn as nn
 from diffusers_dynamic_offloader.dynamic_offload import (
     DDO_PRESETS,
     DynamicOffloadConfig,
+    enable_diffusers_group_offload,
     enable_dynamic_offload,
     format_dynamic_offload_presets,
     get_dynamic_offload_presets,
@@ -71,6 +72,24 @@ class DynamicOffloadPresetTests(unittest.TestCase):
             DDO_PRESETS["one_shot_fast"]["DDO_PIN_CPU_WORKERS"],
             "99",
         )
+
+    def test_enable_diffusers_group_offload_reports_payload_without_applying_hook(self):
+        events = []
+        module = nn.Linear(2, 2)
+        result = enable_diffusers_group_offload(
+            module,
+            offload_type="block_level",
+            use_stream=False,
+            record_stream=True,
+            num_blocks_per_group=2,
+            apply_hook=False,
+            record_event=lambda name, seconds, **payload: events.append((name, seconds, payload)),
+        )
+        self.assertIs(result.module, module)
+        self.assertEqual(result.event_payload["offload_type"], "block_level")
+        self.assertEqual(result.event_payload["num_blocks_per_group"], 2)
+        self.assertEqual(events[0][0], "setup_diffusers_group_offload")
+        self.assertFalse(events[0][2]["use_stream"])
 
     def test_enable_dynamic_offload_resolves_preset_without_applying_hook(self):
         module = nn.Linear(2, 2)

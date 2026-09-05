@@ -17,50 +17,46 @@ uv pip install -e E:\ProjetosIA\diffusers-dynamic-offloader
 Then host code can import:
 
 ```python
-from diffusers_dynamic_offloader import enable_dynamic_offload
+from diffusers_dynamic_offloader import DynamicOffloadSettings, enable_offload
 ```
 
 ## Basic API
 
-Use the high-level helper when you already have a Diffusers/Transformers module instance:
+Start with a settings object, then let DDO choose the route requested by the preset for each component:
 
 ```python
-from diffusers_dynamic_offloader import enable_dynamic_offload
+from diffusers_dynamic_offloader import DynamicOffloadSettings, enable_offload
 
-result = enable_dynamic_offload(
-    transformer,
-    preset="auto",
+settings = DynamicOffloadSettings.from_env(
     execution_device="cuda:0",
-    record_event=record_event,  # optional
+    offload_device="cpu",
+    default_preset="auto",
 )
-transformer = result.module
+
+transformer_result = enable_offload(
+    transformer,
+    settings=settings,
+    component="transformer",
+)
+transformer = transformer_result.module
 ```
+
+For `one_shot_fast`, `component="transformer"` currently routes to DDO dynamic offload. For `diffusers_offload_compat`, it routes to the official Diffusers group offload helper. Component-specific preset values such as `DDO_RUNNER_TEXT_ENCODER_GROUP_OFFLOAD=1` are handled inside DDO, so application code should not need to choose between DDO and Diffusers hooks manually.
 
 Explicit keyword arguments override preset and environment values:
 
 ```python
-enable_dynamic_offload(
+enable_offload(
     transformer,
-    preset="one_shot_fast",
+    settings=settings,
+    component="transformer",
     max_resident_module_budget_gb=6.0,
     pin_cpu_workers=4,
 )
 ```
 
-The official Diffusers group offload path is also exposed through DDO so runners do not need to import Diffusers hooks directly:
+The lower-level `enable_dynamic_offload(...)`, `enable_diffusers_group_offload(...)`, and `apply_dynamic_offload(...)` APIs remain available for experiments, but runners should prefer `enable_offload(...)`.
 
-```python
-from diffusers_dynamic_offloader import enable_diffusers_group_offload
-
-enable_diffusers_group_offload(
-    transformer,
-    offload_type="block_level",
-    use_stream=True,
-    record_stream=True,
-)
-```
-
-The lower-level `DynamicOffloadSettings` and `apply_dynamic_offload` APIs remain available for experiments, but runners should prefer the high-level helpers.
 ## Environment Prefixes
 
 Library settings use `DDO_*`.

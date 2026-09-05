@@ -7,6 +7,7 @@ from diffusers_dynamic_offloader.dynamic_offload import (
     DynamicOffloadConfig,
     enable_diffusers_group_offload,
     enable_dynamic_offload,
+    enable_offload,
     format_dynamic_offload_presets,
     get_dynamic_offload_presets,
     load_dynamic_offload_settings_from_env,
@@ -72,6 +73,43 @@ class DynamicOffloadPresetTests(unittest.TestCase):
             DDO_PRESETS["one_shot_fast"]["DDO_PIN_CPU_WORKERS"],
             "99",
         )
+
+    def test_enable_offload_routes_by_component_preset(self):
+        settings = load_dynamic_offload_settings_from_env(
+            running_on_wsl=False,
+            environ={
+                "DDO_PRESET": "one_shot_fast",
+                "DDO_AVAILABLE_SYSTEM_RAM_GB": "64",
+            },
+        )
+        transformer_result = enable_offload(
+            nn.Linear(2, 2),
+            settings=settings,
+            component="transformer",
+            apply_hook=False,
+        )
+        text_encoder_result = enable_offload(
+            nn.Linear(2, 2),
+            settings=settings,
+            component="text_encoder",
+            apply_hook=False,
+        )
+        self.assertEqual(transformer_result.route, "dynamic_offload")
+        self.assertEqual(text_encoder_result.route, "diffusers_group_offload")
+
+    def test_enable_offload_routes_diffusers_compat_transformer_to_group_offload(self):
+        settings = load_dynamic_offload_settings_from_env(
+            running_on_wsl=False,
+            environ={"DDO_PRESET": "diffusers_offload_compat"},
+        )
+        result = enable_offload(
+            nn.Linear(2, 2),
+            settings=settings,
+            component="transformer",
+            apply_hook=False,
+        )
+        self.assertEqual(result.route, "diffusers_group_offload")
+        self.assertEqual(result.event_payload["offload_type"], "block_level")
 
     def test_enable_diffusers_group_offload_reports_payload_without_applying_hook(self):
         events = []

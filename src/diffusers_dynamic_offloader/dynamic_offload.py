@@ -548,6 +548,7 @@ class DynamicOffloadApplyResult:
     settings: DynamicOffloadSettings | None = None
     should_move_to_execution_device: bool = True
     event_payload: dict[str, Any] = field(default_factory=dict)
+    route: str = "dynamic_offload"
 
 
 @dataclass
@@ -1414,6 +1415,35 @@ def apply_dynamic_offload(module: nn.Module, config: DynamicOffloadConfig | None
     return hook
 
 
+def _component_prefix(component: str) -> str:
+    return re.sub(r"[^A-Z0-9]+", "_", component.upper()).strip("_") or "MODEL"
+
+
+def _component_preset_value(
+    settings: DynamicOffloadSettings,
+    component: str,
+    name: str,
+    default: str = "",
+    environ: Mapping[str, str] | None = None,
+) -> str:
+    prefix = _component_prefix(component)
+    for candidate in (f"DDO_{prefix}_{name}", f"DDO_RUNNER_{prefix}_{name}"):
+        value = settings.preset_value(candidate, "", environ)
+        if value != "":
+            return value
+    return default
+
+
+def _component_preset_bool(
+    settings: DynamicOffloadSettings,
+    component: str,
+    name: str,
+    default: str = "0",
+    environ: Mapping[str, str] | None = None,
+) -> bool:
+    return _parse_bool_value(_component_preset_value(settings, component, name, default, environ))
+
+
 def enable_diffusers_group_offload(
     module: nn.Module,
     *,
@@ -1459,6 +1489,90 @@ def enable_diffusers_group_offload(
         record_event(event_name, time.perf_counter() - start, **event_payload)
 
     return DiffusersGroupOffloadResult(module=module, event_payload=event_payload)
+
+
+def enable_offload(
+    module: nn.Module,
+    *,
+    settings: DynamicOffloadSettings | None = None,
+    config: DynamicOffloadConfig | None = None,
+    component: str = "model",
+    preset: str = "auto",
+    execution_device: str | torch.device = "cuda:0",
+    offload_device: str | torch.device = "cpu",
+    low_cpu_mem_usage: bool = True,
+    running_on_wsl: bool | None = None,
+    environ: Mapping[str, str] | None = None,
+    use_environment: bool = True,
+    apply_hook: bool = True,
+    record_event: Any | None = None,
+    dynamic_event_name: str | None = None,
+    group_event_name: str | None = None,
+    **config_overrides: Any,
+) -> DynamicOffloadApplyResult:
+    """Enable the offload route requested by DDO settings for one component."""
+    if settings is None:
+        settings = load_dynamic_offload_settings_from_env(
+            execution_device=execution_device,
+            offload_device=offload_device,
+            running_on_wsl=running_on_wsl,
+            environ=environ if use_environment else {},
+            default_preset=preset,
+        )
+
+    if _component_preset_bool(settings, component, "GROUP_OFFLOAD", "0", environ):
+        result = enable_diffusers_group_offload(
+            module,
+            onload_device=execution_device,
+            offload_device=offload_device,
+            offload_type=_component_preset_value(settings, component, "OFFLOAD_TYPE", "leaf_level", environ),
+            use_stream=_component_preset_bool(settings, component, "OFFLOAD_STREAM", "1", environ),
+            record_stream=_component_preset_bool(settings, component, "OFFLOAD_RECORD_STREAM", "0", environ),
+            low_cpu_mem_usage=_component_preset_bool(
+                settings,
+                component,
+                "OFFLOAD_LOW_CPU_MEM_USAGE",
+                "1" if low_cpu_mem_usage else "0",
+                environ,
+            ),
+            num_blocks_per_group=int(_component_preset_value(settings, component, "NUM_BLOCKS_PER_GROUP", "1", environ)),
+            apply_hook=apply_hook,
+            record_event=record_event,
+            event_name=group_event_name or f"setup_{component}_group_offload",
+        )
+        return DynamicOffloadApplyResult(
+            module=result.module,
+            hook=None,
+            settings=settings,
+            should_move_to_execution_device=False,
+            event_payload=result.event_payload,
+            route="diffusers_group_offload",
+        )
+
+    dynamic_setting = _component_preset_value(settings, component, "DYNAMIC_OFFLOAD", "", environ)
+    dynamic_enabled = _parse_bool_value(dynamic_setting) if dynamic_setting != "" else settings.enabled
+    if dynamic_enabled:
+        result = enable_dynamic_offload(
+            module,
+            settings=settings,
+            config=config,
+            execution_device=execution_device,
+            offload_device=offload_device,
+            apply_hook=apply_hook,
+            record_event=record_event,
+            event_name=dynamic_event_name or f"setup_{component}_dynamic_offload",
+            **config_overrides,
+        )
+        result.route = "dynamic_offload"
+        return result
+
+    return DynamicOffloadApplyResult(
+        module=module,
+        hook=None,
+        settings=settings,
+        should_move_to_execution_device=True,
+        route="none",
+    )
 
 
 def enable_dynamic_offload(

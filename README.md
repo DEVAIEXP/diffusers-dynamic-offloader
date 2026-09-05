@@ -4,7 +4,7 @@ Model-agnostic dynamic offload helpers for Diffusers-style low-VRAM inference.
 
 DDO is a Python compatibility-first layer: it can keep selected modules resident on the accelerator, stream large weights at runtime, optionally pin CPU tensors when system RAM allows it, and expose repeatable presets through `DDO_*` environment variables.
 
-This repository was split from the LTX 2.3 modular image experiments so the offload manager can evolve independently from any single model family. The LTX runners and custom blocks should remain in the host experiment repository and import this package with an editable install.
+This repository was split from the LTX 2.3 modular image experiments so the offload manager can evolve independently from any single model family. The LTX runners and custom blocks stay in the host experiment repository and import this package with an editable install.
 
 ## Install For Local Experiments
 
@@ -14,7 +14,7 @@ From the host project environment:
 uv pip install -e E:\ProjetosIA\diffusers-dynamic-offloader
 ```
 
-Then the host runner can import:
+Then host code can import:
 
 ```python
 from diffusers_dynamic_offloader import DynamicOffloadSettings, apply_dynamic_offload
@@ -24,7 +24,7 @@ from diffusers_dynamic_offloader import DynamicOffloadSettings, apply_dynamic_of
 
 Library settings use `DDO_*`.
 
-Example or host-runner settings should use `DDO_RUNNER_*`.
+Host-runner settings should use `DDO_RUNNER_*`.
 
 ```powershell
 $env:DDO_PRESET="auto"
@@ -37,6 +37,7 @@ $env:DDO_RUNNER_METRICS_LEVEL="1"
 
 ## Current Presets
 
+- `auto`: resolves to the recommended platform/default policy.
 - `one_shot_fast`: default performance path when enough system RAM is available.
 - `low_ram_safe`: explicit fallback for tighter memory budgets.
 - `wsl_compat`: WSL/driver fallback when pinning or streams are unstable.
@@ -44,4 +45,38 @@ $env:DDO_RUNNER_METRICS_LEVEL="1"
 - `diffusers_offload_compat`: official Diffusers block-level group offload baseline.
 - `diffusers_leaf_offload_compat`: official Diffusers leaf-level group offload baseline.
 
-See `experiments/dynamic_offload_results.md` for the current benchmark notes.
+Inspect the current preset contract from a host runner without loading model weights:
+
+```powershell
+$env:DDO_RUNNER_PRINT_DYNAMIC_OFFLOAD_PRESETS="1"
+python run_modular_distilled.py
+Remove-Item Env:DDO_RUNNER_PRINT_DYNAMIC_OFFLOAD_PRESETS -ErrorAction SilentlyContinue
+```
+
+## Experiment Documents
+
+- `experiments/dynamic_offload_results.md` is the compact, report-ready benchmark file. Keep current preset tables, Diffusers group-offload comparisons, and platform summaries there.
+- `experiments/ltx2_image_experiments.md` is the full historical LTX lab notebook. Keep raw notes, dead ends, old logs, and implementation chronology there.
+
+The final public-facing report should be distilled from `dynamic_offload_results.md`, with links back to the historical log only when useful.
+
+## Current Evidence Snapshot
+
+For the LTX 2.3 image BF16 1280x704, 8-step benchmark on an 8 GB NVIDIA GPU:
+
+- Windows with enough usable RAM: DDO `one_shot_fast` keeps denoise around `14-15s`, with cold setup usually around `30-35s`.
+- Windows with simulated 32 GB RAM: the RAM-aware planner correctly skips pinned CPU weights; setup drops under `10s`, but denoise becomes copy-bound around `~198s` for this model.
+- Official Diffusers group offload is much slower in this specific low-VRAM transformer test: `block_level` with stream/record stream was the best official path so far around `~265s`, while `leaf_level` was `~315-320s`.
+- WSL needs explicit validation because pinned-memory failures can poison the CUDA context on some driver setups.
+- Native Ubuntu previously accepted pinned DDO and was the strongest platform in the early matrix, but needs a final repeated pass after the current preset cleanup.
+
+## Validation Roadmap
+
+1. Freeze Windows preset behavior with `auto`, simulated 32 GB RAM, and official Diffusers fallback comparisons.
+2. Repeat the same matrix on WSL only after Windows changes are stable.
+3. Repeat the same matrix on native Ubuntu before declaring platform defaults.
+4. Add a quantized-model section after BF16 presets are stable, starting with SDNQ and then other quantization paths if available.
+
+## Compatibility Position
+
+DDO intentionally stays above native VBAR-level hooks for now. The current priority is a portable PyTorch/Diffusers implementation that improves performance where possible while keeping fallback behavior understandable on different CUDA, WSL, and Linux configurations.

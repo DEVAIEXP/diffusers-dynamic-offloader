@@ -17,9 +17,37 @@ uv pip install -e E:\ProjetosIA\diffusers-dynamic-offloader
 Then host code can import:
 
 ```python
-from diffusers_dynamic_offloader import DynamicOffloadSettings, apply_dynamic_offload
+from diffusers_dynamic_offloader import enable_dynamic_offload
 ```
 
+## Basic API
+
+Use the high-level helper when you already have a Diffusers/Transformers module instance:
+
+```python
+from diffusers_dynamic_offloader import enable_dynamic_offload
+
+result = enable_dynamic_offload(
+    transformer,
+    preset="auto",
+    execution_device="cuda:0",
+    record_event=record_event,  # optional
+)
+transformer = result.module
+```
+
+Explicit keyword arguments override preset and environment values:
+
+```python
+enable_dynamic_offload(
+    transformer,
+    preset="one_shot_fast",
+    max_resident_module_budget_gb=6.0,
+    pin_cpu_workers=4,
+)
+```
+
+The lower-level `DynamicOffloadSettings` and `apply_dynamic_offload` APIs remain available for experiments, but runners should prefer `enable_dynamic_offload(...)`.
 ## Environment Prefixes
 
 Library settings use `DDO_*`.

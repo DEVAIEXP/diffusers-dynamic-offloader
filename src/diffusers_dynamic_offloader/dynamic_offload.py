@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import contextlib
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 import os
 from pathlib import Path
 import re
@@ -539,6 +539,15 @@ class DynamicOffloadLoadResult:
     module: nn.Module
     hook: "DynamicOffloadHook | None" = None
     should_move_to_execution_device: bool = True
+
+
+@dataclass
+class DynamicOffloadApplyResult:
+    module: nn.Module
+    hook: "DynamicOffloadHook | None" = None
+    settings: DynamicOffloadSettings | None = None
+    should_move_to_execution_device: bool = True
+    event_payload: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -1397,6 +1406,79 @@ def apply_dynamic_offload(module: nn.Module, config: DynamicOffloadConfig | None
     hook = DynamicOffloadHook(config)
     registry.register_hook(hook, _DYNAMIC_OFFLOAD_HOOK)
     return hook
+
+
+def enable_dynamic_offload(
+    module: nn.Module,
+    *,
+    settings: DynamicOffloadSettings | None = None,
+    config: DynamicOffloadConfig | None = None,
+    preset: str = "auto",
+    execution_device: str | torch.device = "cuda:0",
+    offload_device: str | torch.device = "cpu",
+    target_module_classes: tuple[type[nn.Module], ...] = _DEFAULT_TARGET_MODULE_CLASSES,
+    skip_modules_pattern: tuple[str, ...] = (),
+    always_resident_modules_pattern: tuple[str, ...] | None = None,
+    running_on_wsl: bool | None = None,
+    environ: Mapping[str, str] | None = None,
+    use_environment: bool = True,
+    apply_hook: bool = True,
+    record_event: Any | None = None,
+    event_name: str = "setup_dynamic_offload",
+    **config_overrides: Any,
+) -> DynamicOffloadApplyResult:
+    """Resolve DDO settings, optionally apply the hook, and return the prepared module.
+
+    This is the high-level, Diffusers-style entry point. Environment variables are
+    read by default for CLI/runner use, while explicit keyword overrides always
+    take precedence over preset and environment values.
+    """
+    start = time.perf_counter()
+    if settings is None:
+        settings = load_dynamic_offload_settings_from_env(
+            execution_device=execution_device,
+            offload_device=offload_device,
+            target_module_classes=target_module_classes,
+            skip_modules_pattern=skip_modules_pattern,
+            always_resident_modules_pattern=always_resident_modules_pattern,
+            running_on_wsl=running_on_wsl,
+            environ=environ if use_environment else {},
+            default_preset=preset,
+        )
+
+    explicit_config = config is not None or bool(config_overrides)
+    effective_config = config or settings.config
+    if config_overrides:
+        unknown = sorted(set(config_overrides) - set(DynamicOffloadConfig.__dataclass_fields__))
+        if unknown:
+            raise TypeError(f"Unknown DynamicOffloadConfig override(s): {', '.join(unknown)}")
+        effective_config = replace(effective_config, **config_overrides)
+
+    if effective_config is not settings.config:
+        settings = replace(
+            settings,
+            config=effective_config,
+            enabled=explicit_config or settings.plan or effective_config.execution_mode.lower() != "plan",
+            effective_pin_cpu_memory=effective_config.pin_cpu_memory,
+        )
+
+    hook = None
+    event_payload: dict[str, Any] = {}
+    if apply_hook and settings.enabled:
+        hook = apply_dynamic_offload(module, effective_config)
+        event_payload = build_dynamic_offload_event_payload(settings, hook.state, effective_config)
+
+    elapsed = time.perf_counter() - start
+    if record_event is not None:
+        record_event(event_name, elapsed, **event_payload)
+
+    return DynamicOffloadApplyResult(
+        module=module,
+        hook=hook,
+        settings=settings,
+        should_move_to_execution_device=hook is None or effective_config.execution_mode.lower() == "plan",
+        event_payload=event_payload,
+    )
 
 
 @contextlib.contextmanager

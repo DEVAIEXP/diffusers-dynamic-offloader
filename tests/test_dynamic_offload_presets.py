@@ -1,7 +1,11 @@
 import unittest
 
+import torch.nn as nn
+
 from diffusers_dynamic_offloader.dynamic_offload import (
     DDO_PRESETS,
+    DynamicOffloadConfig,
+    enable_dynamic_offload,
     format_dynamic_offload_presets,
     get_dynamic_offload_presets,
     load_dynamic_offload_settings_from_env,
@@ -67,6 +71,38 @@ class DynamicOffloadPresetTests(unittest.TestCase):
             DDO_PRESETS["one_shot_fast"]["DDO_PIN_CPU_WORKERS"],
             "99",
         )
+
+    def test_enable_dynamic_offload_resolves_preset_without_applying_hook(self):
+        module = nn.Linear(2, 2)
+        result = enable_dynamic_offload(
+            module,
+            preset="one_shot_fast",
+            use_environment=False,
+            apply_hook=False,
+            available_system_ram_gb=64.0,
+            show_profile=True,
+        )
+        self.assertIs(result.module, module)
+        self.assertIsNone(result.hook)
+        self.assertEqual(result.settings.effective_preset, "one_shot_fast")
+        self.assertTrue(result.settings.config.show_profile)
+        self.assertEqual(result.settings.config.available_system_ram_gb, 64.0)
+
+    def test_enable_dynamic_offload_explicit_config_wins(self):
+        events = []
+        module = nn.Linear(2, 2)
+        config = DynamicOffloadConfig(execution_mode="plan", pin_cpu_memory=False)
+        result = enable_dynamic_offload(
+            module,
+            preset="off",
+            config=config,
+            use_environment=False,
+            record_event=lambda name, seconds, **payload: events.append((name, seconds, payload)),
+        )
+        self.assertIsNotNone(result.hook)
+        self.assertTrue(result.should_move_to_execution_device)
+        self.assertEqual(events[0][0], "setup_dynamic_offload")
+        self.assertEqual(events[0][2]["execution_mode"], "plan")
 
     def test_windows_standby_helpers_are_exported(self):
         self.assertTrue(callable(purge_windows_standby_cache))

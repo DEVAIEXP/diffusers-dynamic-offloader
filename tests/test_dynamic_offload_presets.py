@@ -5,6 +5,8 @@ from diffusers_dynamic_offloader.dynamic_offload import (
     format_dynamic_offload_presets,
     get_dynamic_offload_presets,
     load_dynamic_offload_settings_from_env,
+    purge_windows_standby_cache,
+    purge_windows_standby_cache_event,
     resolve_dynamic_offload_preset,
 )
 
@@ -65,6 +67,10 @@ class DynamicOffloadPresetTests(unittest.TestCase):
             DDO_PRESETS["one_shot_fast"]["DDO_PIN_CPU_WORKERS"],
             "99",
         )
+
+    def test_windows_standby_helpers_are_exported(self):
+        self.assertTrue(callable(purge_windows_standby_cache))
+        self.assertTrue(callable(purge_windows_standby_cache_event))
 
     def test_format_presets_lists_default_mapping(self):
         formatted = format_dynamic_offload_presets(default_preset="auto", running_on_wsl=False)

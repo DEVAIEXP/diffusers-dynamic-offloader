@@ -19,6 +19,8 @@ from .dynamic_offload import (
     get_dynamic_offload_state,
     is_wsl_environment,
     load_dynamic_offload_settings_from_env,
+    purge_windows_standby_cache,
+    purge_windows_standby_cache_event,
     remove_dynamic_offload,
     resolve_dynamic_offload_preset,
 )
@@ -44,6 +46,8 @@ __all__ = [
     "get_dynamic_offload_state",
     "is_wsl_environment",
     "load_dynamic_offload_settings_from_env",
+    "purge_windows_standby_cache",
+    "purge_windows_standby_cache_event",
     "remove_dynamic_offload",
     "resolve_dynamic_offload_preset",
 ]

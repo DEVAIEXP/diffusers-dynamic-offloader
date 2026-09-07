@@ -49,17 +49,17 @@ Inspect the current preset contract without loading model weights:
 
 ```powershell
 $env:DDO_RUNNER_PRINT_DYNAMIC_OFFLOAD_PRESETS="1"
-python run_modular_distilled.py
+python run_dynamic_modular_distilled.py
 Remove-Item Env:DDO_RUNNER_PRINT_DYNAMIC_OFFLOAD_PRESETS -ErrorAction SilentlyContinue
 ```
 
-Potential report sections:
+Closed report sections:
 - one-shot setup cost vs denoise throughput
 - RAM-aware pinning behavior
 - Windows standby cache impact
 - Diffusers official group offload baseline
-- WSL/Linux validation matrix
-- Quantized model compatibility risks
+- Windows, WSL, and native Ubuntu validation matrix
+- Quantized model compatibility risks and follow-up results
 
 
 ## Platform Validation Runs
@@ -73,7 +73,22 @@ These runs use real prompt encoding unless noted. Keep width `1280`, height `704
 | Windows | `diffusers_offload_compat` | real | standby purge before run, after text encoder, before transformer | `76.5s` | `0.066s` Diffusers group-offload setup | `222.88s` | `232.9s` | `2.5s` | `315.1s` | `6.09 GB` | `28.98 GB` | Official Diffusers `block_level`, `num_blocks_per_group=1`, stream and record stream. First denoise step `83.68s`, later steps around `19-20s`; much slower than DDO pinned fast path but compatible baseline. |
 | Windows | `diffusers_leaf_offload_compat` | real | standby purge before run, after text encoder, before transformer | `77.9s` | `0.030s` Diffusers group-offload setup | `233.39s` | `242.7s` | `2.7s` | `326.4s` | `6.21 GB` | `28.79 GB` | Official Diffusers `leaf_level`, stream and record stream. First denoise step `86.75s`, later steps around `20-21s`; slightly slower than block-level fallback in this Windows run. |
 | Windows | `low_ram_safe` | real | standby purge before run, after text encoder, before transformer | `81.4s` | `4.00s` DDO setup, no pin, `3.36s` resident modules | `136.49s` | `149.6s` | `2.5s` | `236.5s` | `6.11 GB` | `28.22 GB` | Explicit VRAM-pressure fallback. Denoise torch allocation stayed near `2.96 GiB`, but more modules were patched (`516`) and runtime copy rose to `132.5071s / 172.1680 GB`; slower than simulated-32GB `auto` for this model. |
+| WSL Ubuntu | `low_ram_safe` | real | no Windows standby purge | `36.2s` | `1.77s` DDO setup, no pin, `3 GB` resident budget | `122.88s` | `131.6s` | `2.0s` | `170.4s` | `5.99 GB` | `23.56 GB` | Corrected WSL low-RAM route: text encoder now uses Diffusers `leaf_level` group offload with stream disabled, avoiding the earlier `device not ready` connector failure. Transformer stays low VRAM around `2.96 GiB` allocated, but denoise is copy-bound without pinned CPU weights. |
+| WSL Ubuntu | `wsl_compat` | real | no Windows standby purge | `36.2s` | `3.66s` DDO setup, no pin, `6 GB` resident budget | `97.80s` | `105.8s` | `1.8s` | `144.4s` | `6.30 GB` | `23.47 GB` | Stable WSL compatibility run after text-encoder routing fix. Text encoder uses non-streaming Diffusers group offload; transformer uses DDO dynamic offload with pin disabled. Denoise steps were consistent around `11.8-12.5s`, slower than Windows full-pin but faster than `low_ram_safe` and Diffusers group offload on WSL. |
+| WSL Ubuntu | `diffusers_offload_compat` | real | no Windows standby purge | `35.8s` | `0.012s` Diffusers group-offload setup | `172.00s` | `180.1s` | `1.8s` | `218.1s` | `6.10 GB` | `38.39 GB` | Official Diffusers `block_level` group offload baseline on WSL. First denoise step `39.36s`, later steps around `18-19s`; faster than the Windows Diffusers block-level run but still slower than DDO WSL dynamic-offload fallbacks for this model/shape. |
+| WSL Ubuntu | `diffusers_leaf_offload_compat` | real | no Windows standby purge | not completed | `0.011s` Diffusers group-offload setup | not completed | not completed | not completed | not completed | not captured | not captured | Official Diffusers `leaf_level` group offload loaded and prepared, then the WSL process exited/crashed immediately after `Starting denoise loop` before the first denoise callback. Treat as unstable on this WSL stack. |
+| Native Ubuntu | `auto -> one_shot_fast` | real | none | `19.7s` | `19.30s` DDO setup, full-pin fast path | `13.06s` | `37.6s` | `1.6s` | `59.3s` | `6.29 GB` | `1.45 GB` | Native Linux fast DDO path. Denoise steps stayed around `1.61s`; transformer setup is the main remaining cost. |
+| Native Ubuntu | `low_ram_safe` | real | none | `32.3s` | `2.61s` DDO setup, no pin, `3 GB` resident budget | `37.47s` | `48.4s` | `1.6s` | `82.7s` | `5.98 GB` | `23.45 GB` | Low-RAM fallback completed. First step paid `20.16s`; later steps were around `2.45s`, giving a much better Linux low-RAM result than WSL. |
+| Native Ubuntu | `diffusers_offload_compat` | real | none | `13.5s` | `0.014s` Diffusers group-offload setup | `27.16s` | `29.4s` | `0.6s` | `43.8s` | `5.96 GB` | `1.53 GB` | Official Diffusers `block_level` group offload is very strong on native Linux, with steady `3.36s` denoise steps. It beats DDO one-shot total here because setup and encode are much lower. |
+| Native Ubuntu | `diffusers_leaf_offload_compat` | real | none | `7.8s` | `0.026s` Diffusers group-offload setup | `24.14s` | `26.2s` | `0.6s` | `34.9s` | `5.96 GB` | `1.45 GB` | Fastest native Ubuntu run so far. Official Diffusers `leaf_level` completed cleanly and outperformed block-level for this platform run. |
+| Native Ubuntu | `auto -> one_shot_fast`, simulated `32 GB` RAM | real | none | `7.8s` | `0.73s` DDO setup | `18.38s` | `21.4s` | `0.6s` | `30.0s` | `6.24 GB` | `1.48 GB` | Simulated 32 GB RAM decision on native Linux. This run was unusually fast and likely benefited from OS/file/cache warmth after earlier tests; keep as warm/native Linux data, not as cold one-shot baseline. |
+| Native Ubuntu | `warm_process` | real | none | `19.7s` | prepare 1 `20.04s`, prepare 2 `0.90s` after cache | repeat 1 `12.98s`, repeat 2 `12.89s` | `52.4s` | `1.5s` | `73.9s` | `6.27 GB` | `1.43 GB` | Corrected warm-process route completed. Text encoder uses Diffusers group offload; transformer dynamic offload benefits from process-lifetime cache on the second prepare. Total includes two generation repeats, so this is a server/warm comparison rather than one-image latency. |
 
+## Next Quantized Validation
+
+The next planned test is LTX quantized loading, starting with SDNQ. Keep the first quantized run as close as possible to the BF16 matrix: same runner, same resolution, same steps, same seed, and `DDO_PRESET=auto` unless the quantized loader requires a specific model path or loader branch.
+
+If a quantized model fails to load, record whether the failure happens in Diffusers `from_pretrained`, DDO module discovery, tensor pinning, or runtime weight transfer. Fixes should stay model-agnostic.
 ## Validation Matrix
 
 Use these as the next closed test ladder. Keep Windows as the development gate; repeat WSL/Ubuntu only after a Windows
@@ -94,14 +109,14 @@ $env:DDO_SHOW_PROFILE="0"
 $env:DDO_RUNNER_PURGE_WINDOWS_STANDBY_BEFORE_RUN="1"
 $env:DDO_RUNNER_PURGE_WINDOWS_STANDBY_AFTER_TEXT_ENCODER="1"
 $env:DDO_RUNNER_PURGE_WINDOWS_STANDBY_BEFORE_TRANSFORMER="1"
-python run_modular_distilled.py
+python run_dynamic_modular_distilled.py
 ```
 
 Windows RAM-constrained planner check:
 
 ```powershell
 $env:DDO_AVAILABLE_SYSTEM_RAM_GB="32"
-python run_modular_distilled.py
+python run_dynamic_modular_distilled.py
 Remove-Item Env:DDO_AVAILABLE_SYSTEM_RAM_GB -ErrorAction SilentlyContinue
 ```
 
@@ -120,7 +135,7 @@ export DDO_SHOW_PROFILE=0
 unset DDO_RUNNER_PURGE_WINDOWS_STANDBY_BEFORE_RUN
 unset DDO_RUNNER_PURGE_WINDOWS_STANDBY_AFTER_TEXT_ENCODER
 unset DDO_RUNNER_PURGE_WINDOWS_STANDBY_BEFORE_TRANSFORMER
-python run_modular_distilled.py
+python run_dynamic_modular_distilled.py
 ```
 
 WSL compatibility fallback:
@@ -135,12 +150,12 @@ export DDO_RUNNER_GENERATION_REPEATS=1
 export DDO_RUNNER_FAKE_PROMPT=0
 export DDO_RUNNER_METRICS_LEVEL=1
 export DDO_SHOW_PROFILE=0
-python run_modular_distilled.py
+python run_dynamic_modular_distilled.py
 ```
 
 Official Diffusers fallback comparison:
 
 ```powershell
 $env:DDO_PRESET="diffusers_offload_compat"
-python run_modular_distilled.py
+python run_dynamic_modular_distilled.py
 ```

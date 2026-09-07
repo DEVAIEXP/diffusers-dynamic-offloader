@@ -11,6 +11,7 @@ from diffusers_dynamic_offloader.dynamic_offload import (
     format_dynamic_offload_presets,
     get_dynamic_offload_presets,
     load_dynamic_offload_settings_from_env,
+    maybe_purge_windows_standby_cache,
     purge_windows_standby_cache,
     purge_windows_standby_cache_event,
     resolve_dynamic_offload_preset,
@@ -111,6 +112,52 @@ class DynamicOffloadPresetTests(unittest.TestCase):
         self.assertEqual(result.route, "diffusers_group_offload")
         self.assertEqual(result.event_payload["offload_type"], "block_level")
 
+    def test_warm_process_routes_text_encoder_to_group_offload(self):
+        settings = load_dynamic_offload_settings_from_env(
+            running_on_wsl=False,
+            environ={"DDO_PRESET": "warm_process"},
+        )
+        result = enable_offload(
+            nn.Linear(2, 2),
+            settings=settings,
+            component="text_encoder",
+            apply_hook=False,
+        )
+        self.assertEqual(result.route, "diffusers_group_offload")
+        self.assertTrue(result.event_payload["use_stream"])
+
+
+    def test_low_ram_safe_routes_text_encoder_to_non_streaming_group_offload(self):
+        settings = load_dynamic_offload_settings_from_env(
+            running_on_wsl=True,
+            environ={"DDO_PRESET": "low_ram_safe"},
+        )
+        result = enable_offload(
+            nn.Linear(2, 2),
+            settings=settings,
+            component="text_encoder",
+            apply_hook=False,
+        )
+        self.assertEqual(result.route, "diffusers_group_offload")
+        self.assertFalse(result.event_payload["use_stream"])
+        self.assertFalse(result.event_payload["record_stream"])
+
+    def test_enable_offload_disables_group_stream_on_wsl(self):
+        settings = load_dynamic_offload_settings_from_env(
+            running_on_wsl=True,
+            environ={"DDO_PRESET": "one_shot_fast"},
+        )
+        result = enable_offload(
+            nn.Linear(2, 2),
+            settings=settings,
+            component="text_encoder",
+            apply_hook=False,
+        )
+        self.assertEqual(result.route, "diffusers_group_offload")
+        self.assertFalse(result.event_payload["use_stream"])
+        self.assertFalse(result.event_payload["record_stream"])
+
+
     def test_enable_diffusers_group_offload_reports_payload_without_applying_hook(self):
         events = []
         module = nn.Linear(2, 2)
@@ -164,6 +211,23 @@ class DynamicOffloadPresetTests(unittest.TestCase):
     def test_windows_standby_helpers_are_exported(self):
         self.assertTrue(callable(purge_windows_standby_cache))
         self.assertTrue(callable(purge_windows_standby_cache_event))
+        self.assertTrue(callable(maybe_purge_windows_standby_cache))
+
+    def test_maybe_purge_accepts_preset_without_settings(self):
+        result = maybe_purge_windows_standby_cache(
+            "before_run",
+            preset="off",
+            print_message=False,
+        )
+        self.assertEqual(result["reason"], "disabled")
+
+    def test_maybe_purge_is_disabled_by_default_for_off_preset(self):
+        settings = load_dynamic_offload_settings_from_env(
+            running_on_wsl=False,
+            environ={"DDO_PRESET": "off"},
+        )
+        result = maybe_purge_windows_standby_cache(settings, "before_run", print_message=False)
+        self.assertEqual(result["reason"], "disabled")
 
     def test_format_presets_lists_default_mapping(self):
         formatted = format_dynamic_offload_presets(default_preset="auto", running_on_wsl=False)

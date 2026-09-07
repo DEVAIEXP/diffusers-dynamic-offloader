@@ -192,9 +192,75 @@ def purge_windows_standby_cache() -> dict[str, Any]:
 def purge_windows_standby_cache_event(record_event, event_name: str, *, print_message: bool = True) -> dict[str, Any]:
     event_t0 = time.time()
     result = purge_windows_standby_cache()
-    record_event(event_name, time.time() - event_t0, **result)
+    if record_event is not None:
+        record_event(event_name, time.time() - event_t0, **result)
     if print_message:
         print(f"  [windows-memory] {event_name}: standby cache purge requested", flush=True)
+    return result
+
+
+def maybe_purge_windows_standby_cache(
+    settings_or_phase: "DynamicOffloadSettings | str | None" = None,
+    phase: str | None = None,
+    *,
+    settings: "DynamicOffloadSettings | None" = None,
+    preset: str = "auto",
+    execution_device: str | torch.device = "cuda:0",
+    offload_device: str | torch.device = "cpu",
+    running_on_wsl: bool | None = None,
+    record_event: Any | None = None,
+    event_name: str | None = None,
+    default: str = "0",
+    print_message: bool = True,
+    ignore_errors: bool = True,
+    environ: Mapping[str, str] | None = None,
+) -> dict[str, Any]:
+    """Purge Windows standby cache when preset/env enables it for a lifecycle phase.
+
+    Call either `maybe_purge_windows_standby_cache(settings, "before_run")` or
+    `maybe_purge_windows_standby_cache("before_run", preset="auto")`. It is a
+    no-op outside Windows, so runners can call the same lifecycle hook on every
+    platform while DDO decides whether a purge is useful.
+    """
+    resolved_settings = settings
+    resolved_phase = phase
+    if isinstance(settings_or_phase, str):
+        resolved_phase = settings_or_phase if resolved_phase is None else resolved_phase
+    elif settings_or_phase is not None and resolved_settings is None:
+        resolved_settings = settings_or_phase
+
+    if resolved_phase is None:
+        raise TypeError("phase is required")
+
+    if resolved_settings is None:
+        resolved_settings = load_dynamic_offload_settings_from_env(
+            execution_device=execution_device,
+            offload_device=offload_device,
+            running_on_wsl=running_on_wsl,
+            environ=environ,
+            default_preset=preset,
+        )
+
+    key = "DDO_PURGE_WINDOWS_STANDBY_" + resolved_phase.strip().upper()
+    enabled = resolved_settings.preset_bool(key, default, environ)
+    if not enabled:
+        return {"purged": False, "reason": "disabled", "phase": resolved_phase}
+    if os.name != "nt":
+        return {"purged": False, "reason": "non_windows", "phase": resolved_phase}
+
+    resolved_event_name = event_name or key.lower().removeprefix("ddo_")
+    try:
+        result = purge_windows_standby_cache_event(record_event, resolved_event_name, print_message=print_message)
+    except Exception as exc:
+        if not ignore_errors:
+            raise
+        result = {"purged": False, "reason": exc.__class__.__name__, "phase": resolved_phase, "error": str(exc)}
+        if record_event is not None:
+            record_event(resolved_event_name, 0.0, **result)
+        if print_message:
+            print(f"  [windows-memory] {resolved_event_name}: standby cache purge skipped ({exc})", flush=True)
+        return result
+    result.update({"purged": True, "phase": resolved_phase})
     return result
 
 _DYNAMIC_OFFLOAD_PRESET_VALUES: dict[str, dict[str, str]] = {
@@ -255,6 +321,9 @@ _DYNAMIC_OFFLOAD_PRESET_VALUES: dict[str, dict[str, str]] = {
         "DDO_RESIDENT_MODULE_SELECTION": "spread",
         "DDO_SMALL_TENSOR_THRESHOLD_KB": "1024",
         "DDO_RUNNER_PRE_VAE_CLEANUP_REPEATS": "1",
+        "DDO_PURGE_WINDOWS_STANDBY_BEFORE_RUN": "1",
+        "DDO_PURGE_WINDOWS_STANDBY_AFTER_TEXT_ENCODER": "1",
+        "DDO_PURGE_WINDOWS_STANDBY_BEFORE_TRANSFORMER": "1",
     },
     "wsl_compat": {
         "DDO_RUNNER_TEXT_ENCODER_GROUP_OFFLOAD": "1",
@@ -276,6 +345,10 @@ _DYNAMIC_OFFLOAD_PRESET_VALUES: dict[str, dict[str, str]] = {
         "DDO_RUNNER_PRE_VAE_CLEANUP_REPEATS": "3",
     },
     "warm_process": {
+        "DDO_RUNNER_TEXT_ENCODER_GROUP_OFFLOAD": "1",
+        "DDO_RUNNER_TEXT_ENCODER_OFFLOAD_TYPE": "leaf_level",
+        "DDO_RUNNER_TEXT_ENCODER_OFFLOAD_STREAM": "1",
+        "DDO_RUNNER_TEXT_ENCODER_DYNAMIC_OFFLOAD": "0",
         "DDO_RUNNER_GENERATION_REPEATS": "2",
         "DDO_RUNNER_TRANSFORMER_MEMORY_MANAGER": "off",
         "DDO_RUNNER_TRANSFORMER_GROUP_OFFLOAD": "0",
@@ -292,6 +365,10 @@ _DYNAMIC_OFFLOAD_PRESET_VALUES: dict[str, dict[str, str]] = {
         "DDO_SMALL_TENSOR_THRESHOLD_KB": "1024",
     },
     "low_ram_safe": {
+        "DDO_RUNNER_TEXT_ENCODER_GROUP_OFFLOAD": "1",
+        "DDO_RUNNER_TEXT_ENCODER_OFFLOAD_TYPE": "leaf_level",
+        "DDO_RUNNER_TEXT_ENCODER_OFFLOAD_STREAM": "0",
+        "DDO_RUNNER_TEXT_ENCODER_DYNAMIC_OFFLOAD": "0",
         "DDO_RUNNER_TRANSFORMER_MEMORY_MANAGER": "off",
         "DDO_RUNNER_TRANSFORMER_GROUP_OFFLOAD": "0",
         "DDO_RUNNER_ATTENTION_BACKEND": "native",
@@ -299,19 +376,6 @@ _DYNAMIC_OFFLOAD_PRESET_VALUES: dict[str, dict[str, str]] = {
         "DDO_PIN_CPU_MEMORY": "0",
         "DDO_ALLOW_PIN_MEMORY_FALLBACK": "1",
         "DDO_PIN_CPU_WORKERS": "1",
-        "DDO_AUTO_BUDGET_POLICY": "off",
-        "DDO_RESIDENT_MODULE_BUDGET_GB": "3",
-        "DDO_RESIDENT_MODULE_PATTERNS": "auto",
-        "DDO_RESIDENT_MODULE_SELECTION": "spread",
-        "DDO_SMALL_TENSOR_THRESHOLD_KB": "1024",
-    },
-    "compat": {
-        "DDO_RUNNER_TRANSFORMER_MEMORY_MANAGER": "off",
-        "DDO_RUNNER_TRANSFORMER_GROUP_OFFLOAD": "0",
-        "DDO_RUNNER_ATTENTION_BACKEND": "native",
-        "DDO_EXECUTION_MODE": "linear_runtime",
-        "DDO_PIN_CPU_MEMORY": "0",
-        "DDO_ALLOW_PIN_MEMORY_FALLBACK": "1",
         "DDO_AUTO_BUDGET_POLICY": "off",
         "DDO_RESIDENT_MODULE_BUDGET_GB": "3",
         "DDO_RESIDENT_MODULE_PATTERNS": "auto",
@@ -1521,13 +1585,19 @@ def enable_offload(
         )
 
     if _component_preset_bool(settings, component, "GROUP_OFFLOAD", "0", environ):
+        group_use_stream = _component_preset_bool(settings, component, "OFFLOAD_STREAM", "1", environ)
+        group_record_stream = _component_preset_bool(settings, component, "OFFLOAD_RECORD_STREAM", "0", environ)
+        if settings.running_on_wsl and settings.disable_pin_on_wsl and group_use_stream:
+            group_use_stream = False
+            group_record_stream = False
+
         result = enable_diffusers_group_offload(
             module,
             onload_device=execution_device,
             offload_device=offload_device,
             offload_type=_component_preset_value(settings, component, "OFFLOAD_TYPE", "leaf_level", environ),
-            use_stream=_component_preset_bool(settings, component, "OFFLOAD_STREAM", "1", environ),
-            record_stream=_component_preset_bool(settings, component, "OFFLOAD_RECORD_STREAM", "0", environ),
+            use_stream=group_use_stream,
+            record_stream=group_record_stream,
             low_cpu_mem_usage=_component_preset_bool(
                 settings,
                 component,

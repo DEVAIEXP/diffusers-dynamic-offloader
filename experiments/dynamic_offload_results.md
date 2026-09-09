@@ -84,11 +84,24 @@ These runs use real prompt encoding unless noted. Keep width `1280`, height `704
 | Native Ubuntu | `auto -> one_shot_fast`, simulated `32 GB` RAM | real | none | `7.8s` | `0.73s` DDO setup | `18.38s` | `21.4s` | `0.6s` | `30.0s` | `6.24 GB` | `1.48 GB` | Simulated 32 GB RAM decision on native Linux. This run was unusually fast and likely benefited from OS/file/cache warmth after earlier tests; keep as warm/native Linux data, not as cold one-shot baseline. |
 | Native Ubuntu | `warm_process` | real | none | `19.7s` | prepare 1 `20.04s`, prepare 2 `0.90s` after cache | repeat 1 `12.98s`, repeat 2 `12.89s` | `52.4s` | `1.5s` | `73.9s` | `6.27 GB` | `1.43 GB` | Corrected warm-process route completed. Text encoder uses Diffusers group offload; transformer dynamic offload benefits from process-lifetime cache on the second prepare. Total includes two generation repeats, so this is a server/warm comparison rather than one-image latency. |
 
-## Next Quantized Validation
 
-The next planned test is LTX quantized loading, starting with SDNQ. Keep the first quantized run as close as possible to the BF16 matrix: same runner, same resolution, same steps, same seed, and `DDO_PRESET=auto` unless the quantized loader requires a specific model path or loader branch.
+## Quantized SDNQ Validation
 
-If a quantized model fails to load, record whether the failure happens in Diffusers `from_pretrained`, DDO module discovery, tensor pinning, or runtime weight transfer. Fixes should stay model-agnostic.
+These runs use the SDNQ int8 LTX 2.3 image transformer path with the same runner, resolution `1280x704`, steps `8`, seed `43`, real prompt encoding, and text encoder Diffusers leaf group offload. The goal is memory behavior and compatibility, not DDO dense-linear acceleration.
+
+| Platform | Preset / route | Transformer behavior | Encode pass | Transformer setup/load | Denoise | Pass 1 | VAE | Total | Peak VRAM | Peak RAM | Denoise allocation | Notes |
+| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- |
+| Windows | `off` | No transformer offload; transformer moved to CUDA/shared GPU memory | `32.3s` | `load_transformer_to_cuda 17.86s` | `189.00s` | `214.9s` | `1.9s` | `250.8s` | `6.97 GB` | `21.46 GB` | `torch_alloc 12.63 GiB`, `reserved 13.10 GiB` | Lower RAM than BF16, but denoise spills beyond 8 GB dedicated VRAM into shared GPU memory and remains slow/unstable. |
+| Windows | `diffusers_leaf_offload_compat` | Official Diffusers leaf group offload with stream and record stream | `33.3s` | `setup_transformer_group_offload 0.038s` | `92.82s` | `101.3s` | `1.9s` | `138.5s` | `6.11 GB` | `16.80 GB` | `torch_alloc 0.15 GiB`, `reserved 0.96 GiB` | Best SDNQ memory/latency result in this pair. For quantized models, prefer Diffusers group-offload compatibility presets. |
+
+Interpretation: SDNQ significantly reduces system RAM pressure versus BF16, but DDO dynamic linear streaming does not accelerate packed/quantized linears because their backend-specific forward must be preserved. For SDNQ on this Windows machine, Diffusers leaf group offload is the recommended compatibility path so far.
+
+## Quantized Follow-Up
+
+SDNQ int8 now has an initial Windows compatibility/memory baseline. The next quantized work should compare the same SDNQ pair on WSL and native Ubuntu only if needed, then add other backends such as bitsandbytes, TorchAO, or Quanto when matching models are available.
+
+For quantized backends, fixes should remain model-agnostic and preserve backend-specific forward logic. DDO dynamic linear streaming should only patch standard dense `nn.Linear` weights with the expected 2D `(out_features, in_features)` layout.
+
 ## Validation Matrix
 
 Use these as the next closed test ladder. Keep Windows as the development gate; repeat WSL/Ubuntu only after a Windows

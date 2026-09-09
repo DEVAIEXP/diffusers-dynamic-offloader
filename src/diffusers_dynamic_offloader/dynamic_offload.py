@@ -500,6 +500,7 @@ class DynamicOffloadSettings:
     effective_pin_cpu_memory: bool
     disable_pin_on_wsl: bool
     running_on_wsl: bool
+    component_policies: Mapping[str, Mapping[str, Any]] = field(default_factory=dict)
 
     @property
     def execution_mode(self) -> str:
@@ -546,6 +547,7 @@ class DynamicOffloadSettings:
             "dynamic_offload_resident_module_selection": config.resident_module_selection,
             "dynamic_offload_load_safetensors_backend": config.load_safetensors_backend or None,
             "dynamic_offload_show_profile": config.show_profile,
+            "dynamic_offload_component_policies": dict(self.component_policies),
         }
 
     @classmethod
@@ -584,6 +586,13 @@ def build_dynamic_offload_event_payload(
         "planner_decisions": summary["planner_decisions"],
         "setup_runtime": summary["setup_runtime"],
     }
+
+
+def detect_quantized_backend_modules(module: nn.Module) -> dict[str, Any]:
+    sdnq_module_count = sum(1 for child in module.modules() if hasattr(child, "sdnq_dequantizer"))
+    if not sdnq_module_count:
+        return {}
+    return {"sdnq_module_count": sdnq_module_count, "sdnq_status": "detected_forward_preserved"}
 
 
 @dataclass(frozen=True)
@@ -850,6 +859,17 @@ class DynamicOffloadHook(ModelHook):
                 continue
 
             if isinstance(submodule, nn.Linear):
+                if not self._can_patch_linear(submodule):
+                    start = time.perf_counter()
+                    moved_bytes = self._move_module_tensors_to_execution_device(submodule)
+                    self.state.add_setup(
+                        "unsupported_linear_modules_to_device",
+                        time.perf_counter() - start,
+                        moved_bytes,
+                    )
+                    unsupported_count = self.state.planner_decisions.get("unsupported_linear_module_count", 0)
+                    self.state.planner_decisions["unsupported_linear_module_count"] = unsupported_count + 1
+                    continue
                 self._move_linear_to_runtime_devices(
                     module_name,
                     submodule,
@@ -883,6 +903,8 @@ class DynamicOffloadHook(ModelHook):
         candidates: list[tuple[str, nn.Module, int]] = []
         for module_name, submodule in module.named_modules():
             if module_name == "" or not isinstance(submodule, (nn.Linear, nn.Embedding)):
+                continue
+            if isinstance(submodule, nn.Linear) and not self._can_patch_linear(submodule):
                 continue
             if skip_patterns and any(pattern.search(module_name) for pattern in skip_patterns):
                 continue
@@ -1246,6 +1268,19 @@ class DynamicOffloadHook(ModelHook):
                 flush=True,
             )
 
+    @staticmethod
+    def _can_patch_linear(linear: nn.Linear) -> bool:
+        weight = getattr(linear, "weight", None)
+        in_features = getattr(linear, "in_features", None)
+        out_features = getattr(linear, "out_features", None)
+        return (
+            isinstance(weight, torch.Tensor)
+            and weight.ndim == 2
+            and in_features is not None
+            and out_features is not None
+            and tuple(weight.shape) == (out_features, in_features)
+        )
+
     def _patch_linear(self, linear: nn.Linear) -> None:
         self._patched_modules.append((linear, linear.forward))
         self.state.patched_module_count += 1
@@ -1379,6 +1414,7 @@ def load_dynamic_offload_settings_from_env(
     running_on_wsl: bool | None = None,
     environ: Mapping[str, str] | None = None,
     default_preset: str = "",
+    component_policies: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> DynamicOffloadSettings:
     env = os.environ if environ is None else environ
     is_wsl = is_wsl_environment() if running_on_wsl is None else running_on_wsl
@@ -1465,6 +1501,7 @@ def load_dynamic_offload_settings_from_env(
         effective_pin_cpu_memory=effective_pin_cpu_memory,
         disable_pin_on_wsl=disable_pin_on_wsl,
         running_on_wsl=is_wsl,
+        component_policies=component_policies or {},
     )
 
 
@@ -1483,6 +1520,35 @@ def _component_prefix(component: str) -> str:
     return re.sub(r"[^A-Z0-9]+", "_", component.upper()).strip("_") or "MODEL"
 
 
+def _component_policy(settings: DynamicOffloadSettings, component: str) -> Mapping[str, Any]:
+    prefix = _component_prefix(component)
+    candidates = (
+        component,
+        component.lower(),
+        prefix,
+        prefix.lower(),
+    )
+    for candidate in candidates:
+        policy = settings.component_policies.get(candidate)
+        if policy is not None:
+            return policy
+    return {}
+
+
+def _policy_value(policy: Mapping[str, Any], name: str) -> Any:
+    key = name.lower()
+    candidates = (
+        key,
+        name,
+        name.upper(),
+        key.replace("_", "-"),
+    )
+    for candidate in candidates:
+        if candidate in policy:
+            return policy[candidate]
+    return None
+
+
 def _component_preset_value(
     settings: DynamicOffloadSettings,
     component: str,
@@ -1490,6 +1556,10 @@ def _component_preset_value(
     default: str = "",
     environ: Mapping[str, str] | None = None,
 ) -> str:
+    policy_item = _policy_value(_component_policy(settings, component), name)
+    if policy_item is not None:
+        return str(policy_item)
+
     prefix = _component_prefix(component)
     for candidate in (f"DDO_{prefix}_{name}", f"DDO_RUNNER_{prefix}_{name}"):
         value = settings.preset_value(candidate, "", environ)
@@ -1562,6 +1632,14 @@ def enable_offload(
     config: DynamicOffloadConfig | None = None,
     component: str = "model",
     preset: str = "auto",
+    route: str | None = None,
+    group_offload: bool | None = None,
+    dynamic_offload: bool | None = None,
+    offload_type: str | None = None,
+    use_stream: bool | None = None,
+    record_stream: bool | None = None,
+    group_low_cpu_mem_usage: bool | None = None,
+    num_blocks_per_group: int | None = None,
     execution_device: str | torch.device = "cuda:0",
     offload_device: str | torch.device = "cpu",
     low_cpu_mem_usage: bool = True,
@@ -1584,32 +1662,85 @@ def enable_offload(
             default_preset=preset,
         )
 
-    if _component_preset_bool(settings, component, "GROUP_OFFLOAD", "0", environ):
-        group_use_stream = _component_preset_bool(settings, component, "OFFLOAD_STREAM", "1", environ)
-        group_record_stream = _component_preset_bool(settings, component, "OFFLOAD_RECORD_STREAM", "0", environ)
+    route_value = route or _component_preset_value(settings, component, "ROUTE", "auto", environ)
+    route_value = route_value.strip().lower()
+    if route_value in {"diffusers", "diffusers_group", "group", "group_offload"}:
+        route_value = "diffusers_group_offload"
+    elif route_value in {"dynamic", "ddo"}:
+        route_value = "dynamic_offload"
+    elif route_value in {"cuda", "standard", "none", "off"}:
+        route_value = "none"
+
+    group_enabled = (
+        group_offload
+        if group_offload is not None
+        else _component_preset_bool(settings, component, "GROUP_OFFLOAD", "0", environ)
+    )
+    dynamic_setting = _component_preset_value(settings, component, "DYNAMIC_OFFLOAD", "", environ)
+    dynamic_enabled = (
+        dynamic_offload
+        if dynamic_offload is not None
+        else (_parse_bool_value(dynamic_setting) if dynamic_setting != "" else settings.enabled)
+    )
+    quantized_backend_payload = detect_quantized_backend_modules(module)
+
+    if route_value == "auto":
+        if group_enabled:
+            route_value = "diffusers_group_offload"
+        elif quantized_backend_payload and dynamic_enabled:
+            route_value = "diffusers_group_offload"
+        elif dynamic_enabled:
+            route_value = "dynamic_offload"
+        else:
+            route_value = "none"
+
+    if route_value == "diffusers_group_offload":
+        group_use_stream = (
+            use_stream
+            if use_stream is not None
+            else _component_preset_bool(settings, component, "OFFLOAD_STREAM", "1", environ)
+        )
+        group_record_stream = (
+            record_stream
+            if record_stream is not None
+            else _component_preset_bool(settings, component, "OFFLOAD_RECORD_STREAM", "0", environ)
+        )
         if settings.running_on_wsl and settings.disable_pin_on_wsl and group_use_stream:
             group_use_stream = False
             group_record_stream = False
 
-        result = enable_diffusers_group_offload(
-            module,
-            onload_device=execution_device,
-            offload_device=offload_device,
-            offload_type=_component_preset_value(settings, component, "OFFLOAD_TYPE", "leaf_level", environ),
-            use_stream=group_use_stream,
-            record_stream=group_record_stream,
-            low_cpu_mem_usage=_component_preset_bool(
+        resolved_offload_type = offload_type or _component_preset_value(settings, component, "OFFLOAD_TYPE", "leaf_level", environ)
+        resolved_low_cpu_mem_usage = (
+            group_low_cpu_mem_usage
+            if group_low_cpu_mem_usage is not None
+            else _component_preset_bool(
                 settings,
                 component,
                 "OFFLOAD_LOW_CPU_MEM_USAGE",
                 "1" if low_cpu_mem_usage else "0",
                 environ,
-            ),
-            num_blocks_per_group=int(_component_preset_value(settings, component, "NUM_BLOCKS_PER_GROUP", "1", environ)),
+            )
+        )
+        resolved_num_blocks = (
+            num_blocks_per_group
+            if num_blocks_per_group is not None
+            else int(_component_preset_value(settings, component, "NUM_BLOCKS_PER_GROUP", "1", environ))
+        )
+        result = enable_diffusers_group_offload(
+            module,
+            onload_device=execution_device,
+            offload_device=offload_device,
+            offload_type=resolved_offload_type,
+            use_stream=group_use_stream,
+            record_stream=group_record_stream,
+            low_cpu_mem_usage=resolved_low_cpu_mem_usage,
+            num_blocks_per_group=resolved_num_blocks,
             apply_hook=apply_hook,
             record_event=record_event,
             event_name=group_event_name or f"setup_{component}_group_offload",
         )
+        if quantized_backend_payload:
+            result.event_payload["quantized_backend"] = quantized_backend_payload
         return DynamicOffloadApplyResult(
             module=result.module,
             hook=None,
@@ -1619,9 +1750,7 @@ def enable_offload(
             route="diffusers_group_offload",
         )
 
-    dynamic_setting = _component_preset_value(settings, component, "DYNAMIC_OFFLOAD", "", environ)
-    dynamic_enabled = _parse_bool_value(dynamic_setting) if dynamic_setting != "" else settings.enabled
-    if dynamic_enabled:
+    if route_value == "dynamic_offload":
         result = enable_dynamic_offload(
             module,
             settings=settings,
@@ -1636,6 +1765,12 @@ def enable_offload(
         result.route = "dynamic_offload"
         return result
 
+    if route_value != "none":
+        raise ValueError(
+            f"Invalid offload route {route_value!r}. "
+            "Valid values: auto, dynamic_offload, diffusers_group_offload, none."
+        )
+
     return DynamicOffloadApplyResult(
         module=module,
         hook=None,
@@ -1643,6 +1778,81 @@ def enable_offload(
         should_move_to_execution_device=True,
         route="none",
     )
+
+
+def enable_pipeline_offload(
+    pipeline: Any,
+    *,
+    settings: DynamicOffloadSettings | None = None,
+    components: Mapping[str, nn.Module] | tuple[str, ...] | list[str] | None = None,
+    preset: str = "auto",
+    execution_device: str | torch.device = "cuda:0",
+    offload_device: str | torch.device = "cpu",
+    low_cpu_mem_usage: bool = True,
+    running_on_wsl: bool | None = None,
+    environ: Mapping[str, str] | None = None,
+    use_environment: bool = True,
+    apply_hook: bool = True,
+    record_event: Any | None = None,
+    **config_overrides: Any,
+) -> dict[str, DynamicOffloadApplyResult]:
+    """Apply DDO routing to modules exposed by a Diffusers-style pipeline.
+
+    The helper is intentionally thin: each component is resolved through
+    `enable_offload(...)`, so global presets, component policies, environment
+    overrides, and quantized-backend compatibility all follow the same path.
+    """
+    if settings is None:
+        settings = load_dynamic_offload_settings_from_env(
+            execution_device=execution_device,
+            offload_device=offload_device,
+            running_on_wsl=running_on_wsl,
+            environ=environ if use_environment else {},
+            default_preset=preset,
+        )
+
+    if isinstance(components, Mapping):
+        selected_components = components.items()
+    else:
+        component_names: tuple[str, ...]
+        if components is not None:
+            component_names = tuple(components)
+        else:
+            pipeline_components = getattr(pipeline, "components", None)
+            if isinstance(pipeline_components, Mapping):
+                component_names = tuple(pipeline_components)
+            else:
+                component_names = (
+                    "text_encoder",
+                    "text_encoder_2",
+                    "transformer",
+                    "unet",
+                    "vae",
+                )
+
+        selected_components = (
+            (name, getattr(pipeline, name))
+            for name in component_names
+            if isinstance(getattr(pipeline, name, None), nn.Module)
+        )
+
+    results: dict[str, DynamicOffloadApplyResult] = {}
+    for component_name, component_module in selected_components:
+        if not isinstance(component_module, nn.Module):
+            continue
+        results[component_name] = enable_offload(
+            component_module,
+            settings=settings,
+            component=component_name,
+            execution_device=execution_device,
+            offload_device=offload_device,
+            low_cpu_mem_usage=low_cpu_mem_usage,
+            environ=environ if use_environment else {},
+            apply_hook=apply_hook,
+            record_event=record_event,
+            **config_overrides,
+        )
+    return results
 
 
 def enable_dynamic_offload(
@@ -1701,9 +1911,12 @@ def enable_dynamic_offload(
 
     hook = None
     event_payload: dict[str, Any] = {}
+    quantized_backend_payload = detect_quantized_backend_modules(module)
     if apply_hook and settings.enabled:
         hook = apply_dynamic_offload(module, effective_config)
         event_payload = build_dynamic_offload_event_payload(settings, hook.state, effective_config)
+    if quantized_backend_payload:
+        event_payload["quantized_backend"] = quantized_backend_payload
 
     elapsed = time.perf_counter() - start
     if record_event is not None:

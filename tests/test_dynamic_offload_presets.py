@@ -1,13 +1,17 @@
 import unittest
 
+import torch
 import torch.nn as nn
 
 from diffusers_dynamic_offloader.dynamic_offload import (
     DDO_PRESETS,
     DynamicOffloadConfig,
+    detect_quantized_backend_modules,
     enable_diffusers_group_offload,
     enable_dynamic_offload,
     enable_offload,
+    enable_pipeline_offload,
+    remove_dynamic_offload,
     format_dynamic_offload_presets,
     get_dynamic_offload_presets,
     load_dynamic_offload_settings_from_env,
@@ -29,6 +33,7 @@ class DynamicOffloadPresetTests(unittest.TestCase):
 
     def test_presets_do_not_include_removed_legacy_names(self):
         removed_aliases = {
+            "compat",
             "windows_fast",
             "linux_native_fast",
             "linux_safe",
@@ -97,6 +102,115 @@ class DynamicOffloadPresetTests(unittest.TestCase):
         )
         self.assertEqual(transformer_result.route, "dynamic_offload")
         self.assertEqual(text_encoder_result.route, "diffusers_group_offload")
+
+    def test_enable_offload_accepts_component_policy_overrides(self):
+        settings = load_dynamic_offload_settings_from_env(
+            running_on_wsl=False,
+            environ={"DDO_PRESET": "one_shot_fast"},
+            component_policies={
+                "transformer": {
+                    "route": "diffusers_group_offload",
+                    "offload_type": "block_level",
+                    "num_blocks_per_group": 2,
+                    "offload_stream": False,
+                    "offload_record_stream": True,
+                }
+            },
+        )
+        result = enable_offload(
+            nn.Linear(2, 2),
+            settings=settings,
+            component="transformer",
+            apply_hook=False,
+        )
+        self.assertEqual(result.route, "diffusers_group_offload")
+        self.assertEqual(result.event_payload["offload_type"], "block_level")
+        self.assertEqual(result.event_payload["num_blocks_per_group"], 2)
+        self.assertFalse(result.event_payload["use_stream"])
+        self.assertTrue(result.event_payload["record_stream"])
+
+    def test_enable_offload_explicit_route_overrides_component_policy(self):
+        settings = load_dynamic_offload_settings_from_env(
+            running_on_wsl=False,
+            environ={"DDO_PRESET": "one_shot_fast"},
+            component_policies={"transformer": {"route": "diffusers_group_offload"}},
+        )
+        result = enable_offload(
+            nn.Linear(2, 2),
+            settings=settings,
+            component="transformer",
+            route="none",
+            apply_hook=False,
+        )
+        self.assertEqual(result.route, "none")
+        self.assertTrue(result.should_move_to_execution_device)
+
+    def test_quantized_component_auto_routes_to_diffusers_group_offload(self):
+        class FakeSdnqLayer(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.sdnq_dequantizer = object()
+
+        settings = load_dynamic_offload_settings_from_env(
+            running_on_wsl=False,
+            environ={"DDO_PRESET": "one_shot_fast"},
+        )
+        result = enable_offload(
+            FakeSdnqLayer(),
+            settings=settings,
+            component="transformer",
+            apply_hook=False,
+        )
+        self.assertEqual(result.route, "diffusers_group_offload")
+        self.assertEqual(
+            result.event_payload["quantized_backend"]["sdnq_status"],
+            "detected_forward_preserved",
+        )
+
+    def test_quantized_component_respects_off_preset(self):
+        class FakeSdnqLayer(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.sdnq_dequantizer = object()
+
+        settings = load_dynamic_offload_settings_from_env(
+            running_on_wsl=False,
+            environ={"DDO_PRESET": "off"},
+        )
+        result = enable_offload(
+            FakeSdnqLayer(),
+            settings=settings,
+            component="transformer",
+            apply_hook=False,
+        )
+        self.assertEqual(result.route, "none")
+        self.assertTrue(result.should_move_to_execution_device)
+
+    def test_enable_pipeline_offload_reuses_one_settings_object(self):
+        class FakePipeline:
+            def __init__(self):
+                self.components = {
+                    "text_encoder": nn.Linear(2, 2),
+                    "transformer": nn.Linear(2, 2),
+                    "scheduler": object(),
+                }
+                self.text_encoder = self.components["text_encoder"]
+                self.transformer = self.components["transformer"]
+
+        settings = load_dynamic_offload_settings_from_env(
+            running_on_wsl=False,
+            environ={"DDO_PRESET": "one_shot_fast"},
+        )
+        results = enable_pipeline_offload(
+            FakePipeline(),
+            settings=settings,
+            apply_hook=False,
+        )
+        self.assertEqual(set(results), {"text_encoder", "transformer"})
+        self.assertEqual(results["text_encoder"].route, "diffusers_group_offload")
+        self.assertEqual(results["transformer"].route, "dynamic_offload")
+        self.assertIs(results["text_encoder"].settings, settings)
+        self.assertIs(results["transformer"].settings, settings)
 
     def test_enable_offload_routes_diffusers_compat_transformer_to_group_offload(self):
         settings = load_dynamic_offload_settings_from_env(
@@ -207,6 +321,58 @@ class DynamicOffloadPresetTests(unittest.TestCase):
         self.assertTrue(result.should_move_to_execution_device)
         self.assertEqual(events[0][0], "setup_dynamic_offload")
         self.assertEqual(events[0][2]["execution_mode"], "plan")
+
+    def test_packed_linear_keeps_original_forward(self):
+        class PackedLinear(nn.Linear):
+            def __init__(self):
+                nn.Module.__init__(self)
+                self.weight = nn.Parameter(torch.ones(1, 2, 2))
+                self.bias = None
+                self.forward_called = False
+
+            def forward(self, input):
+                self.forward_called = True
+                return input + 1
+
+        class Packed2DLinear(nn.Linear):
+            def __init__(self):
+                super().__init__(2, 2)
+                self.weight = nn.Parameter(torch.ones(9, 16))
+                self.forward_called = False
+
+            def forward(self, input):
+                self.forward_called = True
+                return input + 2
+
+        module = nn.Sequential(PackedLinear(), Packed2DLinear())
+        config = DynamicOffloadConfig(
+            execution_device="cpu",
+            offload_device="cpu",
+            execution_mode="linear_runtime",
+            pin_cpu_memory=False,
+            auto_budget_policy="off",
+        )
+        result = enable_dynamic_offload(module, config=config, use_environment=False)
+        output = module(torch.zeros(1, 2))
+
+        self.assertTrue(module[0].forward_called)
+        self.assertTrue(module[1].forward_called)
+        self.assertEqual(output.tolist(), [[3.0, 3.0]])
+        self.assertEqual(result.hook.state.patched_module_count, 0)
+        self.assertEqual(result.hook.state.planner_decisions["unsupported_linear_module_count"], 2)
+        remove_dynamic_offload(module)
+
+
+    def test_sdnq_detection_reports_forward_preserved(self):
+        class FakeSdnqLayer(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.sdnq_dequantizer = object()
+
+        result = detect_quantized_backend_modules(FakeSdnqLayer())
+        self.assertEqual(result["sdnq_status"], "detected_forward_preserved")
+        self.assertEqual(result["sdnq_module_count"], 1)
+
 
     def test_windows_standby_helpers_are_exported(self):
         self.assertTrue(callable(purge_windows_standby_cache))

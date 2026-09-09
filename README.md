@@ -46,6 +46,10 @@ settings = DynamicOffloadSettings.from_env(
     execution_device="cuda:0",
     offload_device="cpu",
     default_preset="auto",
+    component_policies={
+        # Optional: override only the components that need custom behavior.
+        "text_encoder": {"route": "diffusers_group_offload", "offload_stream": False},
+    },
 )
 
 text_encoder = enable_offload(text_encoder, settings=settings, component="text_encoder").module
@@ -54,17 +58,30 @@ transformer = enable_offload(transformer, settings=settings, component="transfor
 
 For `one_shot_fast`, `component="transformer"` currently routes to DDO dynamic offload. For `diffusers_offload_compat`, it routes to the official Diffusers group offload helper. Component-specific preset values such as `DDO_RUNNER_TEXT_ENCODER_GROUP_OFFLOAD=1` are handled inside DDO, so application code should not need to choose between DDO and Diffusers hooks manually.
 
-Explicit keyword arguments override preset and environment values:
+Explicit keyword arguments override component policies, preset values, and environment values:
 
 ```python
 enable_offload(
     transformer,
     settings=settings,
     component="transformer",
+    route="dynamic_offload",
     max_resident_module_budget_gb=6.0,
     pin_cpu_workers=4,
 )
 ```
+
+Route values are `auto`, `dynamic_offload`, `diffusers_group_offload`, and `none`. A global preset can therefore stay model-agnostic while DDO applies different defaults to `text_encoder`, `transformer`, future `unet` components, or any explicit component name passed by the host.
+
+For full Diffusers-style pipelines, the same resolution path can be applied to exposed components:
+
+```python
+from diffusers_dynamic_offloader import enable_pipeline_offload
+
+results = enable_pipeline_offload(pipe, preset="auto")
+```
+
+`enable_pipeline_offload(...)` inspects `pipe.components` when available, skips non-module entries, and applies `enable_offload(...)` per component.
 
 The lower-level `enable_dynamic_offload(...)`, `enable_diffusers_group_offload(...)`, and `apply_dynamic_offload(...)` APIs remain available for experiments, but runners should prefer `enable_offload(...)`.
 
@@ -118,6 +135,21 @@ Remove-Item Env:DDO_RUNNER_PRINT_DYNAMIC_OFFLOAD_PRESETS -ErrorAction SilentlyCo
 
 The final public-facing report should be distilled from `dynamic_offload_results.md`, with links back to the historical log only when useful.
 
+## Quantized Models
+
+DDO's main performance path targets dense PyTorch `nn.Linear` weights, such as BF16/FP16 weights loaded by standard Diffusers models. In that path DDO can keep selected modules resident, stream only the large linear weights, and optionally use pinned CPU memory to make host-to-device copies cheap.
+
+Quantized backends are different. Libraries such as SDNQ, bitsandbytes, TorchAO, Quanto, or similar integrations often store packed weights and implement their own forward logic for dequantization, layout transforms, custom kernels, Hadamard transforms, SVD adapters, or backend-specific matmul paths. DDO detects these packed/unsupported linear modules and preserves their original forward instead of replacing it with the dense linear streaming forward.
+
+Recommended quantized usage:
+
+- Prefer `diffusers_offload_compat` or `diffusers_leaf_offload_compat` when the goal is maximum backend compatibility.
+- Use native Diffusers group offload directly when you want the closest possible behavior to upstream Diffusers.
+- Treat DDO as a preset and lifecycle helper for quantized models, not as a linear-streaming accelerator.
+- Expect lower system RAM pressure from quantized weights, but not necessarily better latency if the backend falls back to dequantized/shared-memory execution.
+
+For SDNQ specifically, DDO keeps the SDNQ layer forward intact. Performance-sensitive SDNQ acceleration should come from SDNQ's own quantized matmul path when that backend supports the current model and hardware reliably.
+
 ## Platform Recommendations
 
 For the current LTX 2.3 BF16 1280x704, 8-step benchmark:
@@ -142,8 +174,8 @@ For the LTX 2.3 image BF16 1280x704, 8-step benchmark on an 8 GB NVIDIA GPU:
 ## Validation Roadmap
 
 1. Keep the current Windows/WSL/native-Ubuntu BF16 matrix as the first report baseline.
-2. Validate quantized LTX next, starting with SDNQ, then broader quantization paths such as bitsandbytes when a matching model is available.
-3. If quantized loading exposes class/config or parameter-wrapper incompatibilities, keep fixes inside the generic loader/offload layer rather than adding model-specific code.
+2. Validate quantized LTX next, starting with SDNQ, as a compatibility and memory-pressure path rather than a DDO acceleration path.
+3. If quantized loading exposes class/config or parameter-wrapper incompatibilities, keep fixes generic and preserve the quantization backend forward logic.
 4. Only revisit native VBAR-style behavior if Python/Diffusers-compatible paths are exhausted and hardware compatibility risks are explicitly accepted.
 
 ## Compatibility Position

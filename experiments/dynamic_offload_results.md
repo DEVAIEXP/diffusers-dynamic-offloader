@@ -172,3 +172,11 @@ Official Diffusers fallback comparison:
 $env:DDO_PRESET="diffusers_offload_compat"
 python run_dynamic_modular_distilled.py
 ```
+## Traditional Diffusers Pipeline Probes
+
+These probes compare DDO in non-modular LTX2ImagePipeline flows. The full-pipeline variant validates compatibility with old-style Diffusers pipelines, but it cannot insert cleanup between internal text-encoder, transformer, and VAE phases.
+
+| Platform | Runner | Preset / route | Component policy | Load / setup | Pipeline call / denoise | Total | Peak VRAM | Peak RAM | Result |
+| --- | --- | --- | --- | ---: | ---: | ---: | ---: | ---: | --- |
+| Windows | `run_dynamic_old_distilled.py` | `auto -> one_shot_fast` | Full `LTX2ImagePipeline`; text encoder, connectors, and VAE use Diffusers leaf group offload; transformer uses DDO dynamic offload | `25.0s` load/setup; transformer dynamic setup `21.2353s` | `392.3639s` pipeline call; first denoise callback delayed `189.48s`, later steps unstable | `423.6s` | `6.97 GB` | `51.71 GB` | Functional but not viable for low-RAM one-shot use. Because the old full pipeline owns all phases internally, DDO cannot purge/flush between prompt encoding, transformer, and VAE decode. Keep this as a compatibility baseline; use staged or modular runners for controlled memory cleanup. |
+| Windows | `run_dynamic_old_staged_distilled.py` | `auto -> one_shot_fast` | Staged traditional pipeline; text encoder uses Diffusers leaf group offload, connectors use Diffusers leaf group offload inside the denoise pipeline, transformer uses DDO dynamic offload, VAE decoded in a separate manual stage | Pass 0 `55.6s`; transformer dynamic setup `23.5855s`; Pass 1 setup/build/cleanup included `58.2s` | `29.7005s` denoise pipe call; first callback `15.66s`, later steps around `1.8s` | `126.8s` | `6.97 GB` | `28.89 GB` | Good controlled-memory comparison. Releasing DDO result references before cleanup fixed the earlier `~50 GB` RAM retention. Still slower than the best modular run because connectors execute inside the denoise pipeline and old-pipeline overhead remains. |

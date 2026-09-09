@@ -1,5 +1,38 @@
 # Dynamic Offload Experiment Notes
 
+## Executive Summary
+
+All headline comparisons below use the same LTX 2.3 distilled image workload unless noted: BF16, real prompt encoding, `1280x704`, `8` steps, seed `43`, native attention.
+
+| Environment / comparison | Baseline | DDO / staged result | Total latency change | Denoise change | Peak RAM change | Management readout |
+| --- | ---: | ---: | ---: | ---: | ---: | --- |
+| Windows modular, DDO vs official Diffusers block-level group offload | `315.1s` total, `222.88s` denoise, `28.98 GB` RAM | `133.2s` total, `14.83s` denoise, `27.38 GB` RAM | `57.7%` lower total time (`2.37x` faster) | `93.3%` lower denoise time (`15.03x` faster) | `5.5%` lower peak RAM | DDO is a major win on this Windows low-VRAM setup when enough system RAM is available for pinned CPU weights. |
+| Windows old full pipeline vs staged traditional pipeline | `423.6s` total, `51.71 GB` RAM | `126.8s` total, `28.89 GB` RAM | `70.1%` lower total time (`3.34x` faster) | Not directly comparable because the full pipeline hides internal phases | `44.1%` lower peak RAM | Staging old-style Diffusers pipelines matters: it gives DDO cleanup boundaries between components. |
+| Windows staged traditional pipeline, DDO vs official Diffusers block-level group offload | `321.4s` total, `255.39s` denoise, `33.83 GB` RAM, `4.45 GB` VRAM | `126.8s` total, `29.70s` denoise, `28.89 GB` RAM, `6.97 GB` VRAM | `60.5%` lower total time (`2.53x` faster) | `88.4%` lower denoise time (`8.60x` faster) | `14.6%` lower peak RAM; VRAM `56.6%` higher | Same old-style staged flow, so this is the cleanest non-modular DDO-vs-Diffusers comparison. DDO trades more VRAM for much lower latency and lower host RAM. |
+| WSL modular, DDO `wsl_compat` vs official Diffusers block-level group offload | `218.1s` total | `144.4s` total | `33.8%` lower total time (`1.51x` faster) | DDO denoise `97.80s` vs Diffusers `172.00s` | DDO peak RAM `23.47 GB` vs Diffusers `38.39 GB` | WSL benefits from DDO's dynamic path with pinning disabled, but remains slower and less stable than native Linux/Windows. |
+| Native Ubuntu modular, DDO `one_shot_fast` vs best recorded official Diffusers group offload | `34.9s` total for Diffusers leaf group offload | `59.3s` total for DDO | DDO was `69.9%` slower in this recorded one-shot run | DDO denoise was `45.9%` faster (`13.06s` vs `24.14s`), but setup/encode made total latency worse | Similar recorded RAM | Native Ubuntu is not a DDO one-shot win in the recorded baseline; official Diffusers leaf group offload was strongest overall. |
+| Quantized SDNQ Windows, offload off vs Diffusers leaf group offload | `250.8s` total, `21.46 GB` RAM | `138.5s` total, `16.80 GB` RAM | `44.8%` lower total time (`1.81x` faster) | `92.82s` denoise with group offload vs `189.00s` without | `21.7%` lower peak RAM | Quantized backends should preserve their own forward logic; prefer Diffusers group-offload compatibility presets for SDNQ. |
+
+High-level conclusion: DDO's dense-linear streaming path is most valuable on Windows low-VRAM BF16 workloads where official Diffusers group offload is dominated by repeated transfers. For native Linux and quantized backends, DDO should act as a routing/preset layer and preserve official Diffusers or backend-specific paths when those are faster or safer.
+
+### Evidence Coverage
+
+Closed, apples-to-apples comparisons:
+- Windows modular BF16: DDO `auto -> one_shot_fast` vs official Diffusers group-offload compatibility presets.
+- WSL modular BF16: DDO `wsl_compat` vs official Diffusers block-level group offload.
+- Native Ubuntu modular BF16: DDO `one_shot_fast` vs official Diffusers block/leaf group offload.
+- Windows SDNQ int8: no transformer offload vs official Diffusers leaf group offload.
+- Windows staged traditional pipeline BF16: DDO `one_shot_fast` vs official Diffusers block-level group offload in the same staged runner.
+
+Exploratory comparisons, useful but not headline product claims:
+- Old full pipeline vs old staged pipeline: shows the value of staging/cleanup boundaries, not a pure DDO-vs-Diffusers comparison.
+- Simulated 32 GB RAM: useful planner behavior probe, but not a substitute for a physical 32 GB machine.
+- Warm-process/server mode: useful for cache behavior, but totals include multiple generation repeats and should be reported separately from one-image latency.
+
+Numbers still worth adding before sharing broadly:
+- Optional WSL/native Ubuntu runs for `run_dynamic_old_staged_distilled.py`, only if we want old-pipeline portability claims.
+- Quantized SDNQ on WSL/native Ubuntu, if quantized portability becomes part of the Diffusers discussion.
+
 Baseline unless noted:
 - Model: LTX 2.3 distilled image modular runner
 - Resolution: 1280x704
@@ -180,3 +213,4 @@ These probes compare DDO in non-modular LTX2ImagePipeline flows. The full-pipeli
 | --- | --- | --- | --- | ---: | ---: | ---: | ---: | ---: | --- |
 | Windows | `run_dynamic_old_distilled.py` | `auto -> one_shot_fast` | Full `LTX2ImagePipeline`; text encoder, connectors, and VAE use Diffusers leaf group offload; transformer uses DDO dynamic offload | `25.0s` load/setup; transformer dynamic setup `21.2353s` | `392.3639s` pipeline call; first denoise callback delayed `189.48s`, later steps unstable | `423.6s` | `6.97 GB` | `51.71 GB` | Functional but not viable for low-RAM one-shot use. Because the old full pipeline owns all phases internally, DDO cannot purge/flush between prompt encoding, transformer, and VAE decode. Keep this as a compatibility baseline; use staged or modular runners for controlled memory cleanup. |
 | Windows | `run_dynamic_old_staged_distilled.py` | `auto -> one_shot_fast` | Staged traditional pipeline; text encoder uses Diffusers leaf group offload, connectors use Diffusers leaf group offload inside the denoise pipeline, transformer uses DDO dynamic offload, VAE decoded in a separate manual stage | Pass 0 `55.6s`; transformer dynamic setup `23.5855s`; Pass 1 setup/build/cleanup included `58.2s` | `29.7005s` denoise pipe call; first callback `15.66s`, later steps around `1.8s` | `126.8s` | `6.97 GB` | `28.89 GB` | Good controlled-memory comparison. Releasing DDO result references before cleanup fixed the earlier `~50 GB` RAM retention. Still slower than the best modular run because connectors execute inside the denoise pipeline and old-pipeline overhead remains. |
+| Windows | `run_dynamic_old_staged_distilled.py` | `diffusers_offload_compat` | Staged traditional pipeline; text encoder, connectors, and transformer use official Diffusers group offload | Pass 0 `51.9s`; transformer group-offload setup `0.0711s`; Pass 1 `258.5s` | `255.3886s` denoise pipe call; first callback `73.78s`, later steps around `25-26s` | `321.4s` | `4.45 GB` | `33.83 GB` | Apples-to-apples staged old baseline. It uses less VRAM than DDO staged, but is `2.53x` slower overall, `8.60x` slower in denoise, and uses more host RAM. |

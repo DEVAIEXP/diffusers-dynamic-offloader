@@ -1,21 +1,19 @@
 from __future__ import annotations
 
 import contextlib
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import dataclass, field, replace
 import os
-from pathlib import Path
 import re
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass, field, replace
+from pathlib import Path
 from typing import Any, Mapping
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-
 from diffusers.hooks.hooks import HookRegistry, ModelHook
-
 
 _DEFAULT_TARGET_MODULE_CLASSES = (nn.Linear, nn.Embedding)
 _DYNAMIC_OFFLOAD_HOOK = "dynamic_offload"
@@ -96,6 +94,15 @@ def get_available_system_ram_gb() -> float:
             return 0.0
 
     return 0.0
+
+
+def get_cuda_total_vram_gb(device: str | torch.device = "cuda:0") -> float:
+    if not torch.cuda.is_available():
+        return 0.0
+    try:
+        return torch.cuda.get_device_properties(device).total_memory / 1024**3
+    except Exception:
+        return 0.0
 
 
 def purge_windows_standby_cache() -> dict[str, Any]:
@@ -314,7 +321,7 @@ _DYNAMIC_OFFLOAD_PRESET_VALUES: dict[str, dict[str, str]] = {
         "DDO_ALLOW_PIN_MEMORY_FALLBACK": "1",
         "DDO_PIN_CPU_WORKERS": "4",
         "DDO_AUTO_BUDGET_POLICY": "balanced",
-        "DDO_MAX_RESIDENT_MODULE_BUDGET_GB": "6",
+        "DDO_MAX_RESIDENT_MODULE_BUDGET_GB": "0",
         "DDO_SYSTEM_RAM_HEADROOM_GB": "8",
         "DDO_RESIDENT_MODULE_BUDGET_GB": "0",
         "DDO_RESIDENT_MODULE_PATTERNS": "auto",
@@ -473,6 +480,7 @@ class DynamicOffloadConfig:
     pinned_weight_cache_namespace: str = ""
     auto_budget_policy: str = _AUTO_BUDGET_DISABLED
     max_resident_module_budget_gb: float = 6.0
+    auto_vram_headroom_gb: float = 0.0
     max_pin_weight_budget_gb: float = 0.0
     available_system_ram_gb: float = 0.0
     system_ram_headroom_gb: float = 6.0
@@ -535,6 +543,7 @@ class DynamicOffloadSettings:
             "dynamic_offload_pinned_weight_cache_namespace": config.pinned_weight_cache_namespace or None,
             "dynamic_offload_auto_budget_policy": config.auto_budget_policy,
             "dynamic_offload_max_resident_module_budget_gb": config.max_resident_module_budget_gb,
+            "dynamic_offload_auto_vram_headroom_gb": config.auto_vram_headroom_gb,
             "dynamic_offload_max_pin_weight_budget_gb": config.max_pin_weight_budget_gb,
             "dynamic_offload_available_system_ram_gb": config.available_system_ram_gb,
             "dynamic_offload_system_ram_headroom_gb": config.system_ram_headroom_gb,
@@ -1028,6 +1037,37 @@ class DynamicOffloadHook(ModelHook):
 
         if self.resident_module_budget_bytes <= 0 and candidate_module_bytes > 0:
             budget = int(candidate_module_bytes * 0.25)
+            total_vram_gb = get_cuda_total_vram_gb(self.execution_device)
+            if total_vram_gb > 0:
+                self.state.planner_decisions["cuda_total_vram_gb"] = round(total_vram_gb, 4)
+            if total_vram_gb > 0:
+                vram_headroom_gb = self.config.auto_vram_headroom_gb
+                if vram_headroom_gb <= 0:
+                    model_to_vram_ratio = candidate_module_bytes / (total_vram_gb * 1024**3)
+                    if total_vram_gb <= 8.5:
+                        vram_headroom_gb = 3.0 if model_to_vram_ratio <= 2.5 else 2.0
+                    elif total_vram_gb <= 12.5:
+                        vram_headroom_gb = 2.5
+                    else:
+                        vram_headroom_gb = max(3.0, total_vram_gb * 0.15)
+                    self.state.planner_decisions["auto_model_to_vram_ratio"] = round(model_to_vram_ratio, 4)
+                vram_target_gb = max(1.0, total_vram_gb - vram_headroom_gb)
+                vram_target_bytes = int(vram_target_gb * 1024**3)
+                candidate_exceeds_vram = candidate_module_bytes > int(total_vram_gb * 1024**3)
+                if candidate_exceeds_vram:
+                    budget = max(budget, vram_target_bytes)
+                    budget = min(budget, candidate_module_bytes)
+                    self.state.planner_decisions["auto_resident_module_budget_vram_target_gb"] = round(
+                        vram_target_gb, 4
+                    )
+                    self.state.planner_decisions["auto_vram_headroom_gb"] = round(vram_headroom_gb, 4)
+                if budget > vram_target_bytes:
+                    budget = vram_target_bytes
+                    self.state.planner_decisions["auto_resident_module_budget_vram_cap_gb"] = round(vram_target_gb, 4)
+                    self.state.planner_decisions["auto_vram_headroom_gb"] = round(vram_headroom_gb, 4)
+                    self.state.planner_decisions["auto_resident_module_budget_vram_cap_reason"] = (
+                        "cuda_vram_headroom"
+                    )
             if self.max_resident_module_budget_bytes > 0:
                 budget = min(budget, self.max_resident_module_budget_bytes)
             self.resident_module_budget_bytes = budget
@@ -1478,6 +1518,7 @@ def load_dynamic_offload_settings_from_env(
         max_resident_module_budget_gb=float(
             preset_env("DDO_MAX_RESIDENT_MODULE_BUDGET_GB", "6.0")
         ),
+        auto_vram_headroom_gb=float(preset_env("DDO_AUTO_VRAM_HEADROOM_GB", "0.0")),
         max_pin_weight_budget_gb=float(preset_env("DDO_MAX_PIN_WEIGHT_BUDGET_GB", "0.0")),
         available_system_ram_gb=available_system_ram_gb,
         system_ram_headroom_gb=float(preset_env("DDO_SYSTEM_RAM_HEADROOM_GB", "6.0")),
@@ -1685,9 +1726,7 @@ def enable_offload(
     quantized_backend_payload = detect_quantized_backend_modules(module)
 
     if route_value == "auto":
-        if group_enabled:
-            route_value = "diffusers_group_offload"
-        elif quantized_backend_payload and dynamic_enabled:
+        if group_enabled or (quantized_backend_payload and dynamic_enabled):
             route_value = "diffusers_group_offload"
         elif dynamic_enabled:
             route_value = "dynamic_offload"
@@ -1771,11 +1810,28 @@ def enable_offload(
             "Valid values: auto, dynamic_offload, diffusers_group_offload, none."
         )
 
+    event_payload: dict[str, Any] = {}
+    should_move = True
+    if apply_hook:
+        move_start = time.perf_counter()
+        module.to(execution_device)
+        move_seconds = time.perf_counter() - move_start
+        should_move = False
+        event_payload["unmanaged_module_moved_to_execution_device"] = str(execution_device)
+        if record_event is not None:
+            record_event(
+                f"move_{component}_to_execution_device",
+                move_seconds,
+                route="none",
+                execution_device=str(execution_device),
+            )
+
     return DynamicOffloadApplyResult(
         module=module,
         hook=None,
         settings=settings,
-        should_move_to_execution_device=True,
+        should_move_to_execution_device=should_move,
+        event_payload=event_payload,
         route="none",
     )
 
@@ -1798,9 +1854,10 @@ def enable_pipeline_offload(
 ) -> dict[str, DynamicOffloadApplyResult]:
     """Apply DDO routing to modules exposed by a Diffusers-style pipeline.
 
-    The helper is intentionally thin: each component is resolved through
-    `enable_offload(...)`, so global presets, component policies, environment
-    overrides, and quantized-backend compatibility all follow the same path.
+    Each component is resolved through `enable_offload(...)`, so global presets,
+    component policies, environment overrides, and quantized-backend compatibility
+    all follow the same path. If a component resolves to the unmanaged `none`
+    route, this high-level helper moves it to the execution device automatically.
     """
     if settings is None:
         settings = load_dynamic_offload_settings_from_env(
@@ -1840,7 +1897,7 @@ def enable_pipeline_offload(
     for component_name, component_module in selected_components:
         if not isinstance(component_module, nn.Module):
             continue
-        results[component_name] = enable_offload(
+        result = enable_offload(
             component_module,
             settings=settings,
             component=component_name,
@@ -1852,6 +1909,11 @@ def enable_pipeline_offload(
             record_event=record_event,
             **config_overrides,
         )
+        if apply_hook and result.should_move_to_execution_device:
+            result.module.to(execution_device)
+            result.should_move_to_execution_device = False
+            result.event_payload["unmanaged_module_moved_to_execution_device"] = str(execution_device)
+        results[component_name] = result
     return results
 
 
@@ -1974,10 +2036,10 @@ def _temporary_safetensors_backend(backend: str):
         except ImportError:
             continue
         if getattr(imported_module, "safe_open", None) is original_safe_open:
-            setattr(imported_module, "safe_open", safe_open_with_backend)
+            imported_module.safe_open = safe_open_with_backend
             patched_modules.append((imported_module, "safe_open", original_safe_open))
         if getattr(imported_module, "safe_load_file", None) is original_torch_load_file:
-            setattr(imported_module, "safe_load_file", torch_load_file_with_backend)
+            imported_module.safe_load_file = torch_load_file_with_backend
             patched_modules.append((imported_module, "safe_load_file", original_torch_load_file))
 
     try:
@@ -2164,7 +2226,7 @@ def _resolve_resident_module_patterns(
         return tuple(compiled_patterns)
 
     inferred_patterns = _infer_repeated_resident_module_patterns(module, config)
-    return tuple([*compiled_patterns, *inferred_patterns])
+    return (*compiled_patterns, *inferred_patterns)
 
 
 def _infer_repeated_resident_module_patterns(

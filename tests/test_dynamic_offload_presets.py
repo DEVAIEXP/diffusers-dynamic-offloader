@@ -11,13 +11,13 @@ from diffusers_dynamic_offloader.dynamic_offload import (
     enable_dynamic_offload,
     enable_offload,
     enable_pipeline_offload,
-    remove_dynamic_offload,
     format_dynamic_offload_presets,
     get_dynamic_offload_presets,
     load_dynamic_offload_settings_from_env,
     maybe_purge_windows_standby_cache,
     purge_windows_standby_cache,
     purge_windows_standby_cache_event,
+    remove_dynamic_offload,
     resolve_dynamic_offload_preset,
 )
 

@@ -48,3 +48,4 @@ wandb/
 download.py
 # Binary files
 *.so
+experiments/ltx2_image_experiments.md

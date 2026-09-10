@@ -1,5 +1,11 @@
 # Dynamic Offload Experiment Notes
 
+`diffusers-dynamic-offloader` (DDO) is a model-agnostic offload router for Diffusers-style pipelines. It provides one preset-driven API that can route each component to DDO's dense-linear dynamic offload path, official Diffusers group offload, or a no-op/manual path.
+
+DDO is designed for low-VRAM inference where full model residency is not possible or not desirable. Its dynamic path keeps selected modules resident on the accelerator, streams standard dense linear weights at runtime, optionally pins CPU weights when system RAM has enough headroom, and leaves quantized/backend-specific module forwards intact for compatibility.
+
+This file is the report-ready benchmark sidecar. It summarizes what DDO is trying to improve, where it wins, where official Diffusers group offload is still preferable, and which results are closed benchmarks versus exploratory probes.
+
 ## Executive Summary
 
 All headline comparisons below use the same LTX 2.3 distilled image workload unless noted: BF16, real prompt encoding, `1280x704`, `8` steps, seed `43`, native attention.
@@ -13,7 +19,7 @@ All headline comparisons below use the same LTX 2.3 distilled image workload unl
 | Native Ubuntu modular, DDO `one_shot_fast` vs best recorded official Diffusers group offload | `34.9s` total for Diffusers leaf group offload | `59.3s` total for DDO | DDO was `69.9%` slower in this recorded one-shot run | DDO denoise was `45.9%` faster (`13.06s` vs `24.14s`), but setup/encode made total latency worse | Similar recorded RAM | Native Ubuntu is not a DDO one-shot win in the recorded baseline; official Diffusers leaf group offload was strongest overall. |
 | Quantized SDNQ Windows, offload off vs Diffusers leaf group offload | `250.8s` total, `21.46 GB` RAM | `138.5s` total, `16.80 GB` RAM | `44.8%` lower total time (`1.81x` faster) | `92.82s` denoise with group offload vs `189.00s` without | `21.7%` lower peak RAM | Quantized backends should preserve their own forward logic; prefer Diffusers group-offload compatibility presets for SDNQ. |
 
-High-level conclusion: DDO's dense-linear streaming path is most valuable on Windows low-VRAM BF16 workloads where official Diffusers group offload is dominated by repeated transfers. For native Linux and quantized backends, DDO should act as a routing/preset layer and preserve official Diffusers or backend-specific paths when those are faster or safer.
+High-level conclusion: DDO's dense-linear streaming path is most valuable on Windows low-VRAM BF16 workloads where official Diffusers group offload is dominated by repeated transfers. WSL also benefits from the dynamic path when pinning is disabled. On native Linux, DDO improved denoise throughput in the recorded LTX run, but official Diffusers group offload had the best cold one-shot total because its setup cost was much lower. The routing/preset layer should therefore remain platform- and workload-aware, using DDO when its denoise gain justifies setup cost and preserving official Diffusers or backend-specific paths when they are faster or safer.
 
 ### Evidence Coverage
 
@@ -28,6 +34,7 @@ Exploratory comparisons, useful but not headline product claims:
 - Old full pipeline vs old staged pipeline: shows the value of staging/cleanup boundaries, not a pure DDO-vs-Diffusers comparison.
 - Simulated 32 GB RAM: useful planner behavior probe, but not a substitute for a physical 32 GB machine.
 - Warm-process/server mode: useful for cache behavior, but totals include multiple generation repeats and should be reported separately from one-image latency.
+- FLUX.2 Klein and Z-Image staged runners: useful multi-model probes for auto-budget behavior, but not part of the LTX benchmark claims.
 
 Numbers still worth adding before sharing broadly:
 - Optional WSL/native Ubuntu runs for `run_dynamic_old_staged_distilled.py`, only if we want old-pipeline portability claims.
@@ -60,6 +67,10 @@ Baseline unless noted:
 
 `one_shot_fast` is the default general preset. It pins CPU weights only when the measured or supplied available RAM can cover the model weight copy, resident GPU modules, and configured system headroom. On machines with enough RAM, it pays setup time once and keeps denoise fast. On constrained RAM, it chooses safety over speed.
 
+The resident-module budget must be VRAM-headroom aware, not just model-size aware. FLUX.2 Klein showed that using more resident VRAM is not always faster: a manually larger budget could stay under nominal VRAM capacity while still pushing the CUDA allocator/driver into a slow path. On the tested 8 GB Windows setup, about `5 GB` resident budget gave fast denoise, while larger budgets increased `torch_reserved` near the card limit and slowed the loop. The planner should therefore leave accelerator headroom and treat `max_resident_module_budget_gb` as an optional cap, not as the default budget.
+
+Z-Image validated the same generic policy on a different, locally patched Diffusers-style pipeline. DDO `one_shot_fast` used more VRAM than Diffusers leaf offload but reduced denoise time from `101.83s` to `18.31s` at `768x768`, `9` steps. Its total was dominated by the custom pipeline build stage, so this is evidence for the offload policy, not a report-ready pipeline benchmark.
+
 `low_ram_safe` is not the recommended 32 GB preset for this model. It is a fallback for tighter VRAM cases where the user accepts slow denoise to reduce accelerator memory pressure.
 
 The Diffusers group offload path is useful as an official compatibility baseline, but in this test it is not close to
@@ -71,7 +82,7 @@ for this model/shape.
 
 Recommended defaults:
 - `auto` -> `one_shot_fast`
-- `one_shot_fast` -> balanced planner, RAM-aware pinning
+- `one_shot_fast` -> balanced planner, RAM-aware pinning, VRAM-headroom-aware resident budget
 - `low_ram_safe` -> explicit fallback only
 - `wsl_compat` -> explicit WSL fallback when stream/pin behavior is unstable
 - `warm_process` -> process-lifetime cache comparisons and server-like usage

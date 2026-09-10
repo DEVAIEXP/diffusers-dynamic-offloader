@@ -1,183 +1,197 @@
 # diffusers-dynamic-offloader
 
-Model-agnostic dynamic offload helpers for Diffusers-style low-VRAM inference.
+`diffusers-dynamic-offloader` (DDO) is a model-agnostic offload router for Diffusers-style inference on low-VRAM systems.
 
-DDO is a Python compatibility-first layer: it can keep selected modules resident on the accelerator, stream large weights at runtime, optionally pin CPU tensors when system RAM allows it, and expose repeatable presets through `DDO_*` environment variables.
-
-This repository was split from the LTX 2.3 modular image experiments so the offload manager can evolve independently from any single model family. The LTX runners and custom blocks stay in the host experiment repository and import this package with an editable install.
-
-## Install For Local Experiments
-
-From the host project environment:
-
-```powershell
-uv pip install -e E:\ProjetosIA\diffusers-dynamic-offloader
-```
-
-Then host code can import:
-
-```python
-from diffusers_dynamic_offloader import DynamicOffloadSettings, enable_offload
-```
-
-## Basic API
-
-The shortest integration path is to let DDO load preset defaults and choose the correct route for each component:
+DDO can either apply its own dense-linear dynamic offload path or route a component to the official Diffusers group-offload implementation. The intent is to give runners a small API surface:
 
 ```python
 from diffusers_dynamic_offloader import enable_offload
 
-transformer_offload = enable_offload(
-    transformer,
-    preset="auto",
-    component="transformer",
-)
-transformer = transformer_offload.module
+result = enable_offload(transformer, preset="auto", component="transformer")
+transformer = result.module
 ```
 
-`preset="auto"` currently resolves to `one_shot_fast`. For the LTX 2.3 BF16 benchmark this means: keep selected transformer blocks resident, pin streamed CPU weights only when system RAM has enough headroom, and use Windows standby-list cleanup at the lifecycle points declared by the preset.
+The library resolves the preset, platform behavior, component policy, RAM/VRAM budget, quantized-backend compatibility, and optional Windows standby-list cleanup helpers. Host scripts should not need to decide manually whether a given component should use DDO dynamic offload, Diffusers group offload, or no offload.
 
-Use an explicit settings object only when the host wants to share one resolved configuration across components or override devices:
+## Install
+
+From a host project:
+
+```powershell
+uv add git+https://github.com/DEVAIEXP/diffusers-dynamic-offloader.git
+```
+
+For local development:
+
+```powershell
+git clone https://github.com/DEVAIEXP/diffusers-dynamic-offloader.git
+cd diffusers-dynamic-offloader
+uv pip install -e .
+```
+
+Or, from another project environment, install the local checkout by path:
+
+```powershell
+uv pip install -e C:\path\to\diffusers-dynamic-offloader
+```
+
+## Minimal Full-Pipeline Usage
+
+Use `enable_pipeline_offload(...)` when you have a complete Diffusers pipeline and want the shortest integration.
+
+```python
+import torch
+from diffusers import DiffusionPipeline
+from diffusers_dynamic_offloader import enable_pipeline_offload
+
+pipe = DiffusionPipeline.from_pretrained(
+    "your/model",
+    torch_dtype=torch.bfloat16,
+)
+
+enable_pipeline_offload(pipe, preset="auto", execution_device="cuda:0")
+
+image = pipe(prompt="a small robot holding a lantern", output_type="pil").images[0]
+image.save("out.png")
+```
+
+This is the simplest path. It is also the least memory-aware path because the pipeline owns the full call and DDO cannot insert cleanup between prompt encoding, denoise, and VAE decode.
+
+## Minimal Modular Usage
+
+For Modular Diffusers, load the custom blocks and components, then apply DDO to the exposed modules:
+
+```python
+import torch
+from diffusers import ModularPipeline
+from diffusers_dynamic_offloader import enable_pipeline_offload
+
+pipe = ModularPipeline.from_pretrained(
+    "your/custom_blocks",
+    trust_remote_code=True,
+)
+pipe.load_components(
+    pretrained_model_name_or_path="your/model",
+    names=["text_encoder", "tokenizer", "transformer", "vae", "scheduler"],
+    torch_dtype=torch.bfloat16,
+)
+
+enable_pipeline_offload(pipe, preset="auto", execution_device="cuda:0")
+
+image = pipe(
+    prompt="a small robot holding a lantern",
+    width=1024,
+    height=1024,
+    num_inference_steps=8,
+    output="images",
+)[0]
+image.save("out.png")
+```
+
+When a component cannot be accelerated safely, DDO routes it through the compatibility path instead of replacing its forward.
+
+## Usage Guides
+
+- [Full pipeline usage](docs/full-pipeline.md): the smallest integration for existing Diffusers pipelines.
+- [Phase-staged pipeline usage](docs/staged-pipeline.md): standard Diffusers pipelines split into prompt, denoise, and decode phases.
+- [Modular pipeline usage](docs/modular-pipeline.md): Modular Diffusers full-pipeline and phase-staged examples.
+- [Presets and platforms](docs/presets-and-platforms.md): what each preset means and what `auto` currently chooses.
+- [Configuration reference](docs/configuration.md): settings fields, recognized `DDO_*` variables, and override precedence.
+- [Dynamic offload results](experiments/dynamic_offload_results.md): report-ready benchmark summary and comparison tables.
+
+## Recommended Patterns
+
+Use a full pipeline when:
+
+- you want the smallest code change;
+- the model already fits comfortably enough;
+- you mainly want one preset API over Diffusers group offload and DDO dynamic offload.
+
+Use phase-staged execution when:
+
+- VRAM or system RAM is tight;
+- prompt encoding, denoise, and VAE decode have very different memory shapes;
+- you want Windows standby-list cleanup and CUDA cleanup between phases;
+- you need apples-to-apples timing between full-pipeline and phase-by-phase execution.
+
+Use official Diffusers group offload through DDO when:
+
+- the model uses a quantized backend such as SDNQ, bitsandbytes, TorchAO, or Quanto;
+- the backend has custom packed weights or custom forward logic;
+- compatibility matters more than dense-linear streaming speed.
+
+## Presets
+
+| Preset | Main use | Transformer route | Notes |
+| --- | --- | --- | --- |
+| `auto` | Default entry point | Resolves to the recommended policy for the current DDO release | Current policy prefers `one_shot_fast`, with platform and backend safety checks. |
+| `one_shot_fast` | Best Windows low-VRAM BF16 path found so far | DDO dynamic offload for dense transformer linears | Uses RAM-aware CPU pinning and a VRAM-headroom-aware resident-module budget. |
+| `low_ram_safe` | Explicit constrained-memory fallback | DDO dynamic offload with lower resident pressure | Slower, but useful when peak accelerator memory matters more than latency. |
+| `wsl_compat` | WSL stability fallback | DDO dynamic offload with WSL-safe settings | Avoids pinned CPU memory and stream combinations that were unstable in testing. |
+| `warm_process` | Server/repeated generations | DDO dynamic offload with process-lifetime caches | Not a cold one-image latency preset. Useful for warm runners and services. |
+| `diffusers_offload_compat` | Official block-level baseline | Diffusers group offload | Compatibility path and benchmark baseline. |
+| `diffusers_leaf_offload_compat` | Official leaf-level baseline | Diffusers group offload | Often best for quantized backends and some native-Linux cold runs. |
+| `off` | Disable offload routing | None | Caller must move modules/devices manually. |
+
+## Platform Behavior
+
+`auto` is intentionally model-agnostic. It does not hardcode LTX, FLUX, Z-Image, or any other model family. It inspects the component, available RAM, CUDA VRAM, platform, and preset policy.
+
+| Platform | Recommended first try | Why |
+| --- | --- | --- |
+| Windows + low VRAM + enough system RAM | `auto` / `one_shot_fast` | Best measured DDO win: faster denoise than official Diffusers group offload while keeping memory bounded. |
+| Windows + limited system RAM | `auto`, then `low_ram_safe` if needed | `auto` skips pinned CPU weights when RAM headroom is not enough; denoise is slower but safer. |
+| WSL | `wsl_compat` | WSL showed unstable pin/stream behavior; the compatibility preset disables the risky parts. |
+| Native Linux | compare `auto` and `diffusers_leaf_offload_compat` | DDO can improve denoise, but official Diffusers leaf offload may win cold one-shot totals when setup cost dominates. |
+| Quantized backends | `diffusers_leaf_offload_compat` or `diffusers_offload_compat` | DDO preserves backend-specific forwards and does not replace packed quantized matmuls. |
+
+## Quantized Models
+
+DDO's acceleration path targets standard dense PyTorch `nn.Linear` modules with 2D weights. Quantized integrations frequently store packed weights and implement their own dequantization, layout transform, Hadamard transform, or matmul path.
+
+For those modules, DDO preserves the backend forward and routes to the Diffusers compatibility path. This is deliberate: replacing a quantized forward may be faster in one local experiment but fragile across backend versions and hardware.
+
+## Configuration
+
+Application code can pass explicit settings. See the [configuration reference](docs/configuration.md) for every settings field and DDO-recognized environment variable:
 
 ```python
 from diffusers_dynamic_offloader import DynamicOffloadSettings, enable_offload
 
 settings = DynamicOffloadSettings.from_env(
+    default_preset="auto",
     execution_device="cuda:0",
     offload_device="cpu",
-    default_preset="auto",
-    component_policies={
-        # Optional: override only the components that need custom behavior.
-        "text_encoder": {"route": "diffusers_group_offload", "offload_stream": False},
-    },
 )
 
-text_encoder = enable_offload(text_encoder, settings=settings, component="text_encoder").module
-transformer = enable_offload(transformer, settings=settings, component="transformer").module
-```
-
-For `one_shot_fast`, `component="transformer"` currently routes to DDO dynamic offload. For `diffusers_offload_compat`, it routes to the official Diffusers group offload helper. Component-specific preset values such as `DDO_RUNNER_TEXT_ENCODER_GROUP_OFFLOAD=1` are handled inside DDO, so application code should not need to choose between DDO and Diffusers hooks manually.
-
-Explicit keyword arguments override component policies, preset values, and environment values:
-
-```python
-enable_offload(
+result = enable_offload(
     transformer,
     settings=settings,
     component="transformer",
-    route="dynamic_offload",
     max_resident_module_budget_gb=6.0,
-    pin_cpu_workers=4,
 )
 ```
 
-Route values are `auto`, `dynamic_offload`, `diffusers_group_offload`, and `none`. A global preset can therefore stay model-agnostic while DDO applies different defaults to `text_encoder`, `transformer`, future `unet` components, or any explicit component name passed by the host.
-
-For full Diffusers-style pipelines, the same resolution path can be applied to exposed components:
-
-```python
-from diffusers_dynamic_offloader import enable_pipeline_offload
-
-results = enable_pipeline_offload(pipe, preset="auto")
-```
-
-`enable_pipeline_offload(...)` inspects `pipe.components` when available, skips non-module entries, and applies `enable_offload(...)` per component.
-
-The lower-level `enable_dynamic_offload(...)`, `enable_diffusers_group_offload(...)`, and `apply_dynamic_offload(...)` APIs remain available for experiments, but runners should prefer `enable_offload(...)`.
-
-## Minimal Host Runner
-
-The LTX host repository includes `run_dynamic_minimal.py` as a compact integration example. It should run with no DDO environment variables set:
+Environment variables are optional overrides, useful for runners and benchmarks:
 
 ```powershell
-python run_dynamic_minimal.py
+$env:DDO_PRESET="one_shot_fast"
+$env:DDO_MAX_RESIDENT_MODULE_BUDGET_GB="6"
+$env:DDO_SHOW_PROFILE="1"
 ```
 
-The script still allows optional overrides such as `DDO_PRESET=low_ram_safe`, but the default path is resolved by DDO itself through `DynamicOffloadSettings.from_env(default_preset="auto")` and `enable_offload(...)`.
+Runner-specific variables should use a separate prefix such as `DDO_RUNNER_*`; DDO itself only owns the `DDO_*` library settings.
 
-## Environment Prefixes
+## Results
 
-Library settings use `DDO_*`.
+The current report is in [experiments/dynamic_offload_results.md](experiments/dynamic_offload_results.md). It includes:
 
-Host-runner settings should use `DDO_RUNNER_*`.
+- Windows, WSL, and native-Ubuntu BF16 benchmark comparisons;
+- DDO dynamic offload versus official Diffusers block/leaf group offload;
+- full-pipeline versus phase-staged execution comparisons;
+- quantized SDNQ compatibility notes;
+- exploratory FLUX.2 Klein and Z-Image observations for auto-budget behavior.
 
-```powershell
-$env:DDO_PRESET="auto"
-$env:DDO_RUNNER_WIDTH="1280"
-$env:DDO_RUNNER_HEIGHT="704"
-$env:DDO_RUNNER_STEPS="8"
-$env:DDO_RUNNER_SEED="43"
-$env:DDO_RUNNER_METRICS_LEVEL="1"
-```
+## Project Scope
 
-## Current Presets
-
-- `auto`: resolves to the recommended platform/default policy.
-- `one_shot_fast`: default performance path when enough system RAM is available.
-- `low_ram_safe`: explicit fallback for tighter memory budgets.
-- `wsl_compat`: WSL/driver fallback when pinning or streams are unstable.
-- `warm_process`: process-lifetime cache/server-style comparison mode.
-- `diffusers_offload_compat`: official Diffusers block-level group offload baseline.
-- `diffusers_leaf_offload_compat`: official Diffusers leaf-level group offload baseline.
-
-Inspect the current preset contract from a host runner without loading model weights:
-
-```powershell
-$env:DDO_RUNNER_PRINT_DYNAMIC_OFFLOAD_PRESETS="1"
-python run_dynamic_modular_distilled.py
-Remove-Item Env:DDO_RUNNER_PRINT_DYNAMIC_OFFLOAD_PRESETS -ErrorAction SilentlyContinue
-```
-
-## Experiment Documents
-
-- `experiments/dynamic_offload_results.md` is the compact, report-ready benchmark file. Keep current preset tables, Diffusers group-offload comparisons, and platform summaries there.
-- `experiments/ltx2_image_experiments.md` is the full historical LTX lab notebook. Keep raw notes, dead ends, old logs, and implementation chronology there.
-
-The final public-facing report should be distilled from `dynamic_offload_results.md`, with links back to the historical log only when useful.
-
-## Quantized Models
-
-DDO's main performance path targets dense PyTorch `nn.Linear` weights, such as BF16/FP16 weights loaded by standard Diffusers models. In that path DDO can keep selected modules resident, stream only the large linear weights, and optionally use pinned CPU memory to make host-to-device copies cheap.
-
-Quantized backends are different. Libraries such as SDNQ, bitsandbytes, TorchAO, Quanto, or similar integrations often store packed weights and implement their own forward logic for dequantization, layout transforms, custom kernels, Hadamard transforms, SVD adapters, or backend-specific matmul paths. DDO detects these packed/unsupported linear modules and preserves their original forward instead of replacing it with the dense linear streaming forward.
-
-Recommended quantized usage:
-
-- Prefer `diffusers_offload_compat` or `diffusers_leaf_offload_compat` when the goal is maximum backend compatibility.
-- Use native Diffusers group offload directly when you want the closest possible behavior to upstream Diffusers.
-- Treat DDO as a preset and lifecycle helper for quantized models, not as a linear-streaming accelerator.
-- Expect lower system RAM pressure from quantized weights, but not necessarily better latency if the backend falls back to dequantized/shared-memory execution.
-
-For SDNQ specifically, DDO keeps the SDNQ layer forward intact. Performance-sensitive SDNQ acceleration should come from SDNQ's own quantized matmul path when that backend supports the current model and hardware reliably.
-
-## Platform Recommendations
-
-For the current LTX 2.3 BF16 1280x704, 8-step benchmark:
-
-- Windows: use `auto` / `one_shot_fast`. It is the best compatibility-first path found so far when enough system RAM is available. If DDO detects insufficient RAM, it skips pinned CPU weights and remains safe, but denoise becomes much slower.
-- WSL Ubuntu: use `wsl_compat`. It disables pinned CPU memory and streaming group-offload paths that were unstable on this WSL stack. It is slower than Windows full-pin but stable.
-- Native Ubuntu: `diffusers_leaf_offload_compat` is currently the fastest measured preset for this exact benchmark. Keep `one_shot_fast` as the DDO dynamic-offload comparison path, especially for warm/server-style runs.
-- Tight VRAM/RAM fallback: use `low_ram_safe` only when lower accelerator pressure matters more than latency.
-- Server or repeated generation: use `warm_process` to measure process-lifetime cache behavior; it is not a one-image cold-start latency preset.
-
-## Current Evidence Snapshot
-
-For the LTX 2.3 image BF16 1280x704, 8-step benchmark on an 8 GB NVIDIA GPU:
-
-- Windows `auto -> one_shot_fast`: total `133.2s`, generation pass `52.6s`, denoise `14.83s`, peak VRAM `6.45 GB`, peak RAM `27.38 GB`.
-- Windows simulated 32 GB RAM: DDO correctly skipped pinned CPU weights; total `217.2s`, generation pass `132.2s`, denoise `114.70s`.
-- Windows official Diffusers baselines: `diffusers_offload_compat` total `315.1s`, `diffusers_leaf_offload_compat` total `326.4s`.
-- WSL Ubuntu: `wsl_compat` was the best stable DDO path measured, total `144.4s`, denoise `97.80s`; Diffusers leaf-level group offload crashed after denoise start on this WSL stack.
-- Native Ubuntu: official Diffusers leaf-level group offload was fastest in the latest matrix, total `34.9s`; Diffusers block-level total `43.8s`; DDO `one_shot_fast` total `59.3s`.
-- Warm process: DDO plan/pinned cache reduced the second transformer prepare on native Ubuntu from about `20.04s` to `0.90s`; use this only for server-style comparisons.
-
-## Validation Roadmap
-
-1. Keep the current Windows/WSL/native-Ubuntu BF16 matrix as the first report baseline.
-2. Validate quantized LTX next, starting with SDNQ, as a compatibility and memory-pressure path rather than a DDO acceleration path.
-3. If quantized loading exposes class/config or parameter-wrapper incompatibilities, keep fixes generic and preserve the quantization backend forward logic.
-4. Only revisit native VBAR-style behavior if Python/Diffusers-compatible paths are exhausted and hardware compatibility risks are explicitly accepted.
-
-## Compatibility Position
-
-DDO intentionally stays above native VBAR-level hooks for now. The current priority is a portable PyTorch/Diffusers implementation that improves performance where possible while keeping fallback behavior understandable on different CUDA, WSL, and Linux configurations.
+DDO intentionally avoids native low-level memory hooks. The priority is a portable PyTorch/Diffusers layer that is easy to integrate, easy to disable, and safe across different hardware and driver stacks.

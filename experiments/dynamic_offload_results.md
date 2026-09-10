@@ -13,6 +13,7 @@ All headline comparisons below use the same LTX 2.3 distilled image workload unl
 | Environment / comparison | Baseline | DDO / staged result | Total latency change | Denoise change | Peak RAM change | Management readout |
 | --- | ---: | ---: | ---: | ---: | ---: | --- |
 | Windows modular, DDO vs official Diffusers block-level group offload | `315.1s` total, `222.88s` denoise, `28.98 GB` RAM | `133.2s` total, `14.83s` denoise, `27.38 GB` RAM | `57.7%` lower total time (`2.37x` faster) | `93.3%` lower denoise time (`15.03x` faster) | `5.5%` lower peak RAM | DDO is a major win on this Windows low-VRAM setup when enough system RAM is available for pinned CPU weights. |
+| Windows modular, DDO vs `diffusers-mm` auto | `375.1s` total, `211.59s` denoise, `30.21 GB` RAM | `133.2s` total, `14.83s` denoise, `27.38 GB` RAM | `64.5%` lower total time (`2.82x` faster) | `93.0%` lower denoise time (`14.27x` faster) | `9.4%` lower peak RAM | `diffusers-mm auto` selected `block_pin`, but calculated `0 pinned` and streamed all blocks; CUDA reserved grew to `9.66 GiB`, spilling past dedicated VRAM on Windows. |
 | Windows old full pipeline vs staged traditional pipeline | `423.6s` total, `51.71 GB` RAM | `126.8s` total, `28.89 GB` RAM | `70.1%` lower total time (`3.34x` faster) | Not directly comparable because the full pipeline hides internal phases | `44.1%` lower peak RAM | Staging old-style Diffusers pipelines matters: it gives DDO cleanup boundaries between components. |
 | Windows staged traditional pipeline, DDO vs official Diffusers block-level group offload | `321.4s` total, `255.39s` denoise, `33.83 GB` RAM, `4.45 GB` VRAM | `126.8s` total, `29.70s` denoise, `28.89 GB` RAM, `6.97 GB` VRAM | `60.5%` lower total time (`2.53x` faster) | `88.4%` lower denoise time (`8.60x` faster) | `14.6%` lower peak RAM; VRAM `56.6%` higher | Same old-style staged flow, so this is the cleanest non-modular DDO-vs-Diffusers comparison. DDO trades more VRAM for much lower latency and lower host RAM. |
 | WSL modular, DDO `wsl_compat` vs official Diffusers block-level group offload | `218.1s` total | `144.4s` total | `33.8%` lower total time (`1.51x` faster) | DDO denoise `97.80s` vs Diffusers `172.00s` | DDO peak RAM `23.47 GB` vs Diffusers `38.39 GB` | WSL benefits from DDO's dynamic path with pinning disabled, but remains slower and less stable than native Linux/Windows. |
@@ -29,6 +30,7 @@ Closed, apples-to-apples comparisons:
 - Native Ubuntu modular BF16: DDO `one_shot_fast` vs official Diffusers block/leaf group offload.
 - Windows SDNQ int8: no transformer offload vs official Diffusers leaf group offload.
 - Windows staged traditional pipeline BF16: DDO `one_shot_fast` vs official Diffusers block-level group offload in the same staged runner.
+- Windows modular BF16: DDO `one_shot_fast` vs `diffusers-mm` `auto`/`block_pin` in the same modular staged runner.
 
 Exploratory comparisons, useful but not headline product claims:
 - Old full pipeline vs old staged pipeline: shows the value of staging/cleanup boundaries, not a pure DDO-vs-Diffusers comparison.
@@ -63,6 +65,16 @@ Baseline unless noted:
 | Diffusers group offload | `off` + transformer `block_level`, `num_blocks_per_group=1`, stream, record stream, low CPU mem usage on | official Diffusers group offload | 0.02 group setup | 265.47 | not tracked by dynamic offload | 6.49 GB | 26.79 GB | Better than leaf, but still far from dynamic offload fast path. `torch_alloc` stayed near 0.03 GiB while reserved grew to 2.11 GiB. |
 | Diffusers group offload | `off` + transformer `block_level`, `num_blocks_per_group=1`, stream, no record stream, low CPU mem usage on | official Diffusers group offload | 0.01 group setup | 312.03 | not tracked by dynamic offload | 6.51 GB | 26.78 GB | Worse than record stream on; reserved VRAM was lower, but denoise returned to leaf-level timing. |
 
+## diffusers-mm Comparison
+
+These runs used the same modular staged LTX 2.3 distilled workload as the Windows headline benchmark: BF16, real prompt encoding, `1280x704`, `8` steps, seed `43`, native attention. The runner applied `diffusers-mm` through `ModelManager` on the staged components so it had the same cleanup boundaries as the DDO modular runner.
+
+| Platform | Runner / strategy | Applied strategy | Setup | Denoise | Total | Peak VRAM | Peak RAM | Readout |
+| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | --- |
+| Windows | `run_diffusers_mm_modular_distilled.py`, transformer `auto`, text encoder `group_offload` | `auto -> block_pin` | transformer setup `81.8440s` | `211.5898s` | `375.1s` | `6.97 GB` | `30.21 GB` | `diffusers-mm` reported no VRAM budget for pinning (`0 pinned, all blocks stream`). `torch_reserved` rose from `5.66 GiB` on step 1 to `9.66 GiB` from step 2 onward, which matches the Windows shared-memory slow path. |
+| Windows | `run_diffusers_mm_modular_distilled.py`, transformer `block_pin`, text encoder `group_offload` | `block_pin` with `0 pinned` | transformer setup `0.5608s` | `401.3015s` | `475.9s` | `6.97 GB` | `6.49 GB` | Forcing `block_pin` did not help because the planner still found no usable pin budget. It streamed all blocks and kept the same `9.66 GiB` reserved pattern, with worse denoise latency. |
+
+Interpretation: `diffusers-mm` has budget/headroom logic, but on this Windows 8 GB dedicated VRAM workload it concludes that the denoise working set does not fit and falls back to streaming all blocks. That fallback remains much slower than DDO's dense-linear dynamic path for this model. The optional Windows standby purge probe repeated the same reserved-memory pattern, so it is not reported as a benchmark row; it only ruled out standby cache as the cause.
 ## Current Interpretation
 
 `one_shot_fast` is the default general preset. It pins CPU weights only when the measured or supplied available RAM can cover the model weight copy, resident GPU modules, and configured system headroom. On machines with enough RAM, it pays setup time once and keeps denoise fast. On constrained RAM, it chooses safety over speed.

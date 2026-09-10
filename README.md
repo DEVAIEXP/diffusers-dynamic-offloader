@@ -1,4 +1,4 @@
-# diffusers-dynamic-offloader
+# Diffusers Dynamic Offloader
 
 `diffusers-dynamic-offloader` (DDO) is a model-agnostic offload router for Diffusers-style inference on low-VRAM systems.
 

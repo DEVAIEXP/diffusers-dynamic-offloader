@@ -51,6 +51,7 @@ The defaults below are the `DynamicOffloadConfig(...)` dataclass defaults. `Dyna
 | `always_resident_modules_pattern` | `()` | `DDO_ALWAYS_RESIDENT_MODULE_PATTERNS` | Comma- or semicolon-separated regex patterns kept resident. `from_env(...)` supplies patterns for common projection, embedding, and normalization modules unless overridden. |
 | `small_tensor_threshold_bytes` | `16 KiB` | `DDO_SMALL_TENSOR_THRESHOLD_KB` | Small tensors are moved directly instead of dynamically copied. `from_env(...)` resolves this to `1024 KiB` before preset overrides. |
 | `execution_mode` | `"plan"` | `DDO_EXECUTION_MODE` | `plan` builds the placement plan; `linear_runtime` enables DDO's dense-linear runtime path. |
+| `linear_runtime_strategy` | `"functional"` | `DDO_LINEAR_RUNTIME_STRATEGY` | Dense-linear execution strategy: `functional` calls the functional operator with a transient weight copy. Experimental `swap` temporarily attaches the CUDA copy to the module parameter and restores the CPU source immediately after the original forward. |
 | `pin_cpu_memory` | `False` | `DDO_PIN_CPU_MEMORY` | Enables pinned CPU tensor copies when supported and safe. |
 | `allow_pin_memory_fallback` | `True` | `DDO_ALLOW_PIN_MEMORY_FALLBACK` | Fall back cleanly if pinning fails. |
 | `pin_cpu_workers` | `1` | `DDO_PIN_CPU_WORKERS` | Positive worker count for pinning preparation. `from_env(...)` resolves `4` before preset overrides. |
@@ -60,7 +61,8 @@ The defaults below are the `DynamicOffloadConfig(...)` dataclass defaults. `Dyna
 | `auto_budget_policy` | `"off"` | `DDO_AUTO_BUDGET_POLICY` | Supported values: `off`, `balanced`. |
 | `max_resident_module_budget_gb` | `6.0` | `DDO_MAX_RESIDENT_MODULE_BUDGET_GB` | Upper cap used by auto budgeting; `0` means uncapped. |
 | `auto_vram_headroom_gb` | `0.0` | `DDO_AUTO_VRAM_HEADROOM_GB` | Extra VRAM margin reserved by auto budgeting. |
-| `auto_full_pin_min_model_to_vram_ratio` | `4.0` | `DDO_AUTO_FULL_PIN_MIN_MODEL_TO_VRAM_RATIO` | When usable system RAM fits all eligible weights and the model-to-VRAM ratio meets this threshold, balanced auto selects full CPU pinning with no extra resident modules. Set `0` to disable this automatic choice. |
+| `auto_full_pin_min_model_to_vram_ratio` | `4.0` | `DDO_AUTO_FULL_PIN_MIN_MODEL_TO_VRAM_RATIO` | When usable system RAM fits all eligible weights and the model-to-VRAM ratio meets this threshold, balanced auto selects full CPU pinning. Set `0` to disable this automatic choice. |
+| `auto_full_pin_resident_budget_gb` | `0.0` | `DDO_AUTO_FULL_PIN_RESIDENT_BUDGET_GB` | Optional extra CUDA-resident module budget while retaining automatic full CPU pinning. It is used only when the requested pinned weights plus this budget fit usable system RAM; `0` keeps the full-pin/zero-resident path. |
 | `max_pin_weight_budget_gb` | `0.0` | `DDO_MAX_PIN_WEIGHT_BUDGET_GB` | Upper cap for auto pinning; `0` means uncapped. |
 | `available_system_ram_gb` | `0.0` | `DDO_AVAILABLE_SYSTEM_RAM_GB` | `from_env(...)` detects available system RAM unless this is overridden; direct config construction uses the supplied value. |
 | `system_ram_headroom_gb` | `6.0` | `DDO_SYSTEM_RAM_HEADROOM_GB` | RAM held back from auto pinning decisions. |
@@ -75,6 +77,14 @@ The defaults below are the `DynamicOffloadConfig(...)` dataclass defaults. `Dyna
 | `show_profile` | `True` | `DDO_SHOW_PROFILE` | Prints the dynamic offload profile summary. `from_env(...)` resolves this to false unless enabled. |
 
 `DDO_SAFETENSORS_BACKEND` is also accepted as a compatibility alias for `DDO_LOAD_SAFETENSORS_BACKEND`.
+
+### Full-pin zero-resident behavior
+
+When balanced auto resolves to `full_pin_zero_resident`, DDO offloads even the default
+`always_resident_modules_pattern` leaves and includes them in the pinned-weight pool. This
+keeps the plan genuinely zero-resident and preserves CUDA headroom for activations. Set
+`DDO_AUTO_FULL_PIN_RESIDENT_BUDGET_GB` only for an intentional residual CUDA budget; an
+explicit `DDO_RESIDENT_MODULE_BUDGET_GB` remains a manual override.
 
 ## Global Environment Variables
 

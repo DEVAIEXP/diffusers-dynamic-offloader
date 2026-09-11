@@ -472,6 +472,7 @@ class DynamicOffloadConfig:
     always_resident_modules_pattern: tuple[str, ...] = ()
     small_tensor_threshold_bytes: int = 16 * 1024
     execution_mode: str = "plan"
+    linear_runtime_strategy: str = "functional"
     pin_cpu_memory: bool = False
     allow_pin_memory_fallback: bool = True
     pin_cpu_workers: int = 1
@@ -482,6 +483,7 @@ class DynamicOffloadConfig:
     max_resident_module_budget_gb: float = 6.0
     auto_vram_headroom_gb: float = 0.0
     auto_full_pin_min_model_to_vram_ratio: float = 4.0
+    auto_full_pin_resident_budget_gb: float = 0.0
     max_pin_weight_budget_gb: float = 0.0
     available_system_ram_gb: float = 0.0
     system_ram_headroom_gb: float = 6.0
@@ -534,6 +536,7 @@ class DynamicOffloadSettings:
             "dynamic_offload_requested_preset": self.requested_preset or None,
             "dynamic_offload_effective_preset": self.effective_preset or None,
             "dynamic_offload_execution_mode": config.execution_mode,
+            "dynamic_offload_linear_runtime_strategy": config.linear_runtime_strategy,
             "dynamic_offload_pin_cpu_memory": self.requested_pin_cpu_memory,
             "dynamic_offload_effective_pin_cpu_memory": self.effective_pin_cpu_memory,
             "dynamic_offload_allow_pin_memory_fallback": config.allow_pin_memory_fallback,
@@ -548,6 +551,7 @@ class DynamicOffloadSettings:
             "dynamic_offload_auto_full_pin_min_model_to_vram_ratio": (
                 config.auto_full_pin_min_model_to_vram_ratio
             ),
+            "dynamic_offload_auto_full_pin_resident_budget_gb": config.auto_full_pin_resident_budget_gb,
             "dynamic_offload_max_pin_weight_budget_gb": config.max_pin_weight_budget_gb,
             "dynamic_offload_available_system_ram_gb": config.available_system_ram_gb,
             "dynamic_offload_system_ram_headroom_gb": config.system_ram_headroom_gb,
@@ -589,6 +593,7 @@ def build_dynamic_offload_event_payload(
         "auto_budget_policy": config.auto_budget_policy,
         "max_resident_module_budget_gb": config.max_resident_module_budget_gb,
         "auto_full_pin_min_model_to_vram_ratio": config.auto_full_pin_min_model_to_vram_ratio,
+        "auto_full_pin_resident_budget_gb": config.auto_full_pin_resident_budget_gb,
         "max_pin_weight_budget_gb": config.max_pin_weight_budget_gb,
         "available_system_ram_gb": config.available_system_ram_gb,
         "system_ram_headroom_gb": config.system_ram_headroom_gb,
@@ -733,11 +738,15 @@ class DynamicOffloadHook(ModelHook):
         self._patched_modules: list[tuple[nn.Module, object]] = []
         self._pin_memory_disabled = False
         self._skip_pin_weights = False
+        self._force_full_pin_weights = False
         self._resident_module_names: set[str] = set()
         self._pinned_weight_cache_namespace = ""
         self.execution_device = torch.device(config.execution_device)
         self.offload_device = torch.device(config.offload_device)
         self.execution_mode = config.execution_mode.lower()
+        self.linear_runtime_strategy = config.linear_runtime_strategy.lower()
+        if self.linear_runtime_strategy not in {"functional", "swap"}:
+            raise ValueError("DynamicOffloadConfig.linear_runtime_strategy must be 'functional' or 'swap'")
         self.pin_cpu_workers = max(1, int(config.pin_cpu_workers))
         self.auto_budget_policy = config.auto_budget_policy.lower()
         if self.auto_budget_policy not in {_AUTO_BUDGET_DISABLED, _AUTO_BUDGET_BALANCED}:
@@ -785,10 +794,16 @@ class DynamicOffloadHook(ModelHook):
             if summary["setup_runtime"]:
                 print(f"  [dynamic-offload] setup={summary['setup_runtime']}", flush=True)
         auto_pin_decision = self.state.planner_decisions.get("auto_pin_weight_decision")
-        if auto_pin_decision == "full_pin_zero_resident":
+        if auto_pin_decision in {"full_pin_zero_resident", "full_pin_residual_vram"}:
             decisions = self.state.planner_decisions
+            selected_resident_gb = decisions.get("selected_resident_module_gb", 0.0)
+            resident_note = (
+                "no extra resident modules"
+                if selected_resident_gb <= 0
+                else f"{selected_resident_gb:.2f} GiB of resident modules"
+            )
             print(
-                "  [dynamic-offload] auto plan: full pinned CPU weights with no extra resident modules "
+                f"  [dynamic-offload] auto plan: full pinned CPU weights with {resident_note} "
                 f"(weights={decisions['candidate_weight_gb']:.2f} GiB, "
                 f"usable_ram={decisions['auto_usable_system_ram_gb']:.2f} GiB, "
                 f"model_to_vram={decisions['auto_model_to_vram_ratio']:.2f}x).",
@@ -862,12 +877,26 @@ class DynamicOffloadHook(ModelHook):
         modules_to_pin: list[tuple[str, nn.Module, int]] = []
 
         self._apply_auto_budget_policy(module, skip_patterns, resident_patterns, resident_module_patterns)
+        if self.state.planner_decisions.get("auto_pin_weight_decision") == "full_pin_zero_resident":
+            # A full-pinned, zero-resident plan must not quietly retain the
+            # default "always resident" leaves on CUDA.  Besides contradicting
+            # the plan label, those leaves consume the activation headroom that
+            # this mode is explicitly trying to reserve.  Treat them as normal
+            # pinned leaves instead; the runtime still onloads them just in time.
+            if resident_patterns:
+                self.state.planner_decisions["auto_always_resident_decision"] = "offload_for_zero_resident"
+            resident_patterns = ()
+            # The automatic budget was calculated before the default resident
+            # leaves joined the pin candidates. Select every one of them rather
+            # than accidentally leaving that residual unpinned.
+            self._force_full_pin_weights = True
 
         self._move_root_local_tensors_to_device(module)
         if self.resident_module_budget_bytes > 0 and resident_module_patterns:
             start = time.perf_counter()
             selected_bytes = self._select_resident_modules(module, skip_patterns, resident_module_patterns)
             self.state.add_setup("select_resident_modules", time.perf_counter() - start, selected_bytes)
+            self.state.planner_decisions["selected_resident_module_gb"] = round(selected_bytes / 1024**3, 4)
 
         for module_name, submodule in module.named_modules():
             if module_name == "":
@@ -986,6 +1015,11 @@ class DynamicOffloadHook(ModelHook):
 
     def _select_linear_weights_to_pin(self, candidates: list[tuple[str, nn.Module, int]]) -> list[tuple[str, nn.Module]]:
         candidate_bytes = sum(weight_bytes for _, _, weight_bytes in candidates)
+        if self._force_full_pin_weights:
+            self.state.planner_decisions["resolved_pin_weight_budget_mode"] = "snap_to_full_pin"
+            self.state.planner_decisions["resolved_pin_weight_budget_gb"] = round(candidate_bytes / 1024**3, 4)
+            self.state.selected_pinned_linear_weights = [module_name for module_name, _, _ in candidates]
+            return [(module_name, linear) for module_name, linear, _ in candidates]
         pin_weight_budget_bytes = self.pin_weight_budget_bytes
         requested_unlimited_pin = pin_weight_budget_bytes <= 0 and self.pin_weight_budget_ratio <= 0
         if pin_weight_budget_bytes <= 0 and self.pin_weight_budget_ratio > 0:
@@ -1067,6 +1101,9 @@ class DynamicOffloadHook(ModelHook):
             self.state.planner_decisions["auto_model_to_vram_ratio"] = round(model_to_vram_ratio, 4)
 
         usable_ram_bytes = max(0, self.available_system_ram_bytes - self.system_ram_headroom_bytes)
+        requested_full_pin_resident_bytes = int(
+            max(0.0, float(self.config.auto_full_pin_resident_budget_gb)) * 1024**3
+        )
         can_auto_full_pin = (
             self.config.pin_cpu_memory
             and self.pin_weight_budget_bytes <= 0
@@ -1079,9 +1116,18 @@ class DynamicOffloadHook(ModelHook):
             and self.config.auto_full_pin_min_model_to_vram_ratio > 0
             and model_to_vram_ratio >= self.config.auto_full_pin_min_model_to_vram_ratio
         )
+        full_pin_resident_budget_bytes = min(requested_full_pin_resident_bytes, candidate_module_bytes)
+        can_auto_full_pin_resident = (
+            can_auto_full_pin
+            and full_pin_resident_budget_bytes > 0
+            and usable_ram_bytes >= candidate_weight_bytes + full_pin_resident_budget_bytes
+        )
         self.state.planner_decisions["auto_usable_system_ram_gb"] = round(usable_ram_bytes / 1024**3, 4)
         self.state.planner_decisions["auto_full_pin_min_model_to_vram_ratio"] = (
             self.config.auto_full_pin_min_model_to_vram_ratio
+        )
+        self.state.planner_decisions["auto_full_pin_resident_budget_requested_gb"] = round(
+            requested_full_pin_resident_bytes / 1024**3, 4
         )
 
         if self.resident_module_budget_bytes <= 0 and candidate_module_bytes > 0 and not can_auto_full_pin:
@@ -1118,14 +1164,25 @@ class DynamicOffloadHook(ModelHook):
             self.resident_module_budget_bytes = budget
             self.state.planner_decisions["auto_resident_module_budget_gb"] = round(budget / 1024**3, 4)
         elif can_auto_full_pin:
-            self.state.planner_decisions["auto_resident_module_budget_gb"] = 0.0
-            self.state.planner_decisions["auto_resident_module_decision"] = "zero_for_full_pin"
+            if can_auto_full_pin_resident:
+                self.resident_module_budget_bytes = full_pin_resident_budget_bytes
+                self.state.planner_decisions["auto_resident_module_budget_gb"] = round(
+                    full_pin_resident_budget_bytes / 1024**3, 4
+                )
+                self.state.planner_decisions["auto_resident_module_decision"] = "full_pin_residual_vram"
+            else:
+                self.state.planner_decisions["auto_resident_module_budget_gb"] = 0.0
+                self.state.planner_decisions["auto_resident_module_decision"] = "zero_for_full_pin"
+                if requested_full_pin_resident_bytes > 0:
+                    self.state.planner_decisions["auto_full_pin_resident_skip_reason"] = "insufficient_ram"
 
         if self.pin_weight_budget_bytes <= 0 and self.pin_weight_budget_ratio <= 0 and candidate_weight_bytes > 0:
             if can_auto_full_pin:
                 ratio = 1.0
                 budget = candidate_weight_bytes
-                self.state.planner_decisions["auto_pin_weight_decision"] = "full_pin_zero_resident"
+                self.state.planner_decisions["auto_pin_weight_decision"] = (
+                    "full_pin_residual_vram" if can_auto_full_pin_resident else "full_pin_zero_resident"
+                )
             elif candidate_weight_bytes <= 8 * 1024**3:
                 ratio = 1.0
                 budget = int(candidate_weight_bytes * ratio)
@@ -1374,22 +1431,43 @@ class DynamicOffloadHook(ModelHook):
         )
 
     def _patch_linear(self, linear: nn.Linear) -> None:
-        self._patched_modules.append((linear, linear.forward))
+        original_forward = linear.forward
+        self._patched_modules.append((linear, original_forward))
         self.state.patched_module_count += 1
 
         def dynamic_linear_forward(patched_linear, input):
             weight = self._to_input_device(patched_linear.weight, input, "linear_weight")
             bias = self._to_input_device(patched_linear.bias, input, "linear_bias")
+            if self.linear_runtime_strategy == "swap":
+                source_weight = patched_linear.weight.data
+                source_bias = None if patched_linear.bias is None else patched_linear.bias.data
+                patched_linear.weight.data = weight
+                if patched_linear.bias is not None:
+                    patched_linear.bias.data = bias
+                try:
+                    return original_forward(input)
+                finally:
+                    patched_linear.weight.data = source_weight
+                    if patched_linear.bias is not None:
+                        patched_linear.bias.data = source_bias
             return F.linear(input, weight, bias)
 
         linear.forward = dynamic_linear_forward.__get__(linear, linear.__class__)
 
     def _patch_embedding(self, embedding: nn.Embedding) -> None:
-        self._patched_modules.append((embedding, embedding.forward))
+        original_forward = embedding.forward
+        self._patched_modules.append((embedding, original_forward))
         self.state.patched_module_count += 1
 
         def dynamic_embedding_forward(patched_embedding, input):
             weight = self._to_input_device(patched_embedding.weight, input, "embedding_weight", cast_to_input_dtype=False)
+            if self.linear_runtime_strategy == "swap":
+                source_weight = patched_embedding.weight.data
+                patched_embedding.weight.data = weight
+                try:
+                    return original_forward(input)
+                finally:
+                    patched_embedding.weight.data = source_weight
             return F.embedding(
                 input,
                 weight,
@@ -1560,6 +1638,7 @@ def load_dynamic_offload_settings_from_env(
         ),
         small_tensor_threshold_bytes=int(preset_env("DDO_SMALL_TENSOR_THRESHOLD_KB", "1024")) * 1024,
         execution_mode=execution_mode,
+        linear_runtime_strategy=preset_env("DDO_LINEAR_RUNTIME_STRATEGY", "functional").lower(),
         pin_cpu_memory=effective_pin_cpu_memory,
         allow_pin_memory_fallback=allow_pin_memory_fallback,
         pin_cpu_workers=int(preset_env("DDO_PIN_CPU_WORKERS", "4")),
@@ -1573,6 +1652,9 @@ def load_dynamic_offload_settings_from_env(
         auto_vram_headroom_gb=float(preset_env("DDO_AUTO_VRAM_HEADROOM_GB", "0.0")),
         auto_full_pin_min_model_to_vram_ratio=float(
             preset_env("DDO_AUTO_FULL_PIN_MIN_MODEL_TO_VRAM_RATIO", "4.0")
+        ),
+        auto_full_pin_resident_budget_gb=float(
+            preset_env("DDO_AUTO_FULL_PIN_RESIDENT_BUDGET_GB", "0.0")
         ),
         max_pin_weight_budget_gb=float(preset_env("DDO_MAX_PIN_WEIGHT_BUDGET_GB", "0.0")),
         available_system_ram_gb=available_system_ram_gb,

@@ -101,7 +101,10 @@ def _merge_capacity_limits(existing: Mapping[str, Any] | None, observation: Mapp
 
 
 def record_dynamic_offload_profile(
-    context: Mapping[str, Any], observation: Mapping[str, Any], profile_dir: str | Path | None = None
+    context: Mapping[str, Any],
+    observation: Mapping[str, Any],
+    profile_dir: str | Path | None = None,
+    recommendation: Mapping[str, Any] | None = None,
 ) -> Path:
     """Persist an observation and merge generic capacity limits for its context.
 
@@ -111,8 +114,11 @@ def record_dynamic_offload_profile(
     """
     normalized_context = normalize_dynamic_offload_profile_context(context)
     normalized_observation = _json_value(observation)
+    normalized_recommendation = None if recommendation is None else _json_value(recommendation)
     if not isinstance(normalized_observation, dict):
         raise TypeError("DDO profile observation must normalize to an object.")
+    if normalized_recommendation is not None and not isinstance(normalized_recommendation, dict):
+        raise TypeError("DDO profile recommendation must normalize to an object.")
     path = dynamic_offload_profile_path(normalized_context, profile_dir)
     prior = load_dynamic_offload_profile(normalized_context, profile_dir) or {}
     observations = list(prior.get("observations") or [])
@@ -125,6 +131,10 @@ def record_dynamic_offload_profile(
         "capacity_limits": _merge_capacity_limits(prior.get("capacity_limits"), normalized_observation),
         "observations": observations[-20:],
     }
+    if normalized_recommendation is not None:
+        record["recommendation"] = normalized_recommendation
+    elif isinstance(prior.get("recommendation"), Mapping):
+        record["recommendation"] = dict(prior["recommendation"])
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary_path = path.with_name(f"{path.name}.{uuid.uuid4().hex}.tmp")
     temporary_path.write_text(json.dumps(record, indent=2, sort_keys=True) + "\n", encoding="utf-8")
@@ -139,3 +149,9 @@ def get_dynamic_offload_profile_capacity(profile: Mapping[str, Any], metric: str
         return None
     result = {key: float(value) for key, value in limits[metric].items() if key in {"max_success", "min_failure"}}
     return result or None
+
+
+def get_dynamic_offload_profile_recommendation(profile: Mapping[str, Any]) -> dict[str, Any] | None:
+    """Return a JSON-safe host recommendation stored with a matching profile."""
+    recommendation = profile.get("recommendation")
+    return dict(recommendation) if isinstance(recommendation, Mapping) else None

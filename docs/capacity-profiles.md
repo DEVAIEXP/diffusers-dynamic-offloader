@@ -53,6 +53,10 @@ record_dynamic_offload_profile(
 
 For each generic metric, DDO keeps the largest successful value and the
 smallest failed value, plus the last 20 observations. Hosts may also record a
-failure if they catch an OOM and can clean up safely. Profiles do not override
-DDO settings yet; they are a reusable validation signal and a basis for a
-future runner-driven calibration/preset workflow.
+failure if they catch an OOM and can clean up safely.
+
+An observation may carry a JSON-safe `recommendation` mapping. DDO persists
+and returns it through `get_dynamic_offload_profile_recommendation(...)`; the
+host decides which values are safe to apply before it attaches offload hooks.
+This keeps the library model-agnostic while allowing a staged runner to store
+an exact-workload preset separately from its wider capacity history.

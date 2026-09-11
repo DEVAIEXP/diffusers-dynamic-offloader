@@ -6,6 +6,7 @@ from pathlib import Path
 from diffusers_dynamic_offloader import (
     dynamic_offload_profile_key,
     get_dynamic_offload_profile_capacity,
+    get_dynamic_offload_profile_recommendation,
     load_dynamic_offload_profile,
     record_dynamic_offload_profile,
 )
@@ -55,3 +56,19 @@ class DynamicOffloadProfileTests(unittest.TestCase):
             path = Path(directory) / f"{dynamic_offload_profile_key(self.context)}.json"
             path.write_text(json.dumps({"schema_version": 999}), encoding="utf-8")
             self.assertIsNone(load_dynamic_offload_profile(self.context, directory))
+
+    def test_recommendation_is_preserved_with_later_observations(self):
+        with tempfile.TemporaryDirectory() as directory:
+            record_dynamic_offload_profile(
+                self.context,
+                {"status": "success", "capacity": {"metric": "tokens", "value": 10}},
+                directory,
+                recommendation={"resident_budget_gb": 1.0},
+            )
+            record_dynamic_offload_profile(
+                self.context,
+                {"status": "success", "capacity": {"metric": "tokens", "value": 12}},
+                directory,
+            )
+            profile = load_dynamic_offload_profile(self.context, directory)
+            self.assertEqual(get_dynamic_offload_profile_recommendation(profile), {"resident_budget_gb": 1.0})

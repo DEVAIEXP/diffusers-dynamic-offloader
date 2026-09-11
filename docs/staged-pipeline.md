@@ -9,10 +9,20 @@ The exact pipeline constructors are model-specific, but the lifecycle is generic
 ```python
 import gc
 import torch
-from diffusers_dynamic_offloader import enable_offload, maybe_purge_windows_standby_cache
+from diffusers_dynamic_offloader import (
+    DynamicOffloadSettings,
+    enable_offload,
+    from_pretrained_with_dynamic_offload,
+    maybe_purge_windows_standby_cache,
+)
 
 device = torch.device("cuda:0")
 model_id = "your/model"
+settings = DynamicOffloadSettings.from_env(
+    execution_device=device,
+    offload_device="cpu",
+    default_preset="auto",
+)
 
 # Pass 0: prompt encoding
 prompt_pipe = YourPipeline.from_pretrained(
@@ -29,15 +39,26 @@ gc.collect()
 torch.cuda.empty_cache()
 maybe_purge_windows_standby_cache("after_text_encoder")
 
-# Pass 1: denoise
+# Pass 1: denoise. Load the memory-heavy component first so the host owns its
+# loading and offload setup independently of pipeline construction.
+transformer_load = from_pretrained_with_dynamic_offload(
+    model_id,
+    model_loader=YourTransformerClass,
+    dynamic_offload_config=settings.config,
+    apply_dynamic=False,
+    subfolder="transformer",
+    torch_dtype=torch.bfloat16,
+    device_map="cpu",
+)
 denoise_pipe = YourPipeline.from_pretrained(
     model_id,
+    transformer=transformer_load.module,
     text_encoder=None,
     tokenizer=None,
     vae=None,
     torch_dtype=torch.bfloat16,
 )
-enable_offload(denoise_pipe.transformer, preset="auto", component="transformer")
+enable_offload(denoise_pipe.transformer, settings=settings, component="transformer")
 maybe_purge_windows_standby_cache("before_transformer")
 
 latents = denoise_pipe(
@@ -65,6 +86,8 @@ image = vae_pipe.decode_latents(latents)
 ```
 
 Some pipelines still require the VAE object during the denoise call even when returning latents. In that case, keep the VAE in the denoise-stage pipeline and route it through Diffusers group offload.
+
+For the helper's loading contract, when to use `apply_dynamic`, and benchmark guidance, see [Dynamic module loading](dynamic-loading.md).
 
 ## Cleanup Rule
 

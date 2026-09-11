@@ -95,6 +95,7 @@ When a component cannot be accelerated safely, DDO routes it through the compati
 - [Full pipeline usage](docs/full-pipeline.md): the smallest integration for existing Diffusers pipelines.
 - [Phase-staged pipeline usage](docs/staged-pipeline.md): standard Diffusers pipelines split into prompt, denoise, and decode phases.
 - [Modular pipeline usage](docs/modular-pipeline.md): Modular Diffusers full-pipeline and phase-staged examples.
+- [Dynamic module loading](docs/dynamic-loading.md): load a component independently before attaching and routing it.
 - [Presets and platforms](docs/presets-and-platforms.md): what each preset means and what `auto` currently chooses.
 - [Configuration reference](docs/configuration.md): settings fields, recognized `DDO_*` variables, and override precedence.
 - [Dynamic offload results](experiments/dynamic_offload_results.md): report-ready benchmark summary and comparison tables.

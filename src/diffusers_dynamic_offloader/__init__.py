@@ -32,6 +32,16 @@ from .dynamic_offload import (
     remove_dynamic_offload,
     resolve_dynamic_offload_preset,
 )
+from .profiles import (
+    DYNAMIC_OFFLOAD_PROFILE_SCHEMA_VERSION,
+    dynamic_offload_profile_key,
+    dynamic_offload_profile_path,
+    get_dynamic_offload_profile_capacity,
+    get_dynamic_offload_profile_dir,
+    load_dynamic_offload_profile,
+    normalize_dynamic_offload_profile_context,
+    record_dynamic_offload_profile,
+)
 
 __all__ = [
     "DDO_PRESETS",
@@ -66,4 +76,12 @@ __all__ = [
     "purge_windows_standby_cache_event",
     "remove_dynamic_offload",
     "resolve_dynamic_offload_preset",
+    "DYNAMIC_OFFLOAD_PROFILE_SCHEMA_VERSION",
+    "dynamic_offload_profile_key",
+    "dynamic_offload_profile_path",
+    "get_dynamic_offload_profile_capacity",
+    "get_dynamic_offload_profile_dir",
+    "load_dynamic_offload_profile",
+    "normalize_dynamic_offload_profile_context",
+    "record_dynamic_offload_profile",
 ]

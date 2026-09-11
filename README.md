@@ -98,6 +98,7 @@ When a component cannot be accelerated safely, DDO routes it through the compati
 - [Dynamic module loading](docs/dynamic-loading.md): load a component independently before attaching and routing it.
 - [Presets and platforms](docs/presets-and-platforms.md): what each preset means and what `auto` currently chooses.
 - [Configuration reference](docs/configuration.md): settings fields, recognized `DDO_*` variables, and override precedence.
+- [Capacity profiles](docs/capacity-profiles.md): persist real workload observations under `~/.ddo/profiles` and warn when a later run exceeds a validated range.
 - [Dynamic offload results](experiments/dynamic_offload_results.md): report-ready benchmark summary and comparison tables.
 
 ## Recommended Patterns

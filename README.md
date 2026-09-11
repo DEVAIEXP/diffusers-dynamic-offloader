@@ -126,7 +126,7 @@ Use official Diffusers group offload through DDO when:
 | Preset | Main use | Transformer route | Notes |
 | --- | --- | --- | --- |
 | `auto` | Default entry point | Resolves to the recommended policy for the current DDO release | Current policy prefers `one_shot_fast`, with platform and backend safety checks. |
-| `one_shot_fast` | Best Windows low-VRAM BF16 path found so far | DDO dynamic offload for dense transformer linears | Uses RAM-aware CPU pinning and a VRAM-headroom-aware resident-module budget. |
+| `one_shot_fast` | Best Windows low-VRAM BF16 path found so far | DDO dynamic offload for dense transformer linears | Uses RAM-aware CPU pinning and a VRAM-headroom-aware resident-module budget; when usable RAM fits all eligible weights and the model is at least 4x larger than VRAM, it instead selects full pin with no extra resident modules. |
 | `low_ram_safe` | Explicit constrained-memory fallback | DDO dynamic offload with lower resident pressure | Slower, but useful when peak accelerator memory matters more than latency. |
 | `wsl_compat` | WSL stability fallback | DDO dynamic offload with WSL-safe settings | Avoids pinned CPU memory and stream combinations that were unstable in testing. |
 | `warm_process` | Server/repeated generations | DDO dynamic offload with process-lifetime caches | Not a cold one-image latency preset. Useful for warm runners and services. |
@@ -180,6 +180,12 @@ $env:DDO_PRESET="one_shot_fast"
 $env:DDO_MAX_RESIDENT_MODULE_BUDGET_GB="6"
 $env:DDO_SHOW_PROFILE="1"
 ```
+
+The automatic full-pin/no-extra-resident path is reported during setup. Its default 4x model-to-VRAM threshold can be changed with `DDO_AUTO_FULL_PIN_MIN_MODEL_TO_VRAM_RATIO`; set it to `0` to disable that automatic choice. Explicit pin or resident budgets always take precedence.
+
+### Windows standby-cache purge
+
+`one_shot_fast` enables optional standby-list purge at selected stage boundaries through `DDO_PURGE_WINDOWS_STANDBY_*`. On Windows, the process token must be allowed to enable `SeProfileSingleProcessPrivilege`, which normally means starting the terminal as Administrator. Without that privilege DDO reports `purged: false` and continues safely; the purge is optional and does not release DDO/PyTorch pinned weight memory.
 
 Runner-specific variables should use a separate prefix such as `DDO_RUNNER_*`; DDO itself only owns the `DDO_*` library settings.
 

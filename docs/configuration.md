@@ -60,6 +60,7 @@ The defaults below are the `DynamicOffloadConfig(...)` dataclass defaults. `Dyna
 | `auto_budget_policy` | `"off"` | `DDO_AUTO_BUDGET_POLICY` | Supported values: `off`, `balanced`. |
 | `max_resident_module_budget_gb` | `6.0` | `DDO_MAX_RESIDENT_MODULE_BUDGET_GB` | Upper cap used by auto budgeting; `0` means uncapped. |
 | `auto_vram_headroom_gb` | `0.0` | `DDO_AUTO_VRAM_HEADROOM_GB` | Extra VRAM margin reserved by auto budgeting. |
+| `auto_full_pin_min_model_to_vram_ratio` | `4.0` | `DDO_AUTO_FULL_PIN_MIN_MODEL_TO_VRAM_RATIO` | When usable system RAM fits all eligible weights and the model-to-VRAM ratio meets this threshold, balanced auto selects full CPU pinning with no extra resident modules. Set `0` to disable this automatic choice. |
 | `max_pin_weight_budget_gb` | `0.0` | `DDO_MAX_PIN_WEIGHT_BUDGET_GB` | Upper cap for auto pinning; `0` means uncapped. |
 | `available_system_ram_gb` | `0.0` | `DDO_AVAILABLE_SYSTEM_RAM_GB` | `from_env(...)` detects available system RAM unless this is overridden; direct config construction uses the supplied value. |
 | `system_ram_headroom_gb` | `6.0` | `DDO_SYSTEM_RAM_HEADROOM_GB` | RAM held back from auto pinning decisions. |
@@ -85,7 +86,7 @@ These variables are recognized directly by DDO:
 | `DDO_PLAN` | Boolean that enables DDO when `DDO_EXECUTION_MODE=plan`; `linear_runtime` also enables DDO without this flag. |
 | `DDO_AVAILABLE_SYSTEM_RAM_GB` | Overrides detected available system RAM. Useful for simulating smaller RAM machines. |
 | `DDO_DISABLE_PIN_ON_WSL` | Disables pinned CPU memory on WSL by default. Set to `0` to force pinning experiments. |
-| `DDO_PURGE_WINDOWS_STANDBY_<PHASE>` | Enables Windows standby-list purge for a named phase. Non-Windows platforms no-op safely. |
+| `DDO_PURGE_WINDOWS_STANDBY_<PHASE>` | Enables Windows standby-list purge for a named phase. Non-Windows platforms no-op safely; on Windows it requires `SeProfileSingleProcessPrivilege`, normally from an elevated Administrator terminal. |
 
 Boolean variables accept `1`, `true`, `yes`, or `on` as true values. Every other value, including `0`, `false`, `no`, `off`, and an empty value, resolves to false.
 
@@ -138,4 +139,6 @@ from diffusers_dynamic_offloader import maybe_purge_windows_standby_cache
 maybe_purge_windows_standby_cache("before_transformer", settings=settings)
 ```
 
-The helper is safe to call on Linux, native Windows without purge support, and WSL. On unsupported platforms it returns no-op metadata.
+The helper is safe to call on Linux, native Windows without purge support, and WSL. On unsupported platforms it returns no-op metadata. On Windows, the process token must be able to enable `SeProfileSingleProcessPrivilege`; this normally requires starting the terminal as Administrator. If that privilege is unavailable, DDO returns `purged: false` with `reason: PermissionError` and continues the run safely.
+
+The standby purge only asks Windows to discard reclaimable standby pages. It does not release weights pinned by PyTorch/CUDA; stage-local pinned-memory cleanup is a separate concern.

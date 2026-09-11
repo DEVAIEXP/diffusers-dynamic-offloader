@@ -481,6 +481,7 @@ class DynamicOffloadConfig:
     auto_budget_policy: str = _AUTO_BUDGET_DISABLED
     max_resident_module_budget_gb: float = 6.0
     auto_vram_headroom_gb: float = 0.0
+    auto_full_pin_min_model_to_vram_ratio: float = 4.0
     max_pin_weight_budget_gb: float = 0.0
     available_system_ram_gb: float = 0.0
     system_ram_headroom_gb: float = 6.0
@@ -544,6 +545,9 @@ class DynamicOffloadSettings:
             "dynamic_offload_auto_budget_policy": config.auto_budget_policy,
             "dynamic_offload_max_resident_module_budget_gb": config.max_resident_module_budget_gb,
             "dynamic_offload_auto_vram_headroom_gb": config.auto_vram_headroom_gb,
+            "dynamic_offload_auto_full_pin_min_model_to_vram_ratio": (
+                config.auto_full_pin_min_model_to_vram_ratio
+            ),
             "dynamic_offload_max_pin_weight_budget_gb": config.max_pin_weight_budget_gb,
             "dynamic_offload_available_system_ram_gb": config.available_system_ram_gb,
             "dynamic_offload_system_ram_headroom_gb": config.system_ram_headroom_gb,
@@ -584,6 +588,7 @@ def build_dynamic_offload_event_payload(
         "load_safetensors_backend": config.load_safetensors_backend or None,
         "auto_budget_policy": config.auto_budget_policy,
         "max_resident_module_budget_gb": config.max_resident_module_budget_gb,
+        "auto_full_pin_min_model_to_vram_ratio": config.auto_full_pin_min_model_to_vram_ratio,
         "max_pin_weight_budget_gb": config.max_pin_weight_budget_gb,
         "available_system_ram_gb": config.available_system_ram_gb,
         "system_ram_headroom_gb": config.system_ram_headroom_gb,
@@ -779,6 +784,25 @@ class DynamicOffloadHook(ModelHook):
                 )
             if summary["setup_runtime"]:
                 print(f"  [dynamic-offload] setup={summary['setup_runtime']}", flush=True)
+        auto_pin_decision = self.state.planner_decisions.get("auto_pin_weight_decision")
+        if auto_pin_decision == "full_pin_zero_resident":
+            decisions = self.state.planner_decisions
+            print(
+                "  [dynamic-offload] auto plan: full pinned CPU weights with no extra resident modules "
+                f"(weights={decisions['candidate_weight_gb']:.2f} GiB, "
+                f"usable_ram={decisions['auto_usable_system_ram_gb']:.2f} GiB, "
+                f"model_to_vram={decisions['auto_model_to_vram_ratio']:.2f}x).",
+                flush=True,
+            )
+        elif self.auto_budget_policy == _AUTO_BUDGET_BALANCED:
+            decisions = self.state.planner_decisions
+            print(
+                "  [dynamic-offload] auto plan: "
+                f"pin={auto_pin_decision or 'not_applicable'}, "
+                f"resident_budget={decisions.get('auto_resident_module_budget_gb', 0.0):.2f} GiB, "
+                f"pin_budget={decisions.get('auto_pin_weight_budget_gb', 0.0):.2f} GiB.",
+                flush=True,
+            )
         return module
 
     def detach_hook(self, module: nn.Module) -> nn.Module:
@@ -1035,15 +1059,36 @@ class DynamicOffloadHook(ModelHook):
             }
         )
 
-        if self.resident_module_budget_bytes <= 0 and candidate_module_bytes > 0:
+        total_vram_gb = get_cuda_total_vram_gb(self.execution_device)
+        total_vram_bytes = int(total_vram_gb * 1024**3)
+        model_to_vram_ratio = candidate_module_bytes / total_vram_bytes if total_vram_bytes > 0 else 0.0
+        if total_vram_gb > 0:
+            self.state.planner_decisions["cuda_total_vram_gb"] = round(total_vram_gb, 4)
+            self.state.planner_decisions["auto_model_to_vram_ratio"] = round(model_to_vram_ratio, 4)
+
+        usable_ram_bytes = max(0, self.available_system_ram_bytes - self.system_ram_headroom_bytes)
+        can_auto_full_pin = (
+            self.config.pin_cpu_memory
+            and self.pin_weight_budget_bytes <= 0
+            and self.pin_weight_budget_ratio <= 0
+            and self.resident_module_budget_bytes <= 0
+            and self.max_pin_weight_budget_bytes <= 0
+            and self.available_system_ram_bytes > 0
+            and candidate_weight_bytes > 0
+            and usable_ram_bytes >= candidate_weight_bytes
+            and self.config.auto_full_pin_min_model_to_vram_ratio > 0
+            and model_to_vram_ratio >= self.config.auto_full_pin_min_model_to_vram_ratio
+        )
+        self.state.planner_decisions["auto_usable_system_ram_gb"] = round(usable_ram_bytes / 1024**3, 4)
+        self.state.planner_decisions["auto_full_pin_min_model_to_vram_ratio"] = (
+            self.config.auto_full_pin_min_model_to_vram_ratio
+        )
+
+        if self.resident_module_budget_bytes <= 0 and candidate_module_bytes > 0 and not can_auto_full_pin:
             budget = int(candidate_module_bytes * 0.25)
-            total_vram_gb = get_cuda_total_vram_gb(self.execution_device)
-            if total_vram_gb > 0:
-                self.state.planner_decisions["cuda_total_vram_gb"] = round(total_vram_gb, 4)
             if total_vram_gb > 0:
                 vram_headroom_gb = self.config.auto_vram_headroom_gb
                 if vram_headroom_gb <= 0:
-                    model_to_vram_ratio = candidate_module_bytes / (total_vram_gb * 1024**3)
                     if total_vram_gb <= 8.5:
                         vram_headroom_gb = 3.0 if model_to_vram_ratio <= 2.5 else 2.0
                     elif total_vram_gb <= 12.5:
@@ -1072,30 +1117,37 @@ class DynamicOffloadHook(ModelHook):
                 budget = min(budget, self.max_resident_module_budget_bytes)
             self.resident_module_budget_bytes = budget
             self.state.planner_decisions["auto_resident_module_budget_gb"] = round(budget / 1024**3, 4)
+        elif can_auto_full_pin:
+            self.state.planner_decisions["auto_resident_module_budget_gb"] = 0.0
+            self.state.planner_decisions["auto_resident_module_decision"] = "zero_for_full_pin"
 
         if self.pin_weight_budget_bytes <= 0 and self.pin_weight_budget_ratio <= 0 and candidate_weight_bytes > 0:
-            if candidate_weight_bytes <= 8 * 1024**3:
+            if can_auto_full_pin:
                 ratio = 1.0
+                budget = candidate_weight_bytes
+                self.state.planner_decisions["auto_pin_weight_decision"] = "full_pin_zero_resident"
+            elif candidate_weight_bytes <= 8 * 1024**3:
+                ratio = 1.0
+                budget = int(candidate_weight_bytes * ratio)
             elif candidate_weight_bytes <= 16 * 1024**3:
                 ratio = 0.85
+                budget = int(candidate_weight_bytes * ratio)
             else:
                 ratio = 0.75
-            budget = int(candidate_weight_bytes * ratio)
+                budget = int(candidate_weight_bytes * ratio)
             if self.max_pin_weight_budget_bytes > 0:
                 budget = min(budget, self.max_pin_weight_budget_bytes)
             if self.available_system_ram_bytes > 0:
-                usable_ram_bytes = max(0, self.available_system_ram_bytes - self.system_ram_headroom_bytes)
                 required_ram_bytes = candidate_weight_bytes + self.resident_module_budget_bytes
-                self.state.planner_decisions["auto_usable_system_ram_gb"] = round(usable_ram_bytes / 1024**3, 4)
                 self.state.planner_decisions["auto_required_system_ram_gb"] = round(required_ram_bytes / 1024**3, 4)
                 if usable_ram_bytes < required_ram_bytes:
                     budget = 0
                     ratio = 0.0
                     self._skip_pin_weights = True
                     self.state.planner_decisions["auto_pin_weight_decision"] = "skip_insufficient_ram"
-                else:
+                elif not can_auto_full_pin:
                     self.state.planner_decisions["auto_pin_weight_decision"] = "budgeted"
-            else:
+            elif not can_auto_full_pin:
                 self.state.planner_decisions["auto_pin_weight_decision"] = "budgeted"
             self.pin_weight_budget_bytes = budget
             self.state.planner_decisions["auto_pin_weight_budget_gb"] = round(budget / 1024**3, 4)
@@ -1519,6 +1571,9 @@ def load_dynamic_offload_settings_from_env(
             preset_env("DDO_MAX_RESIDENT_MODULE_BUDGET_GB", "6.0")
         ),
         auto_vram_headroom_gb=float(preset_env("DDO_AUTO_VRAM_HEADROOM_GB", "0.0")),
+        auto_full_pin_min_model_to_vram_ratio=float(
+            preset_env("DDO_AUTO_FULL_PIN_MIN_MODEL_TO_VRAM_RATIO", "4.0")
+        ),
         max_pin_weight_budget_gb=float(preset_env("DDO_MAX_PIN_WEIGHT_BUDGET_GB", "0.0")),
         available_system_ram_gb=available_system_ram_gb,
         system_ram_headroom_gb=float(preset_env("DDO_SYSTEM_RAM_HEADROOM_GB", "6.0")),

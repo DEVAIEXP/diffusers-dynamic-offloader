@@ -1,4 +1,5 @@
 import unittest
+from unittest.mock import patch
 
 import torch
 import torch.nn as nn
@@ -321,6 +322,28 @@ class DynamicOffloadPresetTests(unittest.TestCase):
         self.assertTrue(result.should_move_to_execution_device)
         self.assertEqual(events[0][0], "setup_dynamic_offload")
         self.assertEqual(events[0][2]["execution_mode"], "plan")
+
+    def test_balanced_auto_prefers_full_pin_without_resident_modules_when_ram_fits(self):
+        module = nn.Sequential(*[nn.Linear(512, 512, bias=False) for _ in range(4)])
+        config = DynamicOffloadConfig(
+            execution_device="cpu",
+            offload_device="cpu",
+            execution_mode="linear_runtime",
+            pin_cpu_memory=True,
+            auto_budget_policy="balanced",
+            available_system_ram_gb=1.0,
+            system_ram_headroom_gb=0.0,
+            resident_module_patterns=(r"\d+",),
+        )
+        with patch("diffusers_dynamic_offloader.dynamic_offload.get_cuda_total_vram_gb", return_value=0.0001):
+            result = enable_dynamic_offload(module, config=config, use_environment=False)
+
+        decisions = result.hook.state.planner_decisions
+        self.assertEqual(decisions["auto_pin_weight_decision"], "full_pin_zero_resident")
+        self.assertEqual(decisions["auto_resident_module_decision"], "zero_for_full_pin")
+        self.assertEqual(decisions["resolved_pin_weight_budget_mode"], "snap_to_full_pin")
+        self.assertFalse(result.hook.state.selected_resident_modules)
+        remove_dynamic_offload(module)
 
     def test_packed_linear_keeps_original_forward(self):
         class PackedLinear(nn.Linear):

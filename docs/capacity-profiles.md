@@ -60,3 +60,8 @@ and returns it through `get_dynamic_offload_profile_recommendation(...)`; the
 host decides which values are safe to apply before it attaches offload hooks.
 This keeps the library model-agnostic while allowing a staged runner to store
 an exact-workload preset separately from its wider capacity history.
+
+`DynamicOffloadProfileSession.recommend_resident_budget(...)` provides the
+standard conservative calculation for a zero-resident calibration:
+`total VRAM - measured denoise peak - headroom`. Hosts may use a 1 GiB
+headroom by default and apply the resulting recommendation on the next run.

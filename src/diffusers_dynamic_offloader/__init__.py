@@ -34,6 +34,7 @@ from .dynamic_offload import (
 )
 from .profiles import (
     DYNAMIC_OFFLOAD_PROFILE_SCHEMA_VERSION,
+    DynamicOffloadProfileSession,
     dynamic_offload_profile_key,
     dynamic_offload_profile_path,
     get_dynamic_offload_profile_capacity,
@@ -78,6 +79,7 @@ __all__ = [
     "remove_dynamic_offload",
     "resolve_dynamic_offload_preset",
     "DYNAMIC_OFFLOAD_PROFILE_SCHEMA_VERSION",
+    "DynamicOffloadProfileSession",
     "dynamic_offload_profile_key",
     "dynamic_offload_profile_path",
     "get_dynamic_offload_profile_capacity",

@@ -11,6 +11,7 @@ import hashlib
 import json
 import os
 import uuid
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping
@@ -155,3 +156,43 @@ def get_dynamic_offload_profile_recommendation(profile: Mapping[str, Any]) -> di
     """Return a JSON-safe host recommendation stored with a matching profile."""
     recommendation = profile.get("recommendation")
     return dict(recommendation) if isinstance(recommendation, Mapping) else None
+
+
+@dataclass
+class DynamicOffloadProfileSession:
+    """One generic lifecycle for exact presets plus family capacity history."""
+
+    execution_context: Mapping[str, Any]
+    capacity_context: Mapping[str, Any]
+    profile_dir: str | Path | None = None
+    execution_profile: dict[str, Any] | None = field(init=False)
+    capacity_profile: dict[str, Any] | None = field(init=False)
+
+    def __post_init__(self):
+        self.execution_profile = load_dynamic_offload_profile(self.execution_context, self.profile_dir)
+        self.capacity_profile = load_dynamic_offload_profile(self.capacity_context, self.profile_dir)
+
+    def apply_settings(self, settings: Any, *, allow_recommendation: bool = True) -> tuple[Any, dict[str, Any] | None]:
+        """Apply DDO's known resident-budget recommendation, if one exists."""
+        recommendation = get_dynamic_offload_profile_recommendation(self.execution_profile or {})
+        if not allow_recommendation or not recommendation or "auto_full_pin_resident_budget_gb" not in recommendation:
+            return settings, recommendation
+        budget = max(0.0, float(recommendation["auto_full_pin_resident_budget_gb"]))
+        return replace(settings, config=replace(settings.config, auto_full_pin_resident_budget_gb=budget)), recommendation
+
+    @staticmethod
+    def recommend_resident_budget(total_vram_gb: float, peak_vram_gb: float, headroom_gb: float = 1.0) -> float:
+        """Convert a zero-resident calibration peak into a conservative DDO budget."""
+        return round(max(0.0, float(total_vram_gb) - float(peak_vram_gb) - float(headroom_gb)), 4)
+
+    def record_success(
+        self, observation: Mapping[str, Any], recommendation: Mapping[str, Any] | None = None
+    ) -> tuple[Path, Path]:
+        """Record an exact observation/recommendation and family capacity observation."""
+        execution_path = record_dynamic_offload_profile(
+            self.execution_context, observation, self.profile_dir, recommendation=recommendation
+        )
+        capacity_path = record_dynamic_offload_profile(self.capacity_context, observation, self.profile_dir)
+        self.execution_profile = load_dynamic_offload_profile(self.execution_context, self.profile_dir)
+        self.capacity_profile = load_dynamic_offload_profile(self.capacity_context, self.profile_dir)
+        return execution_path, capacity_path

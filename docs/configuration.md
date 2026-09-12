@@ -98,6 +98,7 @@ These variables are recognized directly by DDO:
 | `DDO_DISABLE_PIN_ON_WSL` | Disables pinned CPU memory on WSL by default. Set to `0` to force pinning experiments. |
 | `DDO_PURGE_WINDOWS_STANDBY_<PHASE>` | Enables Windows standby-list purge for a named phase. Non-Windows platforms no-op safely; on Windows it requires `SeProfileSingleProcessPrivilege`, normally from an elevated Administrator terminal. |
 | `DDO_PROFILE_DIR` | Optional directory for persistent capacity profiles. Defaults to `~/.ddo/profiles`; see [capacity profiles](capacity-profiles.md). |
+| `DDO_PROFILE_VRAM_HEADROOM_GB` | VRAM margin held back when a zero-resident calibration calculates its recommended resident budget. Default: `1.0`. |
 
 Boolean variables accept `1`, `true`, `yes`, or `on` as true values. Every other value, including `0`, `false`, `no`, `off`, and an empty value, resolves to false.
 

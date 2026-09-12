@@ -181,8 +181,12 @@ class DynamicOffloadProfileSession:
         return replace(settings, config=replace(settings.config, auto_full_pin_resident_budget_gb=budget)), recommendation
 
     @staticmethod
-    def recommend_resident_budget(total_vram_gb: float, peak_vram_gb: float, headroom_gb: float = 1.0) -> float:
+    def recommend_resident_budget(
+        total_vram_gb: float, peak_vram_gb: float, headroom_gb: float | None = None
+    ) -> float:
         """Convert a zero-resident calibration peak into a conservative DDO budget."""
+        if headroom_gb is None:
+            headroom_gb = float(os.getenv("DDO_PROFILE_VRAM_HEADROOM_GB", "1.0"))
         return round(max(0.0, float(total_vram_gb) - float(peak_vram_gb) - float(headroom_gb)), 4)
 
     def record_success(

@@ -65,3 +65,5 @@ an exact-workload preset separately from its wider capacity history.
 standard conservative calculation for a zero-resident calibration:
 `total VRAM - measured denoise peak - headroom`. Hosts may use a 1 GiB
 headroom by default and apply the resulting recommendation on the next run.
+Set `DDO_PROFILE_VRAM_HEADROOM_GB` to change that default without changing a
+runner.

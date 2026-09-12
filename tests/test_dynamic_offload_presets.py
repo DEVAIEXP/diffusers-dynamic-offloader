@@ -62,6 +62,15 @@ class DynamicOffloadPresetTests(unittest.TestCase):
         self.assertEqual(settings.config.pin_cpu_workers, 9)
         self.assertEqual(settings.config.available_system_ram_gb, 64.0)
 
+    def test_profile_headroom_is_a_regular_settings_value(self):
+        settings = load_dynamic_offload_settings_from_env(
+            running_on_wsl=False,
+            environ={"DDO_PROFILE_VRAM_HEADROOM_GB": "1.25"},
+        )
+        self.assertEqual(settings.config.profile_vram_headroom_gb, 1.25)
+        self.assertEqual(settings.as_metrics()["dynamic_offload_profile_vram_headroom_gb"], 1.25)
+        self.assertFalse(hasattr(settings.config, "auto_full_pin_resident_budget_gb"))
+
     def test_wsl_disables_pinned_memory_by_default(self):
         settings = load_dynamic_offload_settings_from_env(
             running_on_wsl=True,

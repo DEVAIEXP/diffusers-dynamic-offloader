@@ -175,18 +175,25 @@ class DynamicOffloadProfileSession:
     def apply_settings(self, settings: Any, *, allow_recommendation: bool = True) -> tuple[Any, dict[str, Any] | None]:
         """Apply DDO's known resident-budget recommendation, if one exists."""
         recommendation = get_dynamic_offload_profile_recommendation(self.execution_profile or {})
-        if not allow_recommendation or not recommendation or "auto_full_pin_resident_budget_gb" not in recommendation:
+        if not allow_recommendation or not recommendation:
             return settings, recommendation
-        budget = max(0.0, float(recommendation["auto_full_pin_resident_budget_gb"]))
-        return replace(settings, config=replace(settings.config, auto_full_pin_resident_budget_gb=budget)), recommendation
+        if settings.config.resident_module_budget_gb > 0:
+            return settings, None
+        budget = recommendation.get("profile_resident_module_budget_gb")
+        if budget is None:
+            # Read profiles written by DDO versions that exposed the old
+            # environment variable, without retaining that public setting.
+            budget = recommendation.get("auto_full_pin_resident_budget_gb")
+        if budget is None:
+            return settings, recommendation
+        return replace(
+            settings,
+            config=replace(settings.config, profile_resident_module_budget_gb=max(0.0, float(budget))),
+        ), recommendation
 
     @staticmethod
-    def recommend_resident_budget(
-        total_vram_gb: float, peak_vram_gb: float, headroom_gb: float | None = None
-    ) -> float:
+    def recommend_resident_budget(total_vram_gb: float, peak_vram_gb: float, headroom_gb: float) -> float:
         """Convert a zero-resident calibration peak into a conservative DDO budget."""
-        if headroom_gb is None:
-            headroom_gb = float(os.getenv("DDO_PROFILE_VRAM_HEADROOM_GB", "1.0"))
         return round(max(0.0, float(total_vram_gb) - float(peak_vram_gb) - float(headroom_gb)), 4)
 
     def record_success(

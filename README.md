@@ -182,7 +182,7 @@ $env:DDO_MAX_RESIDENT_MODULE_BUDGET_GB="6"
 $env:DDO_SHOW_PROFILE="1"
 ```
 
-The automatic full-pin/no-extra-resident path is reported during setup. Its default 4x model-to-VRAM threshold can be changed with `DDO_AUTO_FULL_PIN_MIN_MODEL_TO_VRAM_RATIO`; set it to `0` to disable that automatic choice. `DDO_AUTO_FULL_PIN_RESIDENT_BUDGET_GB` requests an intentional residual CUDA module budget only when full pinning still fits usable RAM. Explicit pin or resident budgets always take precedence.
+The automatic full-pin/zero-resident path is reported during setup. Its default 4x model-to-VRAM threshold can be changed with `DDO_AUTO_FULL_PIN_MIN_MODEL_TO_VRAM_RATIO`; set it to `0` to disable that automatic choice. A stored capacity profile may internally apply a conservative residual CUDA module budget. `DDO_RESIDENT_MODULE_BUDGET_GB` is the explicit manual override and takes precedence.
 
 ### Windows standby-cache purge
 

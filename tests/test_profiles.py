@@ -4,6 +4,8 @@ import unittest
 from pathlib import Path
 
 from diffusers_dynamic_offloader import (
+    DynamicOffloadProfileSession,
+    DynamicOffloadSettings,
     dynamic_offload_profile_key,
     get_dynamic_offload_profile_capacity,
     get_dynamic_offload_profile_recommendation,
@@ -72,3 +74,24 @@ class DynamicOffloadProfileTests(unittest.TestCase):
             )
             profile = load_dynamic_offload_profile(self.context, directory)
             self.assertEqual(get_dynamic_offload_profile_recommendation(profile), {"resident_budget_gb": 1.0})
+
+    def test_session_applies_profile_budget_without_overriding_manual_budget(self):
+        with tempfile.TemporaryDirectory() as directory:
+            record_dynamic_offload_profile(
+                self.context,
+                {"status": "success"},
+                directory,
+                recommendation={"profile_resident_module_budget_gb": 0.75},
+            )
+            session = DynamicOffloadProfileSession(self.context, self.context, directory)
+            settings = DynamicOffloadSettings.from_env(environ={})
+
+            applied, recommendation = session.apply_settings(settings)
+            self.assertEqual(recommendation, {"profile_resident_module_budget_gb": 0.75})
+            self.assertEqual(applied.config.profile_resident_module_budget_gb, 0.75)
+
+            manual_settings = DynamicOffloadSettings.from_env(environ={"DDO_RESIDENT_MODULE_BUDGET_GB": "1.0"})
+            applied_manual, recommendation_manual = session.apply_settings(manual_settings)
+            self.assertIsNone(recommendation_manual)
+            self.assertEqual(applied_manual.config.resident_module_budget_gb, 1.0)
+            self.assertEqual(applied_manual.config.profile_resident_module_budget_gb, 0.0)

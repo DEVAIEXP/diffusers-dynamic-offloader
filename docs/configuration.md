@@ -61,8 +61,8 @@ The defaults below are the `DynamicOffloadConfig(...)` dataclass defaults. `Dyna
 | `auto_budget_policy` | `"off"` | `DDO_AUTO_BUDGET_POLICY` | Supported values: `off`, `balanced`. |
 | `max_resident_module_budget_gb` | `6.0` | `DDO_MAX_RESIDENT_MODULE_BUDGET_GB` | Upper cap used by auto budgeting; `0` means uncapped. |
 | `auto_vram_headroom_gb` | `0.0` | `DDO_AUTO_VRAM_HEADROOM_GB` | Extra VRAM margin reserved by auto budgeting. |
+| `profile_vram_headroom_gb` | `1.0` | `DDO_PROFILE_VRAM_HEADROOM_GB` | VRAM margin held back when a zero-resident capacity-profile calibration calculates its next-run resident budget. |
 | `auto_full_pin_min_model_to_vram_ratio` | `4.0` | `DDO_AUTO_FULL_PIN_MIN_MODEL_TO_VRAM_RATIO` | When usable system RAM fits all eligible weights and the model-to-VRAM ratio meets this threshold, balanced auto selects full CPU pinning. Set `0` to disable this automatic choice. |
-| `auto_full_pin_resident_budget_gb` | `0.0` | `DDO_AUTO_FULL_PIN_RESIDENT_BUDGET_GB` | Optional extra CUDA-resident module budget while retaining automatic full CPU pinning. It is used only when the requested pinned weights plus this budget fit usable system RAM; `0` keeps the full-pin/zero-resident path. |
 | `max_pin_weight_budget_gb` | `0.0` | `DDO_MAX_PIN_WEIGHT_BUDGET_GB` | Upper cap for auto pinning; `0` means uncapped. |
 | `available_system_ram_gb` | `0.0` | `DDO_AVAILABLE_SYSTEM_RAM_GB` | `from_env(...)` detects available system RAM unless this is overridden; direct config construction uses the supplied value. |
 | `system_ram_headroom_gb` | `6.0` | `DDO_SYSTEM_RAM_HEADROOM_GB` | RAM held back from auto pinning decisions. |
@@ -83,8 +83,9 @@ The defaults below are the `DynamicOffloadConfig(...)` dataclass defaults. `Dyna
 When balanced auto resolves to `full_pin_zero_resident`, DDO offloads even the default
 `always_resident_modules_pattern` leaves and includes them in the pinned-weight pool. This
 keeps the plan genuinely zero-resident and preserves CUDA headroom for activations. Set
-`DDO_AUTO_FULL_PIN_RESIDENT_BUDGET_GB` only for an intentional residual CUDA budget; an
-explicit `DDO_RESIDENT_MODULE_BUDGET_GB` remains a manual override.
+an explicit `DDO_RESIDENT_MODULE_BUDGET_GB` to override DDO's automatic or stored-profile
+choice. A stored capacity profile can internally supply a conservative residual CUDA budget
+while preserving full CPU pinning; it is not a separate environment setting.
 
 ## Global Environment Variables
 
@@ -98,7 +99,6 @@ These variables are recognized directly by DDO:
 | `DDO_DISABLE_PIN_ON_WSL` | Disables pinned CPU memory on WSL by default. Set to `0` to force pinning experiments. |
 | `DDO_PURGE_WINDOWS_STANDBY_<PHASE>` | Enables Windows standby-list purge for a named phase. Non-Windows platforms no-op safely; on Windows it requires `SeProfileSingleProcessPrivilege`, normally from an elevated Administrator terminal. |
 | `DDO_PROFILE_DIR` | Optional directory for persistent capacity profiles. Defaults to `~/.ddo/profiles`; see [capacity profiles](capacity-profiles.md). |
-| `DDO_PROFILE_VRAM_HEADROOM_GB` | VRAM margin held back when a zero-resident calibration calculates its recommended resident budget. Default: `1.0`. |
 
 Boolean variables accept `1`, `true`, `yes`, or `on` as true values. Every other value, including `0`, `false`, `no`, `off`, and an empty value, resolves to false.
 

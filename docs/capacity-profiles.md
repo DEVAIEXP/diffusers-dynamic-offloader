@@ -63,7 +63,8 @@ an exact-workload preset separately from its wider capacity history.
 
 `DynamicOffloadProfileSession.recommend_resident_budget(...)` provides the
 standard conservative calculation for a zero-resident calibration:
-`total VRAM - measured denoise peak - headroom`. Hosts may use a 1 GiB
-headroom by default and apply the resulting recommendation on the next run.
-Set `DDO_PROFILE_VRAM_HEADROOM_GB` to change that default without changing a
-runner.
+`total VRAM - measured denoise peak - headroom`. The normal default is a 1 GiB
+headroom and the stored recommendation is applied on the next matching run.
+`profile_vram_headroom_gb` (or `DDO_PROFILE_VRAM_HEADROOM_GB`) configures that
+margin alongside the other DDO budget settings; it is not a runner-specific
+profile argument.

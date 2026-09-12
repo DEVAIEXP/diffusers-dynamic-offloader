@@ -19,9 +19,10 @@ All headline comparisons below use the same LTX 2.3 distilled image workload unl
 | Windows staged traditional pipeline, DDO vs official Diffusers block-level group offload | `295.5s` total, `228.84s` denoise, `33.83 GB` RAM, `4.45 GB` VRAM | `132.5s` total, `32.43s` denoise, `28.88 GB` RAM, `6.97 GB` VRAM | `55.2%` lower total time (`2.23x` faster) | `85.8%` lower denoise time (`7.06x` faster) | `14.6%` lower peak RAM; VRAM `56.6%` higher | Same old-style staged flow. DDO trades more VRAM for much lower latency and lower host RAM. |
 | WSL modular, DDO `wsl_compat` vs official Diffusers block-level group offload | `218.1s` total | `144.4s` total | `33.8%` lower total time (`1.51x` faster) | DDO denoise `97.80s` vs Diffusers `172.00s` | DDO peak RAM `23.47 GB` vs Diffusers `38.39 GB` | WSL benefits from DDO's dynamic path with pinning disabled, but remains slower and less stable than native Linux/Windows. |
 | Native Ubuntu modular, DDO `one_shot_fast` vs best official Diffusers leaf group offload | `35.6s` total, `24.26s` denoise, `1.42 GB` RAM | `38.0s` total, `13.00s` denoise, `1.45 GB` RAM | DDO is `6.7%` slower than leaf total; it is `1.3%` faster than the block-level total (`38.5s`) | `46.4%` lower denoise time (`1.87x` faster) vs leaf; `52.1%` lower (`2.09x` faster) vs block | Similar recorded RAM | DDO edges past block-level Diffusers overall, but leaf-level Diffusers remains the fastest one-shot total because setup cost is tiny. |
-| Quantized SDNQ Windows, offload off vs Diffusers leaf group offload | `250.8s` total, `21.46 GB` RAM | `138.5s` total, `16.80 GB` RAM | `44.8%` lower total time (`1.81x` faster) | `92.82s` denoise with group offload vs `189.00s` without | `21.7%` lower peak RAM | Quantized backends should preserve their own forward logic; prefer Diffusers group-offload compatibility presets for SDNQ. |
+| Windows modular SDNQ int4, compact zero-resident baseline vs DDO `auto` | `105.8s` total, `66.67s` denoise | `79.2s` total, `37.15s` denoise | `25.1%` lower total time (`1.34x` faster) | `44.3%` lower denoise time (`1.79x` faster) | Same recorded peak RAM (`26.19 GB`) | Experimental `sdnq_runtime` preserves SDNQ's forward and keeps `4.80 GiB` of its modules resident; it is a measured Windows win for this workload. |
+| Windows modular SDNQ int8, compact zero-resident baseline vs DDO `auto` probe | `130.7s` total, `92.89s` denoise | `117.4s` total, `69.70s` denoise | `10.2%` lower total time (`1.11x` faster) | `25.0%` lower denoise time (`1.33x` faster) | Same recorded peak RAM (`26.19 GB`) | The `6 GiB` auto probe improved denoise, then sampled driver peak and saved a more conservative `4.84 GiB` steady-state recommendation. |
 
-High-level conclusion: DDO's dense-linear streaming path is most valuable on Windows low-VRAM BF16 workloads where official Diffusers group offload is dominated by repeated transfers. WSL also benefits from the dynamic path when pinning is disabled. On native Linux, DDO is slightly ahead of Diffusers block-level total latency while keeping a much faster denoise loop; Diffusers leaf-level still has the lowest one-shot total because its setup cost is tiny. The routing/preset layer should therefore remain platform- and workload-aware, using DDO when its denoise gain justifies setup cost and preserving official Diffusers or backend-specific paths when they are faster or safer.
+High-level conclusion: DDO's dense-linear streaming path is most valuable on Windows low-VRAM BF16 workloads where official Diffusers group offload is dominated by repeated transfers. The experimental SDNQ runtime adapter is a separate compatible path: it preserves SDNQ's backend-specific forward while selecting whole SDNQ modules to remain resident, and it is now faster than the compact zero-resident SDNQ baseline on this Windows LTX workload. WSL also benefits from the dynamic path when pinning is disabled. On native Linux, DDO is slightly ahead of Diffusers block-level total latency while keeping a much faster denoise loop; Diffusers leaf-level still has the lowest one-shot total because its setup cost is tiny. The routing/preset layer should therefore remain platform- and workload-aware, using DDO when its denoise gain justifies setup cost and retaining official Diffusers compatibility routes for quantized backends that do not have a dedicated adapter.
 
 ### Evidence Coverage
 
@@ -29,7 +30,7 @@ Closed, apples-to-apples comparisons:
 - Windows modular BF16: DDO `auto -> one_shot_fast` vs official Diffusers group-offload compatibility presets.
 - WSL modular BF16: DDO `wsl_compat` vs official Diffusers block-level group offload.
 - Native Ubuntu modular BF16: DDO `one_shot_fast` vs official Diffusers block/leaf group offload.
-- Windows SDNQ int8: no transformer offload vs official Diffusers leaf group offload.
+- Windows SDNQ int4/int8: compact zero-resident SDNQ-runtime baseline vs the experimental DDO `sdnq_runtime` auto-resident route.
 - Windows old full-pipeline BF16: DDO `one_shot_fast` vs official Diffusers block-level group offload in the same full-pipeline runner.
 - Windows staged traditional pipeline BF16: DDO `one_shot_fast` vs official Diffusers block-level group offload in the same staged runner.
 - Windows modular BF16: DDO `one_shot_fast` vs `diffusers-mm` `auto`/`block_pin` in the same modular staged runner.
@@ -43,6 +44,7 @@ Exploratory comparisons, useful but not headline product claims:
 Numbers still worth adding before sharing broadly:
 - Optional WSL/native Ubuntu runs for `run_dynamic_old_staged_distilled.py`, only if we want old-pipeline portability claims.
 - Quantized SDNQ on WSL/native Ubuntu, if quantized portability becomes part of the Diffusers discussion.
+- A direct official Diffusers leaf-group-offload rerun in the new SDNQ runner, labelled independently from the DDO zero-resident baseline.
 
 Baseline unless noted:
 - Model: LTX 2.3 distilled image modular runner
@@ -145,20 +147,35 @@ These runs use real prompt encoding unless noted. Keep width `1280`, height `704
 
 ## Quantized SDNQ Validation
 
-These runs use the SDNQ int8 LTX 2.3 image transformer path with the same runner, resolution `1280x704`, steps `8`, seed `43`, real prompt encoding, and text encoder Diffusers leaf group offload. The goal is memory behavior and compatibility, not DDO dense-linear acceleration.
+These Windows runs use the LTX 2.3 image SDNQ transformer path, `1280x704`, `8` steps, real prompt encoding, and Diffusers leaf group offload for the text encoder. `sdnq_runtime` is deliberately not DDO's dense-linear path: it retains each SDNQ layer's native forward (including its dequantization and `F.linear` behavior) and only stages whole SDNQ modules around that forward.
+
+### Historical compatibility baseline
 
 | Platform | Preset / route | Transformer behavior | Encode pass | Transformer setup/load | Denoise | Pass 1 | VAE | Total | Peak VRAM | Peak RAM | Denoise allocation | Notes |
 | --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- |
 | Windows | `off` | No transformer offload; transformer moved to CUDA/shared GPU memory | `32.3s` | `load_transformer_to_cuda 17.86s` | `189.00s` | `214.9s` | `1.9s` | `250.8s` | `6.97 GB` | `21.46 GB` | `torch_alloc 12.63 GiB`, `reserved 13.10 GiB` | Lower RAM than BF16, but denoise spills beyond 8 GB dedicated VRAM into shared GPU memory and remains slow/unstable. |
 | Windows | `diffusers_leaf_offload_compat` | Official Diffusers leaf group offload with stream and record stream | `33.3s` | `setup_transformer_group_offload 0.038s` | `92.82s` | `101.3s` | `1.9s` | `138.5s` | `6.11 GB` | `16.80 GB` | `torch_alloc 0.15 GiB`, `reserved 0.96 GiB` | Best SDNQ memory/latency result in this pair. For quantized models, prefer Diffusers group-offload compatibility presets. |
 
-Interpretation: SDNQ significantly reduces system RAM pressure versus BF16, but DDO dynamic linear streaming does not accelerate packed/quantized linears because their backend-specific forward must be preserved. For SDNQ on this Windows machine, Diffusers leaf group offload is the recommended compatibility path so far.
+### Experimental DDO SDNQ runtime adapter
+
+The following pairs were run in the dedicated SDNQ DDO runner. Although the first console label used "Diffusers Leaf Offload Compact", both pasted logs identify `offload=ddo_sdnq_runtime` and call `setup_transformer_sdnq_dynamic_offload`; it is therefore recorded here as the compact **zero-resident SDNQ-runtime baseline**, not as an official Diffusers leaf result.
+
+| Quantization | Route | Resident budget | DDO setup | Denoise | Pass 1 | Total | Peak VRAM | Peak RAM | Readout |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| int8 | Compact zero-resident baseline | `0 GiB` | `0.30s` | `92.89s` | `100.1s` | `130.7s` | `6.08 GB` | `26.19 GB` | Steps 2-8 were roughly `10.9-11.3s`; it streams SDNQ weights every layer execution. |
+| int8 | `auto` validation probe | `6.00 GiB` probe; saved `4.84 GiB` | `5.20s` | `69.70s` | `82.2s` | `117.4s` | `6.97 GB` | `26.19 GB` | `25.0%` less denoise and `10.2%` less total time than zero-resident. The driver sampler observed `8.16 GiB`, so the profile retained the 1 GiB headroom by lowering the next-run recommendation to `4.84 GiB`. |
+| int4 | Compact zero-resident baseline | `0 GiB` | `0.53s` | `66.67s` | `74.5s` | `105.8s` | `6.14 GB` | `26.19 GB` | Steps 2-8 were roughly `7.0-7.3s`. |
+| int4 | `auto` steady profile | `4.80 GiB` | `4.18s` | `37.15s` | `48.4s` | `79.2s` | `6.97 GB` | `26.19 GB` | `44.3%` less denoise and `25.1%` less total time than zero-resident; steps 2-8 were roughly `4.3-4.6s`. |
+
+Interpretation: the dedicated adapter keeps SDNQ's own forward rather than trying to replace its packed/quantized linear implementation. On this RTX 3060 Ti Windows workload, increasing whole-module residency is beneficial, especially at int4 where the `4.80 GiB` auto profile is the current best tested result. Int8 also improves, but the reported `6 GiB` run is a calibration probe; evaluate the saved `4.84 GiB` profile as the steady-state int8 result. This evidence updates the SDNQ recommendation from "compatibility only" to "experimental dedicated DDO adapter is a supported, measured option for SDNQ"; it does not generalize that claim to other quantization backends.
+
+The logs currently report `CPU pinned parameters: 0.00 GiB (0 tensors)` for both routes. This is not evidence that SDNQ tensors were CPU-pinned: the adapter's parameter scan did not find SDNQ weight tensors to pin in this model representation (they may be held as buffers or other backend state). Residency alone accounts for the measured gain. Pinning support for SDNQ-held non-parameter tensors remains an investigation item, not a claimed optimization.
 
 ## Quantized Follow-Up
 
-SDNQ int8 now has an initial Windows compatibility/memory baseline. The next quantized work should compare the same SDNQ pair on WSL and native Ubuntu only if needed, then add other backends such as bitsandbytes, TorchAO, or Quanto when matching models are available.
+SDNQ int4/int8 now have a Windows dedicated-adapter baseline. The next quantized work should first run the saved int8 `4.84 GiB` steady profile and a direct official Diffusers leaf baseline in the same dedicated runner. WSL/native Ubuntu runs are useful only if quantized portability becomes part of the Diffusers discussion; other backends such as bitsandbytes, TorchAO, or Quanto remain compatibility-route candidates until they receive their own validated adapter.
 
-For quantized backends, fixes should remain model-agnostic and preserve backend-specific forward logic. DDO dynamic linear streaming should only patch standard dense `nn.Linear` weights with the expected 2D `(out_features, in_features)` layout.
+For quantized backends, fixes should remain model-agnostic and preserve backend-specific forward logic. DDO dynamic linear streaming should only patch standard dense `nn.Linear` weights with the expected 2D `(out_features, in_features)` layout; a dedicated adapter may instead stage backend-owned tensors without replacing its forward.
 
 ## Validation Matrix
 

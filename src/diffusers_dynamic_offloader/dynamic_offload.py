@@ -611,6 +611,7 @@ def build_dynamic_offload_event_payload(
         "pin_weight_budget_ratio": config.pin_weight_budget_ratio,
         "pin_weight_selection": config.pin_weight_selection,
         "patched_module_count": summary["patched_module_count"],
+        "sdnq_parameter_pinning": summary["sdnq_parameter_pinning"],
         "resolved_resident_module_patterns": summary["resolved_resident_module_patterns"],
         "planner_decisions": summary["planner_decisions"],
         "setup_runtime": summary["setup_runtime"],
@@ -685,6 +686,10 @@ class DynamicOffloadState:
     selected_resident_linear_weights: list[str] = field(default_factory=list)
     selected_pinned_linear_weights: list[str] = field(default_factory=list)
     resolved_resident_module_patterns: list[str] = field(default_factory=list)
+    sdnq_pinned_parameter_bytes: int = 0
+    sdnq_pinned_parameter_count: int = 0
+    sdnq_unpinned_parameter_bytes: int = 0
+    sdnq_unpinned_parameter_count: int = 0
     planner_decisions: dict[str, Any] = field(default_factory=dict)
 
     def clone_for_runtime(self) -> "DynamicOffloadState":
@@ -694,6 +699,10 @@ class DynamicOffloadState:
             total_bytes=self.total_bytes,
             bytes_by_placement=dict(self.bytes_by_placement),
             resolved_resident_module_patterns=list(self.resolved_resident_module_patterns),
+            sdnq_pinned_parameter_bytes=self.sdnq_pinned_parameter_bytes,
+            sdnq_pinned_parameter_count=self.sdnq_pinned_parameter_count,
+            sdnq_unpinned_parameter_bytes=self.sdnq_unpinned_parameter_bytes,
+            sdnq_unpinned_parameter_count=self.sdnq_unpinned_parameter_count,
             planner_decisions=dict(self.planner_decisions),
         )
 
@@ -733,6 +742,12 @@ class DynamicOffloadState:
             "selected_resident_linear_weights": self.selected_resident_linear_weights,
             "selected_pinned_linear_weights": self.selected_pinned_linear_weights,
             "resolved_resident_module_patterns": self.resolved_resident_module_patterns,
+            "sdnq_parameter_pinning": {
+                "pinned_count": self.sdnq_pinned_parameter_count,
+                "pinned_gb": round(self.sdnq_pinned_parameter_bytes / 1024**3, 4),
+                "unpinned_count": self.sdnq_unpinned_parameter_count,
+                "unpinned_gb": round(self.sdnq_unpinned_parameter_bytes / 1024**3, 4),
+            },
             "planner_decisions": self.planner_decisions,
             "entries": [
                 {
@@ -791,10 +806,12 @@ class DynamicOffloadHook(ModelHook):
             or f"{module.__class__.__module__}.{module.__class__.__qualname__}"
         )
         self.state = build_dynamic_offload_plan(module, self.config)
-        if self.execution_mode not in {"plan", "linear_runtime"}:
-            raise ValueError("DynamicOffloadConfig.execution_mode must be 'plan' or 'linear_runtime'")
+        if self.execution_mode not in {"plan", "linear_runtime", "sdnq_runtime"}:
+            raise ValueError("DynamicOffloadConfig.execution_mode must be 'plan', 'linear_runtime', or 'sdnq_runtime'")
         if self.execution_mode == "linear_runtime":
             self._prepare_linear_runtime(module)
+        elif self.execution_mode == "sdnq_runtime":
+            self._prepare_sdnq_runtime(module)
         if self.config.verbose:
             summary = self.state.as_dict()
             print(
@@ -980,6 +997,114 @@ class DynamicOffloadHook(ModelHook):
             self.state.add_setup("pin_linear_weights", time.perf_counter() - start, pinned_bytes)
         elif self.config.pin_cpu_memory and modules_to_pin:
             self.state.add_setup("pin_linear_weights_skipped", 0.0, 0)
+
+    @staticmethod
+    def _is_sdnq_layer(module: nn.Module) -> bool:
+        """Duck-type SDNQ layers without making SDNQ a DDO dependency."""
+        return hasattr(module, "sdnq_dequantizer") and hasattr(module, "forward_func")
+
+    def _prepare_sdnq_runtime(self, module: nn.Module) -> None:
+        """Preserve SDNQ forwards while swapping their packed parameters on demand.
+
+        This is deliberately separate from ``linear_runtime``: SDNQ's forward
+        owns dequantization/Hadamard behavior and must never be replaced with
+        ``F.linear`` by DDO.
+        """
+        skip_patterns = tuple(re.compile(pattern) for pattern in self.config.skip_modules_pattern)
+        resident_patterns = tuple(re.compile(pattern) for pattern in self.config.always_resident_modules_pattern)
+        if self.state.resolved_resident_module_patterns:
+            resident_module_patterns = tuple(re.compile(pattern) for pattern in self.state.resolved_resident_module_patterns)
+        else:
+            resident_module_patterns = _resolve_resident_module_patterns(module, self.config)
+            self.state.resolved_resident_module_patterns = [pattern.pattern for pattern in resident_module_patterns]
+
+        # Keep SDNQ's own forward/dequantizer, but apply the same generic
+        # capacity planning as the dense runtime before choosing residents.
+        # Without this, a named profile is loaded yet its recommended budget
+        # never reaches ``_select_resident_modules`` in this runtime.
+        self._apply_auto_budget_policy(module, skip_patterns, resident_patterns, resident_module_patterns)
+        self._move_root_local_tensors_to_device(module)
+        # Profile calibration starts from the same zero-resident baseline for
+        # dense and SDNQ runtimes.  SDNQ may schedule a later probe only after
+        # that workload peak has been measured.
+        if self.config.build_profile:
+            self.resident_module_budget_bytes = 0
+            self.state.planner_decisions["auto_resident_module_budget_gb"] = 0.0
+            self.state.planner_decisions["auto_resident_module_decision"] = "profile_calibration"
+        if self.resident_module_budget_bytes > 0 and resident_module_patterns:
+            start = time.perf_counter()
+            selected_bytes = self._select_resident_modules(module, skip_patterns, resident_module_patterns)
+            self.state.add_setup("select_resident_modules", time.perf_counter() - start, selected_bytes)
+            self.state.planner_decisions["selected_resident_module_gb"] = round(selected_bytes / 1024**3, 4)
+
+        for module_name, submodule in module.named_modules():
+            if not module_name or (skip_patterns and any(pattern.search(module_name) for pattern in skip_patterns)):
+                continue
+            if self._is_descendant_of_resident_module(module_name):
+                continue
+            if module_name in self._resident_module_names:
+                start = time.perf_counter()
+                moved_bytes = self._move_resident_module_to_execution_device(module_name, submodule)
+                self.state.add_setup("resident_budget_modules_to_device", time.perf_counter() - start, moved_bytes)
+                continue
+            if self._is_sdnq_layer(submodule):
+                self._move_sdnq_parameters_to_offload_device(submodule)
+                self._patch_sdnq_layer(module_name, submodule)
+            elif isinstance(submodule, (nn.Linear, nn.Embedding)):
+                start = time.perf_counter()
+                moved_bytes = self._move_module_tensors_to_execution_device(submodule)
+                self.state.add_setup("dense_sdnq_model_modules_to_device", time.perf_counter() - start, moved_bytes)
+            else:
+                self._move_small_local_tensors_to_device(submodule)
+
+    def _move_sdnq_parameters_to_offload_device(self, layer: nn.Module) -> None:
+        for parameter_name, parameter in layer.named_parameters(recurse=False):
+            if parameter.device == self.offload_device:
+                continue
+            start = time.perf_counter()
+            byte_count = _tensor_size_bytes(parameter.data)
+            parameter.data = parameter.data.to(self.offload_device)
+            self.state.add_setup(f"sdnq_{parameter_name}_to_offload", time.perf_counter() - start, byte_count)
+            if self.config.pin_cpu_memory and parameter.device.type == "cpu" and not parameter.data.is_pinned():
+                try:
+                    parameter.data = parameter.data.pin_memory()
+                except _PIN_MEMORY_ERRORS as exc:
+                    if not self.config.allow_pin_memory_fallback:
+                        raise
+                    self._disable_pin_memory("pin_sdnq_parameters_failed", exc)
+                    break
+            if parameter.device.type == "cpu":
+                if parameter.data.is_pinned():
+                    self.state.sdnq_pinned_parameter_count += 1
+                    self.state.sdnq_pinned_parameter_bytes += byte_count
+                else:
+                    self.state.sdnq_unpinned_parameter_count += 1
+                    self.state.sdnq_unpinned_parameter_bytes += byte_count
+
+    def _patch_sdnq_layer(self, module_name: str, layer: nn.Module) -> None:
+        original_forward = layer.forward
+        self._patched_modules.append((layer, original_forward))
+        self.state.patched_module_count += 1
+
+        def dynamic_sdnq_forward(patched_layer, *args, **kwargs):
+            swapped: list[tuple[torch.nn.Parameter, torch.Tensor]] = []
+            try:
+                for parameter_name, parameter in patched_layer.named_parameters(recurse=False):
+                    if parameter.device == self.execution_device:
+                        continue
+                    source = parameter.data
+                    start = time.perf_counter()
+                    parameter.data = source.to(self.execution_device, non_blocking=True)
+                    self.state.add_copy(
+                        f"sdnq:{module_name}:{parameter_name}", time.perf_counter() - start, _tensor_size_bytes(parameter.data)
+                    )
+                    swapped.append((parameter, source))
+                return original_forward(*args, **kwargs)
+            finally:
+                for parameter, source in reversed(swapped):
+                    parameter.data = source
+
+        layer.forward = dynamic_sdnq_forward.__get__(layer, layer.__class__)
 
     def _collect_linear_modules_to_pin(
         self,

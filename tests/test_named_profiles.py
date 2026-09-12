@@ -2,8 +2,10 @@ import os
 import tempfile
 import unittest
 from contextlib import ExitStack
+from types import SimpleNamespace
 from unittest.mock import patch
 
+import torch
 import torch.nn as nn
 
 from diffusers_dynamic_offloader import (
@@ -11,6 +13,7 @@ from diffusers_dynamic_offloader import (
     enable_offload,
     from_pretrained_with_dynamic_offload,
 )
+from diffusers_dynamic_offloader.profiles import _NamedProfile, load_dynamic_offload_profile
 
 
 class NamedProfileTests(unittest.TestCase):
@@ -48,6 +51,63 @@ class NamedProfileTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "inference failed"), result.profile_run():
             raise RuntimeError("inference failed")
         self.assertEqual(os.listdir(self.directory), [])
+
+    def test_sdnq_low_baseline_saves_a_bounded_probe_then_refines_it(self):
+        config = DynamicOffloadConfig(
+            execution_mode="sdnq_runtime",
+            execution_device="cuda",
+            profile_name="sdnq-example",
+            build_profile=True,
+            # Match one_shot_fast: zero means no caller cap, so SDNQ uses
+            # its safe library ceiling for a low-baseline probe.
+            max_resident_module_budget_gb=0,
+            profile_vram_headroom_gb=1,
+        )
+        with patch(
+            "torch.cuda.get_device_properties",
+            return_value=SimpleNamespace(total_memory=8 * 1024**3),
+        ), patch("torch.cuda.max_memory_reserved", return_value=int(4 * 1024**3)):
+            profile = _NamedProfile(nn.Linear(2, 2), config)
+            prepared = profile.prepare()
+            with profile.measure():
+                pass
+        self.assertEqual(prepared.resident_module_budget_gb, 0)
+        saved = load_dynamic_offload_profile(profile.context)
+        self.assertEqual(saved["recommendation"]["profile_resident_module_budget_gb"], 6)
+        self.assertEqual(saved["recommendation"]["sdnq_probe_resident_budget_gb"], 6)
+
+        probe_config = DynamicOffloadConfig(
+            execution_mode="sdnq_runtime",
+            execution_device="cuda",
+            profile_name="sdnq-example",
+            profile_vram_headroom_gb=1,
+        )
+        with patch("torch.cuda.max_memory_reserved", return_value=int(7.7 * 1024**3)):
+            probe = _NamedProfile(nn.Linear(2, 2), probe_config)
+            prepared_probe = probe.prepare()
+            with probe.measure():
+                pass
+        self.assertEqual(prepared_probe.resident_module_budget_gb, 6)
+        refined = load_dynamic_offload_profile(probe.context)
+        self.assertAlmostEqual(refined["recommendation"]["profile_resident_module_budget_gb"], 4.8, places=3)
+        self.assertNotIn("sdnq_probe_resident_budget_gb", refined["recommendation"])
+
+    def test_sdnq_high_baseline_uses_only_the_safe_residual_budget(self):
+        config = DynamicOffloadConfig(
+            execution_mode="sdnq_runtime",
+            execution_device="cuda",
+            profile_name="sdnq-high-baseline",
+            build_profile=True,
+            profile_vram_headroom_gb=1,
+        )
+        with patch("torch.cuda.max_memory_reserved", return_value=int(5.67 * 1024**3)):
+            profile = _NamedProfile(nn.Linear(2, 2), config)
+            profile.prepare()
+            with profile.measure():
+                pass
+        saved = load_dynamic_offload_profile(profile.context)
+        self.assertAlmostEqual(saved["recommendation"]["profile_resident_module_budget_gb"], 0.83, places=2)
+        self.assertNotIn("sdnq_probe_resident_budget_gb", saved["recommendation"])
 
     def test_different_names_are_independent(self):
         with self.enable(build_profile=True).profile_run():

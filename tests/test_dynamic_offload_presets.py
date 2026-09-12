@@ -394,6 +394,38 @@ class DynamicOffloadPresetTests(unittest.TestCase):
         self.assertEqual(result.hook.state.planner_decisions["unsupported_linear_module_count"], 2)
         remove_dynamic_offload(module)
 
+    def test_sdnq_runtime_applies_a_profile_resident_budget(self):
+        class FakeSdnqLayer(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.weight = nn.Parameter(torch.ones(64, 64))
+                self.sdnq_dequantizer = object()
+                self.forward_func = object()
+
+            def forward(self, input):
+                return input
+
+        module = nn.Sequential(FakeSdnqLayer(), FakeSdnqLayer())
+        config = DynamicOffloadConfig(
+            execution_device="cpu",
+            offload_device="cpu",
+            execution_mode="sdnq_runtime",
+            pin_cpu_memory=False,
+            auto_budget_policy="balanced",
+            available_system_ram_gb=1.0,
+            system_ram_headroom_gb=0.0,
+            resident_module_patterns=(r"\d+",),
+            profile_resident_module_budget_gb=0.0001,
+            _profile_budget_applied=True,
+        )
+        result = enable_dynamic_offload(module, config=config, use_environment=False)
+
+        decisions = result.hook.state.planner_decisions
+        self.assertIn("auto_resident_module_budget_gb", decisions)
+        self.assertGreater(result.hook.resident_module_budget_bytes, 0)
+        self.assertTrue(result.hook.state.selected_resident_modules)
+        remove_dynamic_offload(module)
+
 
     def test_sdnq_detection_reports_forward_preserved(self):
         class FakeSdnqLayer(nn.Module):

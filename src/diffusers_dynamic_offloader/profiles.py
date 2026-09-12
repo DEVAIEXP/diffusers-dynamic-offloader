@@ -11,6 +11,8 @@ import hashlib
 import json
 import math
 import os
+import threading
+import time
 import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
@@ -22,6 +24,43 @@ import torch
 
 DYNAMIC_OFFLOAD_PROFILE_SCHEMA_VERSION = 1
 _PROFILE_PREFIX = "ddo-capacity-v1"
+_SDNQ_DEFAULT_RESIDENT_CEILING_GB = 6.0
+_SDNQ_PROBE_MIN_SAFE_BUDGET_GB = 2.0
+
+
+class _CudaPeakSampler:
+    """Sample driver-visible CUDA usage while the profiled region executes."""
+
+    def __init__(self, device: torch.device, interval_seconds: float = 0.05):
+        self.device = device
+        self.interval_seconds = interval_seconds
+        self.peak_bytes = 0
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+
+    def _sample(self) -> None:
+        try:
+            free, total = torch.cuda.mem_get_info(self.device)
+        except Exception:
+            return
+        self.peak_bytes = max(self.peak_bytes, int(total - free))
+
+    def start(self) -> None:
+        self._sample()
+
+        def run() -> None:
+            while not self._stop.wait(self.interval_seconds):
+                self._sample()
+
+        self._thread = threading.Thread(target=run, name="ddo-cuda-profile", daemon=True)
+        self._thread.start()
+
+    def stop(self) -> int:
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout=self.interval_seconds * 2 + 0.1)
+        self._sample()
+        return self.peak_bytes
 
 
 class _NamedProfile:
@@ -36,6 +75,7 @@ class _NamedProfile:
         }
         self.report = {"name": config.profile_name, "status": "disabled"}
         self._active = False
+        self._sdnq_probe_budget_gb: float | None = None
 
     def prepare(self):
         config = self.config
@@ -46,26 +86,44 @@ class _NamedProfile:
         if config.build_profile:
             if torch.device(config.execution_device).type != "cuda":
                 raise ValueError("Profile calibration requires a CUDA execution device.")
-            if config.execution_mode != "linear_runtime":
-                raise ValueError("Profile calibration requires execution_mode='linear_runtime'.")
+            if config.execution_mode not in {"linear_runtime", "sdnq_runtime"}:
+                raise ValueError("Profile calibration requires execution_mode='linear_runtime' or 'sdnq_runtime'.")
             if not math.isfinite(config.profile_vram_headroom_gb) or config.profile_vram_headroom_gb < 0:
                 raise ValueError("profile_vram_headroom_gb must be finite and non-negative.")
             self.report["status"] = "calibrating"
+            # All profile builds begin with zero residents.  This preserves the
+            # established BF16 flow and gives SDNQ a real activation baseline;
+            # an SDNQ resident budget cannot safely be inferred before that
+            # workload peak is known.
+            if config.execution_mode == "sdnq_runtime":
+                print(f"[dynamic-offload] profile {config.profile_name!r}: calibrating SDNQ zero-resident baseline.")
             print(f"[dynamic-offload] profile {config.profile_name!r}: calibrating with zero resident budget.")
             return replace(config, resident_module_budget_gb=0.0, profile_resident_module_budget_gb=0.0)
+        # An explicit caller budget has always taken precedence over a saved
+        # recommendation.  It is not itself a profile calibration.
+        if config.resident_module_budget_gb > 0:
+            return config
         record = load_dynamic_offload_profile(self.context)
         recommendation = get_dynamic_offload_profile_recommendation(record or {}) or {}
         budget = recommendation.get("profile_resident_module_budget_gb")
-        if config.resident_module_budget_gb > 0:
-            self.report["status"] = "manual_override"
-            return config
         if not isinstance(budget, (int, float)) or not math.isfinite(budget) or budget < 0:
             self.report["status"] = "missing"
             print(f"[dynamic-offload] profile {config.profile_name!r}: no recommendation; calibrate with build_profile=True.")
             return config
         if config.max_resident_module_budget_gb > 0:
             budget = min(budget, config.max_resident_module_budget_gb)
-        self.report.update(status="applied", resident_budget_gb=budget)
+        probe_budget = recommendation.get("sdnq_probe_resident_budget_gb")
+        if isinstance(probe_budget, (int, float)) and math.isfinite(probe_budget) and probe_budget > 0:
+            budget = min(float(probe_budget), budget)
+            self._sdnq_probe_budget_gb = budget
+            self.report["status"] = "probing"
+            print(
+                f"[dynamic-offload] profile {config.profile_name!r}: "
+                f"validating SDNQ resident probe={budget:.2f} GiB."
+            )
+        else:
+            self.report["status"] = "applied"
+        self.report["resident_budget_gb"] = budget
         print(f"[dynamic-offload] profile {config.profile_name!r}: requested resident budget={budget:.2f} GiB.")
         if config.auto_budget_policy == "off":
             return replace(config, resident_module_budget_gb=budget, _profile_budget_applied=True)
@@ -74,36 +132,78 @@ class _NamedProfile:
     @contextmanager
     def measure(self):
         """Measure only the caller's inference region, then persist on success."""
-        if not self.config.build_profile:
+        if not self.config.build_profile and self._sdnq_probe_budget_gb is None:
             yield self.report
             return
         if self._active:
             raise RuntimeError("A profile measurement is already active.")
         self._active = True
         device = torch.device(self.config.execution_device)
+        sampler = _CudaPeakSampler(device) if self.config.execution_mode == "sdnq_runtime" else None
         try:
             torch.cuda.synchronize(device)
             free, total = torch.cuda.mem_get_info(device)
             external_bytes = max(0, total - free - torch.cuda.memory_reserved(device))
             torch.cuda.reset_peak_memory_stats(device)
+            if sampler is not None:
+                sampler.start()
             yield self.report
             torch.cuda.synchronize(device)
             free_end, _ = torch.cuda.mem_get_info(device)
-            peak = max(total - free, total - free_end,
-                       external_bytes + torch.cuda.max_memory_reserved(device)) / 1024**3
-            budget = DynamicOffloadProfileSession.recommend_resident_budget(
-                total / 1024**3, peak, self.config.profile_vram_headroom_gb,
-            )
+            peak = max(
+                total - free,
+                total - free_end,
+                external_bytes + torch.cuda.max_memory_reserved(device),
+                sampler.stop() if sampler is not None else 0,
+            ) / 1024**3
+            total_gb = total / 1024**3
+            target_gb = max(0.0, total_gb - self.config.profile_vram_headroom_gb)
+            if self._sdnq_probe_budget_gb is not None:
+                budget = max(0.0, self._sdnq_probe_budget_gb - max(0.0, peak - target_gb))
+                recommendation = {"profile_resident_module_budget_gb": round(budget, 4)}
+                observation_kind = "sdnq_probe"
+            elif self.config.execution_mode == "sdnq_runtime":
+                safe_budget = DynamicOffloadProfileSession.recommend_resident_budget(
+                    total_gb, peak, self.config.profile_vram_headroom_gb,
+                )
+                configured_ceiling = float(self.config.max_resident_module_budget_gb)
+                ceiling = configured_ceiling if configured_ceiling > 0 else _SDNQ_DEFAULT_RESIDENT_CEILING_GB
+                probe_budget = min(ceiling, target_gb)
+                if safe_budget >= _SDNQ_PROBE_MIN_SAFE_BUDGET_GB and probe_budget > safe_budget:
+                    budget = probe_budget
+                    recommendation = {
+                        "profile_resident_module_budget_gb": round(budget, 4),
+                        "sdnq_probe_resident_budget_gb": round(budget, 4),
+                    }
+                    observation_kind = "sdnq_baseline_probe_pending"
+                else:
+                    budget = safe_budget
+                    recommendation = {"profile_resident_module_budget_gb": round(budget, 4)}
+                    observation_kind = "sdnq_baseline_safe"
+            else:
+                budget = DynamicOffloadProfileSession.recommend_resident_budget(
+                    total_gb, peak, self.config.profile_vram_headroom_gb,
+                )
+                recommendation = {"profile_resident_module_budget_gb": budget}
+                observation_kind = "baseline"
             observation = {"status": "success", "peak_vram_gb": peak,
-                           "total_vram_gb": total / 1024**3,
+                           "total_vram_gb": total_gb,
                            "headroom_gb": self.config.profile_vram_headroom_gb,
-                           "measurement": "cuda_peak_reserved_plus_initial_external"}
+                           "profile_measurement_kind": observation_kind,
+                           "measurement": "cuda_driver_peak_sampled_plus_allocator"}
             path = record_dynamic_offload_profile(
                 self.context, observation,
-                recommendation={"profile_resident_module_budget_gb": budget},
+                recommendation=recommendation,
             )
             self.report.update(path=str(path), resident_budget_gb=budget, **observation)
             self.report["status"] = "saved"
+            if observation_kind == "sdnq_baseline_probe_pending":
+                print(
+                    f"[dynamic-offload] profile {self.config.profile_name!r}: "
+                    f"baseline peak={peak:.2f} GiB; next SDNQ run will validate "
+                    f"resident probe={budget:.2f} GiB; saved to {path}"
+                )
+                return
             print(f"[dynamic-offload] profile {self.config.profile_name!r}: "
                   f"peak={peak:.2f} GiB, margin={self.config.profile_vram_headroom_gb:.2f} GiB, "
                   f"resident budget={budget:.2f} GiB; saved to {path}")
@@ -111,6 +211,8 @@ class _NamedProfile:
             self.report["status"] = "failed"
             raise
         finally:
+            if sampler is not None:
+                sampler.stop()
             self._active = False
 
 

@@ -184,6 +184,19 @@ $env:DDO_SHOW_PROFILE="1"
 
 The automatic full-pin/zero-resident path is reported during setup. Its default 4x model-to-VRAM threshold can be changed with `DDO_AUTO_FULL_PIN_MIN_MODEL_TO_VRAM_RATIO`; set it to `0` to disable that automatic choice. A stored capacity profile may internally apply a conservative residual CUDA module budget. `DDO_RESIDENT_MODULE_BUDGET_GB` is the explicit manual override and takes precedence.
 
+Named workload profiles keep calibration inside DDO:
+
+```python
+offload = enable_offload(model, profile_name="my-workload", build_profile=calibrate)
+with offload.profile_run():
+    output = pipeline(**inputs)
+```
+
+Use `calibrate=True` once, then `False` to reuse the recommendation. Choose a
+different name for different workloads or recalibrate after changing them.
+See [named workload profiles](docs/capacity-profiles.md) for staged execution,
+loading integration and measurement details.
+
 ### Windows standby-cache purge
 
 `one_shot_fast` enables optional standby-list purge at selected stage boundaries through `DDO_PURGE_WINDOWS_STANDBY_*`. On Windows, the process token must be allowed to enable `SeProfileSingleProcessPrivilege`, which normally means starting the terminal as Administrator. Without that privilege DDO reports `purged: false` and continues safely; the purge is optional and does not release DDO/PyTorch pinned weight memory.

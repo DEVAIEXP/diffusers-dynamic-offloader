@@ -1,70 +1,88 @@
-# Capacity profiles
+# Named workload profiles
 
-DDO capacity profiles record the result of a real workload so later runs can
-recognize a previously validated range. They are intentionally observations,
-not a model-specific execution engine: the host still owns the actual prompt,
-denoise step, decoder order, and cleanup boundaries.
-
-## Storage and matching
-
-By default profiles are saved under `~/.ddo/profiles`. Set `DDO_PROFILE_DIR`
-to use another directory, for example in a benchmark or CI environment.
-
-The host supplies a JSON-safe identity context. A good context includes the
-model/revision or signature, GPU and VRAM, effective DDO configuration, dtype,
-and the workload family (resolution, attention/modality options, LoRA set,
-and inference settings). Keep the varying capacity metric out of that identity:
-for video, frame/token count should be an observation rather than a key field.
-That lets a profile validated at one duration warn about a larger duration.
-
-DDO hashes the normalized context for the filename, but keeps the readable
-context inside the JSON for inspection. Invalid, mismatched, or old-schema
-files are ignored safely.
-
-## Host integration
-
-Load automatically before the sensitive phase:
+Pass a profile name when enabling offload. DDO owns lookup, budget application,
+measurement and persistence; no context builder or profile session is needed.
 
 ```python
-from diffusers_dynamic_offloader import (
-    get_dynamic_offload_profile_capacity,
-    load_dynamic_offload_profile,
-    record_dynamic_offload_profile,
+offload = enable_offload(
+    model, preset="auto", profile_name="my-workload", build_profile=calibrate,
 )
-
-profile = load_dynamic_offload_profile(context)
-limits = get_dynamic_offload_profile_capacity(profile, "tokens") if profile else None
-if limits and requested_tokens > limits["max_success"]:
-    print("Requested workload exceeds the largest validated profile; it may OOM.")
+with offload.profile_run():
+    output = pipeline(**inputs)
 ```
 
-After a successful calibration or generation, record it explicitly:
+Set `calibrate=True` for the calibration run and `False` for later runs.
+The normal run applies the stored recommendation during setup; its
+`profile_run()` context is a no-op. Omit the name to disable profile lookup.
+The model may be a transformer, UNet or another supported module: the profile
+API does not inspect model-specific inference arguments.
+
+## Identity and storage
+
+Identity is the user-supplied name plus the model class qualified name.
+DDO stores JSON under `Path.home() / ".ddo" / "profiles"`, on Windows and Linux.
+`DDO_PROFILE_DIR` overrides the directory. Filenames are hashes of the identity;
+the readable name is stored inside the file.
+
+Use different names for workloads that need different budgets, for example
+`video-5s` and `video-8s`. Resolution, duration, dtype, weights, adapters and GPU
+are deliberately not inferred. Recalibrate or choose another name when those
+change. Reusing a name and class replaces that recommendation. Profiles made
+with the earlier host-context API are not automatically mapped to names.
+
+## Calibration and measurement
+
+Calibration requires the dynamic CUDA linear runtime. It forces the resident
+module budget to zero. The host chooses the number of inference steps and wraps
+the region to measure in `profile_run()`. DDO saves only when that region exits
+successfully; an exception leaves an existing recommendation untouched.
+
+DDO synchronizes at the region boundaries, resets CUDA peak counters, and uses
+the maximum of observed driver usage and PyTorch peak reserved memory plus
+initial non-PyTorch usage. This conservatively includes the allocator cache.
+External allocations that change during inference are not fully captured by
+this estimate. Other code must not reset CUDA peak counters inside the region,
+and concurrent calibration regions on one device are not supported.
+
+The recommendation is `max(0, total VRAM - measured peak - headroom)`.
+`DynamicOffloadConfig.profile_vram_headroom_gb` defaults to 1 GiB; the regular
+settings loader also accepts `DDO_PROFILE_VRAM_HEADROOM_GB`.
+This is a measured estimate, not a guarantee for changed inputs or later steps.
+A manual positive `resident_module_budget_gb` overrides profile reuse, and
+`max_resident_module_budget_gb` caps the automatic recommendation when positive.
+
+## Staged pipelines and loading
+
+Wrap the denoising stage when that is the workload being calibrated. The host
+still prepares inputs, chooses steps, releases stages and controls decode.
 
 ```python
-record_dynamic_offload_profile(
-    context,
-    {
-        "status": "success",
-        "capacity": {"metric": "tokens", "value": requested_tokens},
-        "result": {"elapsed_seconds": elapsed_seconds},
-    },
-)
+# Encode inputs and release encoders before attaching the denoising model.
+offload = enable_offload(model, profile_name="my-workload", build_profile=calibrate)
+with offload.profile_run() as profile_report:
+    latents = pipeline(**inputs, output_type="latent")
+# profile_report is optional JSON-safe information for the host's metrics.
+# Release the denoising model, then run decoders when appropriate.
 ```
 
-For each generic metric, DDO keeps the largest successful value and the
-smallest failed value, plus the last 20 observations. Hosts may also record a
-failure if they catch an OOM and can clean up safely.
+The loader supports the same lifecycle with explicit runtime configuration:
 
-An observation may carry a JSON-safe `recommendation` mapping. DDO persists
-and returns it through `get_dynamic_offload_profile_recommendation(...)`; the
-host decides which values are safe to apply before it attaches offload hooks.
-This keeps the library model-agnostic while allowing a staged runner to store
-an exact-workload preset separately from its wider capacity history.
+```python
+loaded = from_pretrained_with_dynamic_offload(
+    model_path,
+    model_loader=ModelClass,
+    dynamic_offload_config=settings.config,
+    apply_dynamic=True,
+    profile_name="my-workload",
+    build_profile=calibrate,
+)
+with loaded.profile_run():
+    output = loaded.module(**inputs)
+```
 
-`DynamicOffloadProfileSession.recommend_resident_budget(...)` provides the
-standard conservative calculation for a zero-resident calibration:
-`total VRAM - measured denoise peak - headroom`. The normal default is a 1 GiB
-headroom and the stored recommendation is applied on the next matching run.
-`profile_vram_headroom_gb` (or `DDO_PROFILE_VRAM_HEADROOM_GB`) configures that
-margin alongside the other DDO budget settings; it is not a runner-specific
-profile argument.
+For deferred attachment (`apply_dynamic=False`), pass the profile options to
+the later `enable_offload` call, at the actual execution stage. No model-specific
+profile data belongs in loading arguments.
+
+The older context/persistence helpers remain available for existing integrations,
+but are not required by the named-profile API.

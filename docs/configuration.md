@@ -62,6 +62,8 @@ The defaults below are the `DynamicOffloadConfig(...)` dataclass defaults. `Dyna
 | `max_resident_module_budget_gb` | `6.0` | `DDO_MAX_RESIDENT_MODULE_BUDGET_GB` | Upper cap used by auto budgeting; `0` means uncapped. |
 | `auto_vram_headroom_gb` | `0.0` | `DDO_AUTO_VRAM_HEADROOM_GB` | Extra VRAM margin reserved by auto budgeting. |
 | `profile_vram_headroom_gb` | `1.0` | `DDO_PROFILE_VRAM_HEADROOM_GB` | VRAM margin held back when a zero-resident capacity-profile calibration calculates its next-run resident budget. |
+| `profile_name` | `""` | Python only | User-chosen workload name. DDO looks up its recommendation during setup; empty disables lookup. |
+| `build_profile` | `False` | Python only | Calibrate with zero resident budget; use the returned `profile_run()` context to measure and save. Requires a name. |
 | `auto_full_pin_min_model_to_vram_ratio` | `4.0` | `DDO_AUTO_FULL_PIN_MIN_MODEL_TO_VRAM_RATIO` | When usable system RAM fits all eligible weights and the model-to-VRAM ratio meets this threshold, balanced auto selects full CPU pinning. Set `0` to disable this automatic choice. |
 | `max_pin_weight_budget_gb` | `0.0` | `DDO_MAX_PIN_WEIGHT_BUDGET_GB` | Upper cap for auto pinning; `0` means uncapped. |
 | `available_system_ram_gb` | `0.0` | `DDO_AVAILABLE_SYSTEM_RAM_GB` | `from_env(...)` detects available system RAM unless this is overridden; direct config construction uses the supplied value. |

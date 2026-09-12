@@ -483,11 +483,14 @@ class DynamicOffloadConfig:
     max_resident_module_budget_gb: float = 6.0
     auto_vram_headroom_gb: float = 0.0
     profile_vram_headroom_gb: float = 1.0
+    profile_name: str = ""
+    build_profile: bool = False
     auto_full_pin_min_model_to_vram_ratio: float = 4.0
     # Internal transfer value populated by DynamicOffloadProfileSession.  It is
     # deliberately not an environment setting: callers use a stored capacity
     # profile or the explicit resident_module_budget_gb override instead.
     profile_resident_module_budget_gb: float = 0.0
+    _profile_budget_applied: bool = False
     max_pin_weight_budget_gb: float = 0.0
     available_system_ram_gb: float = 0.0
     system_ram_headroom_gb: float = 6.0
@@ -553,6 +556,8 @@ class DynamicOffloadSettings:
             "dynamic_offload_max_resident_module_budget_gb": config.max_resident_module_budget_gb,
             "dynamic_offload_auto_vram_headroom_gb": config.auto_vram_headroom_gb,
             "dynamic_offload_profile_vram_headroom_gb": config.profile_vram_headroom_gb,
+            "dynamic_offload_profile_name": config.profile_name or None,
+            "dynamic_offload_build_profile": config.build_profile,
             "dynamic_offload_auto_full_pin_min_model_to_vram_ratio": (
                 config.auto_full_pin_min_model_to_vram_ratio
             ),
@@ -636,6 +641,11 @@ class DynamicOffloadLoadResult:
     module: nn.Module
     hook: "DynamicOffloadHook | None" = None
     should_move_to_execution_device: bool = True
+    _profile: Any = field(default=None, repr=False)
+
+    def profile_run(self):
+        """Measure and save a calibration; a no-op for ordinary inference."""
+        return self._profile.measure() if self._profile is not None else contextlib.nullcontext()
 
 
 @dataclass
@@ -646,6 +656,11 @@ class DynamicOffloadApplyResult:
     should_move_to_execution_device: bool = True
     event_payload: dict[str, Any] = field(default_factory=dict)
     route: str = "dynamic_offload"
+    _profile: Any = field(default=None, repr=False)
+
+    def profile_run(self):
+        """Measure and save a calibration; a no-op for ordinary inference."""
+        return self._profile.measure() if self._profile is not None else contextlib.nullcontext()
 
 
 @dataclass
@@ -799,7 +814,7 @@ class DynamicOffloadHook(ModelHook):
             if summary["setup_runtime"]:
                 print(f"  [dynamic-offload] setup={summary['setup_runtime']}", flush=True)
         auto_pin_decision = self.state.planner_decisions.get("auto_pin_weight_decision")
-        if auto_pin_decision in {"full_pin_zero_resident", "full_pin_residual_vram"}:
+        if auto_pin_decision in {"full_pin_zero_resident", "full_pin_residual_vram", "full_pin_profile_resident"}:
             decisions = self.state.planner_decisions
             selected_resident_gb = decisions.get("selected_resident_module_gb", 0.0)
             resident_note = (
@@ -882,6 +897,11 @@ class DynamicOffloadHook(ModelHook):
         modules_to_pin: list[tuple[str, nn.Module, int]] = []
 
         self._apply_auto_budget_policy(module, skip_patterns, resident_patterns, resident_module_patterns)
+        if self.config.build_profile:
+            self.resident_module_budget_bytes = 0
+            resident_patterns = ()
+            self.state.planner_decisions["auto_resident_module_budget_gb"] = 0.0
+            self.state.planner_decisions["auto_resident_module_decision"] = "profile_calibration"
         if self.state.planner_decisions.get("auto_pin_weight_decision") == "full_pin_zero_resident":
             # A full-pinned, zero-resident plan must not quietly retain the
             # default "always resident" leaves on CUDA.  Besides contradicting
@@ -1164,6 +1184,8 @@ class DynamicOffloadHook(ModelHook):
                     self.state.planner_decisions["auto_resident_module_budget_vram_cap_reason"] = (
                         "cuda_vram_headroom"
                     )
+            if self.config._profile_budget_applied:
+                budget = min(requested_profile_resident_bytes, candidate_module_bytes)
             if self.max_resident_module_budget_bytes > 0:
                 budget = min(budget, self.max_resident_module_budget_bytes)
             self.resident_module_budget_bytes = budget
@@ -1873,6 +1895,9 @@ def enable_offload(
         else:
             route_value = "none"
 
+    if route_value != "dynamic_offload" and config_overrides.get("build_profile", (config or settings.config).build_profile):
+        raise ValueError("Profile calibration requires the dynamic_offload route.")
+
     if route_value == "diffusers_group_offload":
         group_use_stream = (
             use_stream
@@ -2111,6 +2136,13 @@ def enable_dynamic_offload(
             effective_pin_cpu_memory=effective_config.pin_cpu_memory,
         )
 
+    from .profiles import _NamedProfile
+
+    profile = _NamedProfile(module, effective_config)
+    effective_config = profile.prepare()
+    if effective_config is not settings.config:
+        settings = replace(settings, config=effective_config)
+
     hook = None
     event_payload: dict[str, Any] = {}
     quantized_backend_payload = detect_quantized_backend_modules(module)
@@ -2130,6 +2162,7 @@ def enable_dynamic_offload(
         settings=settings,
         should_move_to_execution_device=hook is None or effective_config.execution_mode.lower() == "plan",
         event_payload=event_payload,
+        _profile=profile,
     )
 
 
@@ -2197,6 +2230,8 @@ def from_pretrained_with_dynamic_offload(
     model_loader: Any | None = None,
     dynamic_offload_config: DynamicOffloadConfig | None = None,
     apply_dynamic: bool = False,
+    profile_name: str | None = None,
+    build_profile: bool | None = None,
     **from_pretrained_kwargs: Any,
 ) -> DynamicOffloadLoadResult:
     if model_loader is None:
@@ -2205,16 +2240,27 @@ def from_pretrained_with_dynamic_offload(
         model_loader = AutoModel
     from_pretrained = getattr(model_loader, "from_pretrained", model_loader)
     config = dynamic_offload_config or DynamicOffloadConfig()
+    if profile_name is not None:
+        config = replace(config, profile_name=profile_name)
+    if build_profile is not None:
+        config = replace(config, build_profile=build_profile)
+    if (config.profile_name or config.build_profile) and not apply_dynamic:
+        raise ValueError("Pass profile options to enable_offload after staged loading, or set apply_dynamic=True.")
     with _temporary_safetensors_backend(config.load_safetensors_backend):
         module = from_pretrained(pretrained_model_name_or_path, **from_pretrained_kwargs)
     if not apply_dynamic:
         return DynamicOffloadLoadResult(module=module)
 
+    from .profiles import _NamedProfile
+
+    profile = _NamedProfile(module, config)
+    config = profile.prepare()
     hook = apply_dynamic_offload(module, config)
     return DynamicOffloadLoadResult(
         module=module,
         hook=hook,
         should_move_to_execution_device=config.execution_mode.lower() == "plan",
+        _profile=profile,
     )
 
 

@@ -9,15 +9,109 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import uuid
+from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping
 
+import torch
+
 DYNAMIC_OFFLOAD_PROFILE_SCHEMA_VERSION = 1
 _PROFILE_PREFIX = "ddo-capacity-v1"
+
+
+class _NamedProfile:
+    """Library-owned identity, application and measurement for a named workload."""
+
+    def __init__(self, module, config):
+        self.config = config
+        self.context = {
+            "name": config.profile_name,
+            "model_class": type(module).__qualname__,
+            "identity_version": 2,
+        }
+        self.report = {"name": config.profile_name, "status": "disabled"}
+        self._active = False
+
+    def prepare(self):
+        config = self.config
+        if config.build_profile and not config.profile_name.strip():
+            raise ValueError("build_profile requires a non-empty profile_name.")
+        if not config.profile_name:
+            return config
+        if config.build_profile:
+            if torch.device(config.execution_device).type != "cuda":
+                raise ValueError("Profile calibration requires a CUDA execution device.")
+            if config.execution_mode != "linear_runtime":
+                raise ValueError("Profile calibration requires execution_mode='linear_runtime'.")
+            if not math.isfinite(config.profile_vram_headroom_gb) or config.profile_vram_headroom_gb < 0:
+                raise ValueError("profile_vram_headroom_gb must be finite and non-negative.")
+            self.report["status"] = "calibrating"
+            print(f"[dynamic-offload] profile {config.profile_name!r}: calibrating with zero resident budget.")
+            return replace(config, resident_module_budget_gb=0.0, profile_resident_module_budget_gb=0.0)
+        record = load_dynamic_offload_profile(self.context)
+        recommendation = get_dynamic_offload_profile_recommendation(record or {}) or {}
+        budget = recommendation.get("profile_resident_module_budget_gb")
+        if config.resident_module_budget_gb > 0:
+            self.report["status"] = "manual_override"
+            return config
+        if not isinstance(budget, (int, float)) or not math.isfinite(budget) or budget < 0:
+            self.report["status"] = "missing"
+            print(f"[dynamic-offload] profile {config.profile_name!r}: no recommendation; calibrate with build_profile=True.")
+            return config
+        if config.max_resident_module_budget_gb > 0:
+            budget = min(budget, config.max_resident_module_budget_gb)
+        self.report.update(status="applied", resident_budget_gb=budget)
+        print(f"[dynamic-offload] profile {config.profile_name!r}: requested resident budget={budget:.2f} GiB.")
+        if config.auto_budget_policy == "off":
+            return replace(config, resident_module_budget_gb=budget, _profile_budget_applied=True)
+        return replace(config, profile_resident_module_budget_gb=budget, _profile_budget_applied=True)
+
+    @contextmanager
+    def measure(self):
+        """Measure only the caller's inference region, then persist on success."""
+        if not self.config.build_profile:
+            yield self.report
+            return
+        if self._active:
+            raise RuntimeError("A profile measurement is already active.")
+        self._active = True
+        device = torch.device(self.config.execution_device)
+        try:
+            torch.cuda.synchronize(device)
+            free, total = torch.cuda.mem_get_info(device)
+            external_bytes = max(0, total - free - torch.cuda.memory_reserved(device))
+            torch.cuda.reset_peak_memory_stats(device)
+            yield self.report
+            torch.cuda.synchronize(device)
+            free_end, _ = torch.cuda.mem_get_info(device)
+            peak = max(total - free, total - free_end,
+                       external_bytes + torch.cuda.max_memory_reserved(device)) / 1024**3
+            budget = DynamicOffloadProfileSession.recommend_resident_budget(
+                total / 1024**3, peak, self.config.profile_vram_headroom_gb,
+            )
+            observation = {"status": "success", "peak_vram_gb": peak,
+                           "total_vram_gb": total / 1024**3,
+                           "headroom_gb": self.config.profile_vram_headroom_gb,
+                           "measurement": "cuda_peak_reserved_plus_initial_external"}
+            path = record_dynamic_offload_profile(
+                self.context, observation,
+                recommendation={"profile_resident_module_budget_gb": budget},
+            )
+            self.report.update(path=str(path), resident_budget_gb=budget, **observation)
+            self.report["status"] = "saved"
+            print(f"[dynamic-offload] profile {self.config.profile_name!r}: "
+                  f"peak={peak:.2f} GiB, margin={self.config.profile_vram_headroom_gb:.2f} GiB, "
+                  f"resident budget={budget:.2f} GiB; saved to {path}")
+        except BaseException:
+            self.report["status"] = "failed"
+            raise
+        finally:
+            self._active = False
 
 
 def _json_value(value: Any) -> Any:

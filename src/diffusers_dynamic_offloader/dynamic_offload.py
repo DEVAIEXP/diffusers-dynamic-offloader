@@ -619,10 +619,25 @@ def build_dynamic_offload_event_payload(
 
 
 def detect_quantized_backend_modules(module: nn.Module) -> dict[str, Any]:
-    sdnq_module_count = sum(1 for child in module.modules() if hasattr(child, "sdnq_dequantizer"))
+    sdnq_module_count = sum(1 for child in module.modules() if _is_sdnq_module(child))
     if not sdnq_module_count:
         return {}
     return {"sdnq_module_count": sdnq_module_count, "sdnq_status": "detected_forward_preserved"}
+
+
+def _is_sdnq_module(module: nn.Module) -> bool:
+    """Recognize both SDNQ storage formats without importing SDNQ itself.
+
+    SDNQ 0.2.x normally exposes ``sdnq_dequantizer`` on a wrapped layer, but
+    dynamic checkpoints may instead store an ``SDNQTensor`` directly in its
+    ``weight`` parameter.  Both retain ``forward_func`` and require the native
+    SDNQ forward, never DDO's dense-linear runtime.
+    """
+    if not hasattr(module, "forward_func"):
+        return False
+    if hasattr(module, "sdnq_dequantizer"):
+        return True
+    return getattr(getattr(module, "weight", None).__class__, "__name__", "") == "SDNQTensor"
 
 
 @dataclass(frozen=True)
@@ -1001,7 +1016,7 @@ class DynamicOffloadHook(ModelHook):
     @staticmethod
     def _is_sdnq_layer(module: nn.Module) -> bool:
         """Duck-type SDNQ layers without making SDNQ a DDO dependency."""
-        return hasattr(module, "sdnq_dequantizer") and hasattr(module, "forward_func")
+        return _is_sdnq_module(module)
 
     def _prepare_sdnq_runtime(self, module: nn.Module) -> None:
         """Preserve SDNQ forwards while swapping their packed parameters on demand.
@@ -2252,6 +2267,14 @@ def enable_dynamic_offload(
         if unknown:
             raise TypeError(f"Unknown DynamicOffloadConfig override(s): {', '.join(unknown)}")
         effective_config = replace(effective_config, **config_overrides)
+
+    # An SDNQ layer is often also an ``nn.Linear`` subclass.  It must not
+    # enter the dense functional runtime: that path materializes its weight as
+    # BF16 and loses the backend-owned forward.  Switch before profile setup so
+    # profile calibration and normal execution share the SDNQ runtime.
+    quantized_backend_payload = detect_quantized_backend_modules(module)
+    if quantized_backend_payload and effective_config.execution_mode.lower() == "linear_runtime":
+        effective_config = replace(effective_config, execution_mode="sdnq_runtime")
 
     if effective_config is not settings.config:
         settings = replace(

@@ -160,6 +160,7 @@ class DynamicOffloadPresetTests(unittest.TestCase):
             def __init__(self):
                 super().__init__()
                 self.sdnq_dequantizer = object()
+                self.forward_func = lambda layer, value: value
 
         settings = load_dynamic_offload_settings_from_env(
             running_on_wsl=False,
@@ -182,6 +183,7 @@ class DynamicOffloadPresetTests(unittest.TestCase):
             def __init__(self):
                 super().__init__()
                 self.sdnq_dequantizer = object()
+                self.forward_func = lambda layer, value: value
 
         settings = load_dynamic_offload_settings_from_env(
             running_on_wsl=False,
@@ -195,6 +197,25 @@ class DynamicOffloadPresetTests(unittest.TestCase):
         )
         self.assertEqual(result.route, "none")
         self.assertTrue(result.should_move_to_execution_device)
+
+    def test_sdnq_tensor_storage_is_detected_and_uses_sdnq_runtime(self):
+        class SDNQTensor:
+            pass
+
+        class FakeSdnqTensorLayer(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.weight = SDNQTensor()
+                self.forward_func = lambda layer, value: value
+
+        module = FakeSdnqTensorLayer()
+        self.assertEqual(detect_quantized_backend_modules(module)["sdnq_module_count"], 1)
+        settings = load_dynamic_offload_settings_from_env(
+            running_on_wsl=False,
+            environ={"DDO_PRESET": "one_shot_fast"},
+        )
+        result = enable_dynamic_offload(module, settings=settings, apply_hook=False)
+        self.assertEqual(result.settings.config.execution_mode, "sdnq_runtime")
 
     def test_enable_pipeline_offload_reuses_one_settings_object(self):
         class FakePipeline:
@@ -432,6 +453,7 @@ class DynamicOffloadPresetTests(unittest.TestCase):
             def __init__(self):
                 super().__init__()
                 self.sdnq_dequantizer = object()
+                self.forward_func = lambda layer, value: value
 
         result = detect_quantized_backend_modules(FakeSdnqLayer())
         self.assertEqual(result["sdnq_status"], "detected_forward_preserved")

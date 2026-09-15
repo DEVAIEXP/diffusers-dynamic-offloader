@@ -230,7 +230,11 @@ class PinnedStagingPool:
 
     def stage_file_slice(self, source: torch.Tensor, file_slice: "SafetensorFileSlice") -> torch.Tensor:
         """Read one checkpoint byte range directly into the active pinned slot."""
-        if source.device.type != "cpu" or not source.is_contiguous():
+        source_device = getattr(source, "device", None)
+        source_contiguous = getattr(source, "is_contiguous", None)
+        if ((source_device is not None and source_device.type != "cpu") or (
+            callable(source_contiguous) and not source_contiguous()
+        )):
             raise ValueError("Pinned file staging accepts contiguous CPU tensors only")
         size_bytes = source.numel() * source.element_size()
         if size_bytes != file_slice.size_bytes:

@@ -71,6 +71,21 @@ class DynamicOffloadPresetTests(unittest.TestCase):
         self.assertEqual(settings.as_metrics()["dynamic_offload_profile_vram_headroom_gb"], 1.25)
         self.assertFalse(hasattr(settings.config, "auto_full_pin_resident_budget_gb"))
 
+    def test_vmm_runtime_settings_require_an_explicit_mapping_budget(self):
+        settings = load_dynamic_offload_settings_from_env(
+            running_on_wsl=False,
+            environ={
+                "DDO_EXECUTION_MODE": "vmm_runtime",
+                "DDO_VMM_RESIDENT_WEIGHT_BUDGET_GB": "3.5",
+                "DDO_VMM_STAGING_BUFFER_GB": "0.75",
+            },
+        )
+        self.assertTrue(settings.enabled)
+        self.assertEqual(settings.config.execution_mode, "vmm_runtime")
+        self.assertEqual(settings.config.vmm_resident_weight_budget_gb, 3.5)
+        self.assertEqual(settings.config.vmm_staging_buffer_gb, 0.75)
+        self.assertEqual(settings.as_metrics()["dynamic_offload_vmm_resident_weight_budget_gb"], 3.5)
+
     def test_wsl_disables_pinned_memory_by_default(self):
         settings = load_dynamic_offload_settings_from_env(
             running_on_wsl=True,

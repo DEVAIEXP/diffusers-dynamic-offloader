@@ -50,8 +50,10 @@ The defaults below are the `DynamicOffloadConfig(...)` dataclass defaults. `Dyna
 | `skip_modules_pattern` | `()` | Python only | Regex patterns for modules DDO should ignore. |
 | `always_resident_modules_pattern` | `()` | `DDO_ALWAYS_RESIDENT_MODULE_PATTERNS` | Comma- or semicolon-separated regex patterns kept resident. `from_env(...)` supplies patterns for common projection, embedding, and normalization modules unless overridden. |
 | `small_tensor_threshold_bytes` | `16 KiB` | `DDO_SMALL_TENSOR_THRESHOLD_KB` | Small tensors are moved directly instead of dynamically copied. `from_env(...)` resolves this to `1024 KiB` before preset overrides. |
-| `execution_mode` | `"plan"` | `DDO_EXECUTION_MODE` | `plan` builds the placement plan; `linear_runtime` enables DDO's dense-linear runtime path. |
+| `execution_mode` | `"plan"` | `DDO_EXECUTION_MODE` | `plan` builds the placement plan; `linear_runtime` enables DDO's dense-linear runtime path. Experimental `vmm_runtime` streams standard dense BF16/FP16 linear weights through CUDA virtual-memory mappings. |
 | `linear_runtime_strategy` | `"functional"` | `DDO_LINEAR_RUNTIME_STRATEGY` | Dense-linear execution strategy: `functional` calls the functional operator with a transient weight copy. Experimental `swap` temporarily attaches the CUDA copy to the module parameter and restores the CPU source immediately after the original forward. |
+| `vmm_resident_weight_budget_gb` | `0.0` | `DDO_VMM_RESIDENT_WEIGHT_BUDGET_GB` | Required positive physical-weight cache budget for `vmm_runtime`. VMM reserves virtual addresses separately; this budget limits currently mapped CUDA backing. Requires `pip install diffusers-dynamic-offloader[vmm]`. |
+| `vmm_staging_buffer_gb` | `0.625` | `DDO_VMM_STAGING_BUFFER_GB` | Bounded reusable pinned host buffer for VMM group uploads. It must fit the largest execution group, not the full model. |
 | `pin_cpu_memory` | `False` | `DDO_PIN_CPU_MEMORY` | Enables pinned CPU tensor copies when supported and safe. |
 | `allow_pin_memory_fallback` | `True` | `DDO_ALLOW_PIN_MEMORY_FALLBACK` | Fall back cleanly if pinning fails. |
 | `pin_cpu_workers` | `1` | `DDO_PIN_CPU_WORKERS` | Positive worker count for pinning preparation. `from_env(...)` resolves `4` before preset overrides. |
@@ -80,6 +82,35 @@ The defaults below are the `DynamicOffloadConfig(...)` dataclass defaults. `Dyna
 
 `DDO_SAFETENSORS_BACKEND` is also accepted as a compatibility alias for `DDO_LOAD_SAFETENSORS_BACKEND`.
 
+### Experimental CUDA VMM runtime
+
+`vmm_runtime` is an opt-in, CUDA-only route for standard dense `nn.Linear`
+weights. It reserves a stable CUDA virtual-address slot for each weight, then
+maps bounded physical backing only while that weight is needed. It is intended
+to avoid eagerly pinning a full transformer just to obtain fast asynchronous
+copies.
+
+Install the optional dependency, then choose a positive mapped-weight budget:
+
+```python
+from diffusers_dynamic_offloader import DynamicOffloadConfig, enable_dynamic_offload
+
+result = enable_dynamic_offload(
+    transformer,
+    config=DynamicOffloadConfig(
+        execution_mode="vmm_runtime",
+        vmm_resident_weight_budget_gb=4.0,
+    ),
+    use_environment=False,
+)
+```
+
+The route currently accepts CUDA devices reporting virtual-memory-management
+support and CPU-resident contiguous BF16 or FP16 `nn.Linear` weights. It does
+not support quantized/custom linear forwards, embeddings, or a zero mapping
+budget. VMM reduces weight-residency pressure; activation and KV/cache memory
+must still fit independently.
+
 ### Full-pin zero-resident behavior
 
 When balanced auto resolves to `full_pin_zero_resident`, DDO offloads even the default
@@ -96,7 +127,7 @@ These variables are recognized directly by DDO:
 | Variable | Purpose |
 | --- | --- |
 | `DDO_PRESET` | Selects the preset when code calls `DynamicOffloadSettings.from_env()` or does not pass an explicit preset. |
-| `DDO_PLAN` | Boolean that enables DDO when `DDO_EXECUTION_MODE=plan`; `linear_runtime` also enables DDO without this flag. |
+| `DDO_PLAN` | Boolean that enables DDO when `DDO_EXECUTION_MODE=plan`; either runtime mode also enables DDO without this flag. |
 | `DDO_AVAILABLE_SYSTEM_RAM_GB` | Overrides detected available system RAM. Useful for simulating smaller RAM machines. |
 | `DDO_DISABLE_PIN_ON_WSL` | Disables pinned CPU memory on WSL by default. Set to `0` to force pinning experiments. |
 | `DDO_PURGE_WINDOWS_STANDBY_<PHASE>` | Enables Windows standby-list purge for a named phase. Non-Windows platforms no-op safely; on Windows it requires `SeProfileSingleProcessPrivilege`, normally from an elevated Administrator terminal. |

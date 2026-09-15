@@ -17,6 +17,10 @@ dev = [
     "pytest",
     "ruff>=0.14.3",
 ]
+vmm = [
+    "cuda-core>=1.2.0",
+    "cuda-bindings>=13.4.0",
+]
 
 [build-system]
 requires = ["setuptools>=68"]

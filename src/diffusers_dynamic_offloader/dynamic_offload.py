@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import contextlib
+import json
 import os
 import re
 import threading
@@ -473,6 +474,18 @@ class DynamicOffloadConfig:
     small_tensor_threshold_bytes: int = 16 * 1024
     execution_mode: str = "plan"
     linear_runtime_strategy: str = "functional"
+    vmm_resident_weight_budget_gb: float = 0.0
+    vmm_staging_buffer_gb: float = 0.625
+    vmm_windows_file_read_chunk_mb: int = 2
+    vmm_virtual_host_transport: bool = False
+    vmm_managed_weight_backing: bool = False
+    vmm_managed_weight_backing_max_gb: float = 4.0
+    vmm_pin_source_weights: bool = False
+    vmm_fault_fallback: bool = False
+    # Experimental diagnostic only.  Registering every tensor in an already
+    # materialized PyTorch checkpoint is not the intended VMM data path and
+    # can be very expensive under Windows/WDDM.
+    vmm_register_source_weights: bool = False
     pin_cpu_memory: bool = False
     allow_pin_memory_fallback: bool = True
     pin_cpu_workers: int = 1
@@ -544,6 +557,15 @@ class DynamicOffloadSettings:
             "dynamic_offload_effective_preset": self.effective_preset or None,
             "dynamic_offload_execution_mode": config.execution_mode,
             "dynamic_offload_linear_runtime_strategy": config.linear_runtime_strategy,
+            "dynamic_offload_vmm_resident_weight_budget_gb": config.vmm_resident_weight_budget_gb,
+            "dynamic_offload_vmm_staging_buffer_gb": config.vmm_staging_buffer_gb,
+            "dynamic_offload_vmm_windows_file_read_chunk_mb": config.vmm_windows_file_read_chunk_mb,
+            "dynamic_offload_vmm_virtual_host_transport": config.vmm_virtual_host_transport,
+            "dynamic_offload_vmm_managed_weight_backing": config.vmm_managed_weight_backing,
+            "dynamic_offload_vmm_managed_weight_backing_max_gb": config.vmm_managed_weight_backing_max_gb,
+            "dynamic_offload_vmm_pin_source_weights": config.vmm_pin_source_weights,
+            "dynamic_offload_vmm_fault_fallback": config.vmm_fault_fallback,
+            "dynamic_offload_vmm_register_source_weights": config.vmm_register_source_weights,
             "dynamic_offload_pin_cpu_memory": self.requested_pin_cpu_memory,
             "dynamic_offload_effective_pin_cpu_memory": self.effective_pin_cpu_memory,
             "dynamic_offload_allow_pin_memory_fallback": config.allow_pin_memory_fallback,
@@ -795,6 +817,26 @@ class DynamicOffloadHook(ModelHook):
         self.offload_device = torch.device(config.offload_device)
         self.execution_mode = config.execution_mode.lower()
         self.linear_runtime_strategy = config.linear_runtime_strategy.lower()
+        self.vmm_resident_weight_budget_bytes = int(
+            max(0.0, float(config.vmm_resident_weight_budget_gb)) * 1024**3
+        )
+        self.vmm_staging_buffer_bytes = int(max(0.0, float(config.vmm_staging_buffer_gb)) * 1024**3)
+        self._vmm_store = None
+        self._vmm_runtime_active = False
+        self._vmm_arena = None
+        self._vmm_host_registry = None
+        self._vmm_file_slices = None
+        self._vmm_managed_backing = None
+        self._vmm_staging_pool = None
+        self._vmm_upload_stream = None
+        self._vmm_group_hooks: list[Any] = []
+        self._vmm_execution_groups: list[tuple[str, list[tuple[str, nn.Linear]]]] = []
+        self._vmm_active_group_leases: dict[str, list[Any]] = {}
+        self._vmm_pending_group_leases: dict[str, list[Any]] = {}
+        self._vmm_pending_group_events: dict[str, Any] = {}
+        self._vmm_prefetch_executor: ThreadPoolExecutor | None = None
+        self._vmm_prefetch_futures: dict[str, Any] = {}
+        self._vmm_prefetch_lock = threading.RLock()
         if self.linear_runtime_strategy not in {"functional", "swap"}:
             raise ValueError("DynamicOffloadConfig.linear_runtime_strategy must be 'functional' or 'swap'")
         self.pin_cpu_workers = max(1, int(config.pin_cpu_workers))
@@ -821,12 +863,16 @@ class DynamicOffloadHook(ModelHook):
             or f"{module.__class__.__module__}.{module.__class__.__qualname__}"
         )
         self.state = build_dynamic_offload_plan(module, self.config)
-        if self.execution_mode not in {"plan", "linear_runtime", "sdnq_runtime"}:
-            raise ValueError("DynamicOffloadConfig.execution_mode must be 'plan', 'linear_runtime', or 'sdnq_runtime'")
+        if self.execution_mode not in {"plan", "linear_runtime", "sdnq_runtime", "vmm_runtime"}:
+            raise ValueError(
+                "DynamicOffloadConfig.execution_mode must be 'plan', 'linear_runtime', 'sdnq_runtime', or 'vmm_runtime'"
+            )
         if self.execution_mode == "linear_runtime":
             self._prepare_linear_runtime(module)
         elif self.execution_mode == "sdnq_runtime":
             self._prepare_sdnq_runtime(module)
+        elif self.execution_mode == "vmm_runtime":
+            self._prepare_vmm_runtime(module)
         if self.config.verbose:
             summary = self.state.as_dict()
             print(
@@ -873,16 +919,63 @@ class DynamicOffloadHook(ModelHook):
         return module
 
     def detach_hook(self, module: nn.Module) -> nn.Module:
+        self._clear_vmm_execution_groups()
         self._restore_patches()
+        self._close_vmm_store()
         return module
 
+    def vmm_runtime_stats(self) -> dict[str, int] | None:
+        """Return a snapshot of VMM cache activity while the hook is active."""
+        if self._vmm_arena is None:
+            return None
+        result = {
+            "reserved_bytes": 0,
+            "resident_bytes": 0,
+            "materializations": 0,
+            "evictions": 0,
+            "copied_bytes": 0,
+        }
+        if self._vmm_arena is not None:
+            arena_stats = self._vmm_arena.stats
+            result.update(
+                {
+                    "arena_reserved_bytes": arena_stats.reserved_bytes,
+                    "arena_resident_bytes": arena_stats.resident_bytes,
+                    "arena_materializations": arena_stats.materializations,
+                    "arena_evictions": arena_stats.evictions,
+                    "arena_copied_bytes": arena_stats.copied_bytes,
+                    "arena_map_seconds": arena_stats.map_seconds,
+                    "arena_direct_dma_seconds": arena_stats.direct_dma_seconds,
+                    "arena_staging_seconds": arena_stats.staging_seconds,
+                    "arena_file_slice_staging_seconds": arena_stats.file_slice_staging_seconds,
+                    "arena_file_slice_bytes": arena_stats.file_slice_bytes,
+                    "arena_temporary_fallbacks": arena_stats.temporary_fallbacks,
+                    "arena_temporary_bytes": arena_stats.temporary_bytes,
+                    "arena_persistent_virtual_views": arena_stats.persistent_virtual_views,
+                }
+            )
+            result["materializations"] += arena_stats.materializations
+            result["evictions"] += arena_stats.evictions
+            result["copied_bytes"] += arena_stats.copied_bytes
+            result["reserved_bytes"] += arena_stats.reserved_bytes
+            result["resident_bytes"] += arena_stats.resident_bytes
+        if self._vmm_managed_backing is not None:
+            result["managed_backing_planned_bytes"] = self._vmm_managed_backing.size_bytes
+            result["managed_backing_populated_bytes"] = self._vmm_managed_backing.populated_bytes
+            result["managed_backing_populate_seconds"] = self._vmm_managed_backing.populate_seconds
+        return result
+
     def deinitalize_hook(self, module: nn.Module) -> nn.Module:
+        self._clear_vmm_execution_groups()
         self._restore_patches()
+        self._close_vmm_store()
         return module
 
     def pre_forward(self, module: nn.Module, *args, **kwargs) -> tuple[tuple[Any, ...], dict[str, Any]]:
         if self.execution_mode == "plan":
             return args, kwargs
+        if self.execution_mode == "vmm_runtime" and self._vmm_execution_groups:
+            self._schedule_vmm_execution_group(0)
         return (
             tuple(self._move_value_to_execution_device(value, "forward_input") for value in args),
             {
@@ -1012,6 +1105,391 @@ class DynamicOffloadHook(ModelHook):
             self.state.add_setup("pin_linear_weights", time.perf_counter() - start, pinned_bytes)
         elif self.config.pin_cpu_memory and modules_to_pin:
             self.state.add_setup("pin_linear_weights_skipped", 0.0, 0)
+
+    def _prepare_vmm_runtime(self, module: nn.Module) -> None:
+        """Prepare the narrow VMM route for standard immutable dense linears.
+
+        VMM owns only streamed linear weights.  Biases and small tensors follow
+        the ordinary DDO placement rules, while quantized/custom forwards stay
+        outside this experimental route.
+        """
+        if self.execution_device.type != "cuda" or self.offload_device.type != "cpu":
+            raise ValueError("vmm_runtime requires execution_device='cuda:*' and offload_device='cpu'")
+        if self.vmm_resident_weight_budget_bytes <= 0:
+            raise ValueError("vmm_runtime requires a positive vmm_resident_weight_budget_gb")
+        if self.vmm_staging_buffer_bytes <= 0:
+            raise ValueError("vmm_runtime requires a positive vmm_staging_buffer_gb")
+        if detect_quantized_backend_modules(module):
+            raise ValueError("vmm_runtime supports only standard dense nn.Linear weights, not quantized backends")
+
+        from .vmm_weight_store import PinnedStagingPool, RegisteredHostWeightRegistry, SafetensorSliceRegistry
+
+        self._vmm_runtime_active = True
+        self._vmm_staging_pool = PinnedStagingPool(
+            self.vmm_staging_buffer_bytes,
+            registered_virtual_host=self.config.vmm_virtual_host_transport,
+            windows_file_read_chunk_bytes=max(1, int(self.config.vmm_windows_file_read_chunk_mb)) * 1024**2,
+        )
+        self._vmm_file_slices = getattr(module, "_ddo_safetensor_slices", None)
+        if self._vmm_file_slices is not None and not isinstance(self._vmm_file_slices, SafetensorSliceRegistry):
+            self._vmm_file_slices = None
+        if self._vmm_file_slices is not None:
+            self._vmm_prefetch_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="ddo-vmm-read")
+        file_slice_summary = getattr(module, "_ddo_safetensor_slice_summary", {})
+        self._vmm_upload_stream = torch.cuda.Stream(device=self.execution_device)
+        self._vmm_host_registry = (
+            RegisteredHostWeightRegistry(self.execution_device.index or 0)
+            if self.config.vmm_register_source_weights
+            else None
+        )
+        self.state.planner_decisions.update(
+            {
+                "vmm_runtime": "experimental_dense_linear",
+                "vmm_resident_weight_budget_gb": round(self.vmm_resident_weight_budget_bytes / 1024**3, 4),
+                "vmm_staging_buffer_gb": round(self.vmm_staging_buffer_bytes / 1024**3, 4),
+                "vmm_windows_file_read_chunk_mb": int(self.config.vmm_windows_file_read_chunk_mb),
+                "vmm_staging_slots": self._vmm_staging_pool.slots,
+                "vmm_virtual_host_transport": self._vmm_staging_pool.uses_registered_virtual_host,
+                "vmm_file_slice_transport": self._vmm_file_slices is not None,
+                "vmm_file_slice_background_prefetch": self._vmm_file_slices is not None,
+                "vmm_fault_fallback": self.config.vmm_fault_fallback,
+                "vmm_windows_overlapped_file_io": self._vmm_staging_pool.uses_windows_overlapped_file_io,
+                "vmm_safetensor_slices_bound": int(file_slice_summary.get("bound", 0)),
+                "vmm_safetensor_slices_available": int(file_slice_summary.get("available", 0)),
+            }
+        )
+        skip_patterns = tuple(re.compile(pattern) for pattern in self.config.skip_modules_pattern)
+        self._move_root_local_tensors_to_device(module)
+        # VMM uploads are issued one execution group at a time.  Keep the
+        # immutable CPU sources page-locked so the upload stream can DMA
+        # directly from host memory instead of first copying every group from
+        # pageable checkpoint storage into the bounded staging pool.  The
+        # latter path is safe but is dominated by pageable->pinned copies on
+        # Windows/WDDM for large transformer blocks.
+        if self.config.vmm_pin_source_weights and not self._pin_memory_disabled:
+            start = time.perf_counter()
+            pinned_bytes = 0
+            for _module_name, submodule in module.named_modules():
+                if not isinstance(submodule, nn.Linear):
+                    continue
+                weight = submodule.weight.data
+                if weight.device.type != "cpu" or weight.is_pinned():
+                    continue
+                try:
+                    submodule.weight.data = weight.pin_memory()
+                    pinned_bytes += _tensor_size_bytes(submodule.weight)
+                except RuntimeError as exc:
+                    if not self.config.allow_pin_memory_fallback:
+                        raise
+                    self._disable_pin_memory("vmm_pin_source_weights_failed", exc)
+                    break
+            if pinned_bytes:
+                self.state.add_setup("vmm_pin_source_weights", time.perf_counter() - start, pinned_bytes)
+        if self._vmm_host_registry is not None:
+            start = time.perf_counter()
+            registered_bytes = 0
+            rejected_weights = 0
+            for _module_name, submodule in module.named_modules():
+                if not isinstance(submodule, nn.Linear) or not self._can_patch_linear(submodule):
+                    continue
+                weight = submodule.weight.data
+                if self._vmm_host_registry.register(weight):
+                    registered_bytes += _tensor_size_bytes(weight)
+                else:
+                    rejected_weights += 1
+            self.state.add_setup("vmm_register_source_weights", time.perf_counter() - start, registered_bytes)
+            self.state.planner_decisions["vmm_registered_source_weight_gb"] = round(
+                registered_bytes / 1024**3, 4
+            )
+            self.state.planner_decisions["vmm_rejected_source_weight_count"] = rejected_weights
+        self._register_vmm_execution_groups(module)
+        for module_name, submodule in module.named_modules():
+            if not module_name:
+                continue
+            if skip_patterns and any(pattern.search(module_name) for pattern in skip_patterns):
+                continue
+            if isinstance(submodule, nn.Linear):
+                in_native_arena = self._vmm_arena is not None and self._vmm_arena.contains_weight(module_name)
+                if in_native_arena:
+                    if not self._can_patch_linear(submodule):
+                        raise ValueError(f"vmm_runtime cannot patch nonstandard dense linear {module_name!r}")
+                    if submodule.weight.dtype not in {torch.float16, torch.bfloat16}:
+                        raise ValueError(
+                            f"vmm_runtime supports only float16/bfloat16 weights; {module_name!r} is {submodule.weight.dtype}"
+                        )
+                    self._move_linear_to_runtime_devices(module_name, submodule, modules_to_pin=None)
+                    self._patch_vmm_linear(module_name, submodule)
+                else:
+                    self._move_module_tensors_to_execution_device(submodule)
+            else:
+                self._move_small_local_tensors_to_device(submodule)
+
+    def _register_vmm_execution_groups(self, module: nn.Module) -> None:
+        """Lease one sequential execution group at a time when one is discoverable.
+
+        The grouping is intentionally model-agnostic: the primary ``ModuleList``
+        is selected by the BF16/FP16 linear weight bytes below its direct items.
+        This turns a sequence of leaf-level VMM eviction barriers into one barrier
+        between substantial execution groups, such as transformer blocks.
+        """
+        if not self._vmm_runtime_active:
+            return
+        candidates: list[tuple[int, list[tuple[str, nn.Module, list[tuple[str, nn.Linear]]]]]] = []
+        for container_name, container in module.named_modules():
+            if not isinstance(container, nn.ModuleList) or len(container) < 2:
+                continue
+            groups: list[tuple[str, nn.Module, list[tuple[str, nn.Linear]]]] = []
+            total_bytes = 0
+            for index, group_module in enumerate(container):
+                group_name = f"{container_name}.{index}" if container_name else str(index)
+                linears: list[tuple[str, nn.Linear]] = []
+                for relative_name, child in group_module.named_modules():
+                    if not isinstance(child, nn.Linear) or not self._can_patch_linear(child):
+                        continue
+                    linear_name = f"{group_name}.{relative_name}" if relative_name else group_name
+                    if child.weight.dtype not in {torch.float16, torch.bfloat16}:
+                        continue
+                    linears.append((linear_name, child))
+                    total_bytes += _tensor_size_bytes(child.weight)
+                if linears:
+                    groups.append((group_name, group_module, linears))
+            if len(groups) >= 2:
+                candidates.append((total_bytes, groups))
+        if not candidates:
+            return
+
+        _, groups = max(candidates, key=lambda item: item[0])
+        max_group_bytes = max(sum(_tensor_size_bytes(linear.weight) for _, linear in linears) for _, _, linears in groups)
+        if max_group_bytes > self.vmm_resident_weight_budget_bytes:
+            raise ValueError(
+                "vmm_runtime resident budget is smaller than one execution group "
+                f"({max_group_bytes / 1024**3:.2f} GiB required)."
+            )
+        if max_group_bytes * 2 > self.vmm_resident_weight_budget_bytes:
+            raise ValueError(
+                "vmm_runtime resident budget must fit the current and prefetched execution groups "
+                f"({max_group_bytes * 2 / 1024**3:.2f} GiB required)."
+            )
+        if max_group_bytes > self.vmm_staging_buffer_bytes:
+            raise ValueError(
+                "vmm_runtime staging buffer is smaller than one execution group "
+                f"({max_group_bytes / 1024**3:.2f} GiB required)."
+            )
+        self.state.planner_decisions.update(
+            {
+                "vmm_execution_group_count": len(groups),
+                "vmm_execution_group_max_weight_gb": round(max_group_bytes / 1024**3, 4),
+            }
+        )
+        if self._vmm_file_slices is not None:
+            slice_count = 0
+            read_runs = 0
+            for _group_name, _group_module, linears in groups:
+                previous = None
+                previous_size = 0
+                for _linear_name, linear in linears:
+                    file_slice = self._vmm_file_slices.lookup(linear.weight.data)
+                    if file_slice is None:
+                        continue
+                    slice_count += 1
+                    if (
+                        previous is None
+                        or previous.path != file_slice.path
+                        or previous.offset_bytes + previous_size != file_slice.offset_bytes
+                    ):
+                        read_runs += 1
+                    previous = file_slice
+                    previous_size = file_slice.size_bytes
+            self.state.planner_decisions["vmm_file_slice_count"] = slice_count
+            self.state.planner_decisions["vmm_file_read_runs"] = read_runs
+        self._vmm_execution_groups = [(group_name, linears) for group_name, _, linears in groups]
+        from .vmm_model_arena import VmmModelArena
+
+        self._vmm_arena = VmmModelArena(
+            self.execution_device.index or 0,
+            self.vmm_resident_weight_budget_bytes,
+            file_slices=self._vmm_file_slices,
+            staging_pool=self._vmm_staging_pool,
+            registered_host=self._vmm_host_registry,
+        )
+        self.state.planner_decisions["vmm_backend"] = "native_cpp_allocator"
+        self.state.planner_decisions["vmm_native_library"] = self._vmm_arena.native_library_path
+        self.state.planner_decisions["vmm_physical_page_mb"] = round(
+            self._vmm_arena.physical_page_bytes / 1024**2, 4
+        )
+        self._vmm_arena.reserve_groups(
+            [(group_name, [(linear_name, linear.weight.data) for linear_name, linear in linears]) for group_name, _, linears in groups]
+        )
+        self.state.planner_decisions["vmm_persistent_virtual_views"] = self._vmm_arena.stats.persistent_virtual_views
+        if self.config.vmm_managed_weight_backing:
+            if os.name == "nt":
+                raise RuntimeError(
+                    "vmm_managed_weight_backing is disabled on Windows: bulk CUDA managed-memory "
+                    "population is unsafe under WDDM. Use bounded file transport instead."
+                )
+            from .vmm_weight_store import ManagedWeightBacking
+
+            backing_groups = [
+                (group_name, [(linear_name, linear.weight.data) for linear_name, linear in linears])
+                for group_name, _, linears in groups
+            ]
+            try:
+                self._vmm_managed_backing = ManagedWeightBacking(
+                    backing_groups,
+                    max_bytes=int(max(0.0, self.config.vmm_managed_weight_backing_max_gb) * 1024**3),
+                )
+                self._vmm_arena.configure_managed_backing(self._vmm_managed_backing)
+                self.state.planner_decisions["vmm_managed_weight_backing"] = True
+                self.state.planner_decisions["vmm_managed_weight_backing_planned_gb"] = round(
+                    self._vmm_managed_backing.size_bytes / 1024**3, 4
+                )
+                self.state.planner_decisions["vmm_managed_weight_backing_max_gb"] = round(
+                    self._vmm_managed_backing.max_bytes / 1024**3, 4
+                )
+            except Exception as error:
+                self._vmm_managed_backing = None
+                self.state.planner_decisions["vmm_managed_weight_backing"] = False
+                self.state.planner_decisions["vmm_managed_weight_backing_fallback"] = type(error).__name__
+        for group_index, (group_name, group_module, _linears) in enumerate(groups):
+            pre_handle = group_module.register_forward_pre_hook(
+                lambda _module, _args, index=group_index: self._enter_vmm_execution_group(index)
+            )
+            try:
+                post_handle = group_module.register_forward_hook(
+                    lambda _module, _args, _output, name=group_name: self._leave_vmm_execution_group(name),
+                    always_call=True,
+                )
+            except TypeError:  # pragma: no cover - legacy PyTorch compatibility.
+                post_handle = group_module.register_forward_hook(
+                    lambda _module, _args, _output, name=group_name: self._leave_vmm_execution_group(name)
+                )
+            self._vmm_group_hooks.extend((pre_handle, post_handle))
+
+    def _schedule_vmm_execution_group(self, group_index: int) -> None:
+        """Stage and upload a future group without blocking the compute stream."""
+        if group_index >= len(self._vmm_execution_groups):
+            return
+        group_name, linears = self._vmm_execution_groups[group_index]
+        if group_name in self._vmm_pending_group_leases or group_name in self._vmm_active_group_leases:
+            return
+        if self._vmm_staging_pool is None or self._vmm_upload_stream is None:
+            raise RuntimeError("vmm_runtime upload resources were released before scheduling a group")
+        if self._vmm_arena is None:
+            raise RuntimeError("vmm_runtime model arena was not initialized")
+        materializations_before = self._vmm_arena.stats.materializations
+        copied_bytes = 0
+        start = time.perf_counter()
+        leases: list[Any] = []
+        try:
+            leases.append(
+                self._vmm_arena.acquire(
+                    group_name,
+                    [(linear_name, linear.weight.data) for linear_name, linear in linears],
+                    self._vmm_staging_pool,
+                    self._vmm_upload_stream,
+                    self._vmm_host_registry,
+                    self._vmm_file_slices,
+                    self._vmm_managed_backing,
+                    allow_eviction=not self.config.vmm_fault_fallback,
+                )
+            )
+            copied_bytes = sum(_tensor_size_bytes(linear.weight) for _, linear in linears)
+        except BaseException:
+            for lease in reversed(leases):
+                lease.__exit__(None, None, None)
+            raise
+        ready_event = self._vmm_arena.mark_upload(group_name, self._vmm_upload_stream, self._vmm_staging_pool)
+        self._vmm_pending_group_leases[group_name] = leases
+        self._vmm_pending_group_events[group_name] = ready_event
+        if self._vmm_arena.stats.materializations != materializations_before:
+            self.state.add_copy(f"vmm_prefetch:{group_name}:weights", time.perf_counter() - start, copied_bytes)
+
+    def _submit_vmm_file_prefetch(self, group_index: int) -> None:
+        """Read and enqueue the next group while CUDA computes the current one."""
+        if self._vmm_prefetch_executor is None or group_index >= len(self._vmm_execution_groups):
+            self._schedule_vmm_execution_group(group_index)
+            return
+        group_name, _linears = self._vmm_execution_groups[group_index]
+        with self._vmm_prefetch_lock:
+            if (
+                group_name in self._vmm_prefetch_futures
+                or group_name in self._vmm_pending_group_leases
+                or group_name in self._vmm_active_group_leases
+            ):
+                return
+
+            def worker() -> None:
+                torch.cuda.set_device(self.execution_device)
+                self._schedule_vmm_execution_group(group_index)
+
+            self._vmm_prefetch_futures[group_name] = self._vmm_prefetch_executor.submit(worker)
+
+    def _enter_vmm_execution_group(self, group_index: int) -> None:
+        group_name, _linears = self._vmm_execution_groups[group_index]
+        with self._vmm_prefetch_lock:
+            future = self._vmm_prefetch_futures.pop(group_name, None)
+        if future is not None:
+            future.result()
+        else:
+            self._schedule_vmm_execution_group(group_index)
+        if group_name in self._vmm_active_group_leases:
+            raise RuntimeError(f"vmm_runtime group {group_name!r} was entered while still active")
+        leases = self._vmm_pending_group_leases.pop(group_name)
+        ready_event = self._vmm_pending_group_events.pop(group_name)
+        torch.cuda.current_stream(self.execution_device).wait_event(ready_event)
+        self._vmm_active_group_leases[group_name] = leases
+        self._submit_vmm_file_prefetch(group_index + 1)
+
+    def _leave_vmm_execution_group(self, group_name: str) -> None:
+        leases = self._vmm_active_group_leases.pop(group_name, ())
+        for lease in reversed(leases):
+            lease.__exit__(None, None, None)
+
+    def _clear_vmm_execution_groups(self) -> None:
+        while self._vmm_group_hooks:
+            self._vmm_group_hooks.pop().remove()
+        executor = self._vmm_prefetch_executor
+        if executor is not None:
+            with self._vmm_prefetch_lock:
+                futures = list(self._vmm_prefetch_futures.values())
+                self._vmm_prefetch_futures.clear()
+            for future in futures:
+                future.result()
+            executor.shutdown(wait=True)
+            self._vmm_prefetch_executor = None
+        for group_name in list(self._vmm_active_group_leases):
+            self._leave_vmm_execution_group(group_name)
+        for group_name in list(self._vmm_pending_group_leases):
+            self._leave_vmm_pending_group(group_name)
+        self._vmm_execution_groups.clear()
+
+    def _leave_vmm_pending_group(self, group_name: str) -> None:
+        event = self._vmm_pending_group_events.pop(group_name, None)
+        if event is not None:
+            event.synchronize()
+        leases = self._vmm_pending_group_leases.pop(group_name, ())
+        for lease in reversed(leases):
+            lease.__exit__(None, None, None)
+
+    def _close_vmm_store(self) -> None:
+        if not self._vmm_runtime_active and self._vmm_arena is None:
+            return
+        self._vmm_store = None
+        self._vmm_runtime_active = False
+        if self._vmm_arena is not None:
+            self._vmm_arena.close()
+            self._vmm_arena = None
+        if self._vmm_managed_backing is not None:
+            self._vmm_managed_backing.close()
+            self._vmm_managed_backing = None
+        if self._vmm_host_registry is not None:
+            self._vmm_host_registry.close()
+            self._vmm_host_registry = None
+        if self._vmm_staging_pool is not None:
+            self._vmm_staging_pool.close()
+        self._vmm_staging_pool = None
+        self._vmm_upload_stream = None
+        self._vmm_file_slices = None
 
     @staticmethod
     def _is_sdnq_layer(module: nn.Module) -> bool:
@@ -1621,6 +2099,33 @@ class DynamicOffloadHook(ModelHook):
 
         linear.forward = dynamic_linear_forward.__get__(linear, linear.__class__)
 
+    def _patch_vmm_linear(self, module_name: str, linear: nn.Linear) -> None:
+        """Execute one standard linear with a scoped VMM-backed weight view."""
+        if not self._vmm_runtime_active:
+            raise RuntimeError("vmm_runtime was not initialized")
+        original_forward = linear.forward
+        self._patched_modules.append((linear, original_forward))
+        self.state.patched_module_count += 1
+
+        def dynamic_vmm_linear_forward(patched_linear, input):
+            source_weight = patched_linear.weight.data
+            if source_weight.device.type != "cpu":
+                raise RuntimeError(f"vmm_runtime weight {module_name!r} must remain on CPU")
+            if input.device != self.execution_device:
+                input = self._move_value_to_execution_device(input, f"vmm:{module_name}:input")
+
+            if self._vmm_arena is not None and self._vmm_arena.contains_weight(module_name):
+                mapped_weight = self._vmm_arena.weight(module_name)
+                weight = mapped_weight if mapped_weight.dtype == input.dtype else mapped_weight.to(dtype=input.dtype)
+                bias = self._to_input_device(patched_linear.bias, input, f"vmm:{module_name}:bias")
+                return F.linear(input, weight, bias)
+
+            raise RuntimeError(
+                f"vmm_runtime linear {module_name!r} was patched but not assigned to the native VMM arena"
+            )
+
+        linear.forward = dynamic_vmm_linear_forward.__get__(linear, linear.__class__)
+
     def _patch_embedding(self, embedding: nn.Embedding) -> None:
         original_forward = embedding.forward
         self._patched_modules.append((embedding, original_forward))
@@ -1696,6 +2201,23 @@ class DynamicOffloadHook(ModelHook):
             print(
                 "  [dynamic-offload-profile] "
                 f"planner_decisions={planner_decisions}",
+                flush=True,
+            )
+
+        vmm_stats = self.vmm_runtime_stats()
+        if vmm_stats is not None and "arena_materializations" in vmm_stats:
+            print(
+                "  [dynamic-offload-profile] "
+                "vmm_arena: "
+                f"resident_gb={vmm_stats['arena_resident_bytes'] / 1024**3:.4f} "
+                f"materializations={vmm_stats['arena_materializations']} "
+                f"temporary_fallbacks={vmm_stats['arena_temporary_fallbacks']} "
+                f"temporary_gb={vmm_stats['arena_temporary_bytes'] / 1024**3:.4f} "
+                f"persistent_virtual_views={vmm_stats.get('arena_persistent_virtual_views', 0)} "
+                f"file_stage_seconds={vmm_stats['arena_file_slice_staging_seconds']:.4f} "
+                f"direct_dma_seconds={vmm_stats['arena_direct_dma_seconds']:.4f} "
+                f"managed_populated_gb={vmm_stats.get('managed_backing_populated_bytes', 0) / 1024**3:.4f} "
+                f"managed_populate_seconds={vmm_stats.get('managed_backing_populate_seconds', 0.0):.4f}",
                 flush=True,
             )
 
@@ -1806,6 +2328,15 @@ def load_dynamic_offload_settings_from_env(
         small_tensor_threshold_bytes=int(preset_env("DDO_SMALL_TENSOR_THRESHOLD_KB", "1024")) * 1024,
         execution_mode=execution_mode,
         linear_runtime_strategy=preset_env("DDO_LINEAR_RUNTIME_STRATEGY", "functional").lower(),
+        vmm_resident_weight_budget_gb=float(preset_env("DDO_VMM_RESIDENT_WEIGHT_BUDGET_GB", "0.0")),
+        vmm_staging_buffer_gb=float(preset_env("DDO_VMM_STAGING_BUFFER_GB", "0.625")),
+        vmm_windows_file_read_chunk_mb=int(preset_env("DDO_VMM_WINDOWS_FILE_READ_CHUNK_MB", "2")),
+        vmm_virtual_host_transport=preset_bool("DDO_VMM_VIRTUAL_HOST_TRANSPORT", "0"),
+        vmm_managed_weight_backing=preset_bool("DDO_VMM_MANAGED_WEIGHT_BACKING", "0"),
+        vmm_managed_weight_backing_max_gb=float(preset_env("DDO_VMM_MANAGED_WEIGHT_BACKING_MAX_GB", "4.0")),
+        vmm_pin_source_weights=preset_bool("DDO_VMM_PIN_SOURCE_WEIGHTS", "0"),
+        vmm_fault_fallback=preset_bool("DDO_VMM_FAULT_FALLBACK", "0"),
+        vmm_register_source_weights=preset_bool("DDO_VMM_REGISTER_SOURCE_WEIGHTS", "0"),
         pin_cpu_memory=effective_pin_cpu_memory,
         allow_pin_memory_fallback=allow_pin_memory_fallback,
         pin_cpu_workers=int(preset_env("DDO_PIN_CPU_WORKERS", "4")),
@@ -2316,31 +2847,40 @@ def enable_dynamic_offload(
 
 @contextlib.contextmanager
 def _temporary_safetensors_backend(backend: str):
+    """Apply an optional backend and report the actual local files opened."""
+    opened_files: set[Path] = set()
     backend = backend.strip().lower()
-    if not backend:
-        yield
-        return
-    if backend not in {"mmap", "pread"}:
+    if backend and backend not in {"mmap", "pread"}:
         raise ValueError("DynamicOffloadConfig.load_safetensors_backend must be '', 'mmap', or 'pread'")
 
     try:
         import safetensors
         import safetensors.torch
     except ImportError:
-        yield
+        yield opened_files
         return
 
     original_safe_open = safetensors.safe_open
     original_torch_load_file = safetensors.torch.load_file
 
     def safe_open_with_backend(filename, framework, device=None, **kwargs):
-        kwargs.setdefault("backend", backend)
+        try:
+            opened_files.add(Path(filename).resolve())
+        except (OSError, TypeError):
+            pass
+        if backend:
+            kwargs.setdefault("backend", backend)
         if device is None:
             return original_safe_open(filename, framework=framework, **kwargs)
         return original_safe_open(filename, framework=framework, device=device, **kwargs)
 
     def torch_load_file_with_backend(filename, device="cpu", **kwargs):
-        kwargs.setdefault("backend", backend)
+        try:
+            opened_files.add(Path(filename).resolve())
+        except (OSError, TypeError):
+            pass
+        if backend:
+            kwargs.setdefault("backend", backend)
         return original_torch_load_file(filename, device=device, **kwargs)
 
     safetensors.safe_open = safe_open_with_backend
@@ -2364,12 +2904,63 @@ def _temporary_safetensors_backend(backend: str):
             patched_modules.append((imported_module, "safe_load_file", original_torch_load_file))
 
     try:
-        yield
+        yield opened_files
     finally:
         for imported_module, attr_name, original_value in reversed(patched_modules):
             setattr(imported_module, attr_name, original_value)
         safetensors.safe_open = original_safe_open
         safetensors.torch.load_file = original_torch_load_file
+
+
+def _safetensor_file_slices(paths: list[Path]) -> dict[str, Any]:
+    """Read local safetensors headers without materializing any tensor payload."""
+    from .vmm_weight_store import SafetensorFileSlice
+
+    result: dict[str, SafetensorFileSlice] = {}
+    for checkpoint in paths:
+        if checkpoint.suffix != ".safetensors" or not checkpoint.is_file():
+            continue
+        try:
+            with checkpoint.open("rb") as source:
+                header_size = int.from_bytes(source.read(8), "little")
+                header = json.loads(source.read(header_size))
+            data_start = 8 + header_size
+        except (OSError, ValueError, json.JSONDecodeError):
+            continue
+        for tensor_name, entry in header.items():
+            if tensor_name == "__metadata__" or not isinstance(entry, dict):
+                continue
+            offsets = entry.get("data_offsets")
+            if not isinstance(offsets, list) or len(offsets) != 2:
+                continue
+            start, end = offsets
+            if not isinstance(start, int) or not isinstance(end, int) or end < start:
+                continue
+            result[tensor_name] = SafetensorFileSlice(checkpoint, data_start + start, end - start)
+    return result
+
+
+def _attach_safetensor_file_slices(module: nn.Module, paths: list[Path]) -> tuple[int, int]:
+    """Associate loaded parameter storage with its original safetensors bytes.
+
+    This metadata is intentionally private to the optional VMM runtime.  It
+    leaves Diffusers/Transformers loader semantics and normal CPU tensors
+    unchanged.
+    """
+    from .vmm_weight_store import SafetensorSliceRegistry
+
+    available = _safetensor_file_slices(paths)
+    if not available:
+        return 0, 0
+    registry = SafetensorSliceRegistry()
+    bound = 0
+    for name, parameter in module.named_parameters():
+        file_slice = available.get(name)
+        if file_slice is not None and registry.bind(parameter.data, file_slice):
+            bound += 1
+    if bound:
+        setattr(module, "_ddo_safetensor_slices", registry)
+    return bound, len(available)
 
 
 def from_pretrained_with_dynamic_offload(
@@ -2394,8 +2985,21 @@ def from_pretrained_with_dynamic_offload(
         config = replace(config, build_profile=build_profile)
     if (config.profile_name or config.build_profile) and not apply_dynamic:
         raise ValueError("Pass profile options to enable_offload after staged loading, or set apply_dynamic=True.")
-    with _temporary_safetensors_backend(config.load_safetensors_backend):
+    with _temporary_safetensors_backend(config.load_safetensors_backend) as opened_safetensor_files:
         module = from_pretrained(pretrained_model_name_or_path, **from_pretrained_kwargs)
+    # Preserve only file offsets for a local checkpoint.  Normal presets do
+    # not consume this metadata; VMM can later refill its bounded pinned ring
+    # directly from those file slices instead of copying materialized CPU
+    # tensors into it.
+    checkpoint_directory = Path(pretrained_model_name_or_path)
+    subfolder = from_pretrained_kwargs.get("subfolder")
+    if isinstance(subfolder, str) and subfolder:
+        checkpoint_directory /= subfolder
+    fallback_files = list(checkpoint_directory.glob("*.safetensors")) if checkpoint_directory.is_dir() else []
+    source_files = list(opened_safetensor_files) or fallback_files
+    bound_slices, discovered_slices = _attach_safetensor_file_slices(module, source_files)
+    if discovered_slices:
+        setattr(module, "_ddo_safetensor_slice_summary", {"bound": bound_slices, "available": discovered_slices})
     if not apply_dynamic:
         return DynamicOffloadLoadResult(module=module)
 

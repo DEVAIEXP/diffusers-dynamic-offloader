@@ -7,8 +7,17 @@ This repository is focused on `diffusers-dynamic-offloader` (DDO), a generic Dif
 - Keep the implementation model-agnostic. It must not depend on LTX-specific class names or component types.
 - Prefer Diffusers conventions and architecture. Code should be easy to upstream or adapt into Diffusers internals later.
 - Keep runtime logic self-contained in the offload manager. Host runners should mainly parse/pass parameters and orchestrate components.
-- Avoid native or hardware-specific low-level memory hooks unless explicitly chosen later. The current priority is compatibility first, then performance. If comparing with native approaches, describe it only as an inspiration or external reference, not as something DDO implements.
+- Preserve the existing PyTorch-backed DDO runtime paths. Native VMM work is explicitly scoped to the experimental `vmm_runtime` route and should not replace or destabilize the existing `linear_runtime` presets.
 - Keep Windows standby purge exposed by DDO as a Windows-only lifecycle helper. It should be safe/no-op outside Windows and must not become a generic Linux requirement.
+
+## Runtime Architecture
+
+- `linear_runtime` is the stable DDO runtime used by `one_shot_fast`, `low_ram_safe`, `wsl_compat`, and `warm_process`. It uses normal PyTorch CUDA allocation and must remain intact while native VMM work evolves.
+- `diffusers_offload_compat`, `diffusers_leaf_offload_compat`, and `off` remain compatibility/control presets that route through plan-mode behavior rather than `linear_runtime`.
+- `vmm_runtime` is the only route intended to use the native C++ VMM allocator in `ddo-vmm-allocator`. Consolidate VMM experiments into this route instead of adding parallel runner-only paths.
+- The native VMM target flow must install the C++ PyTorch allocator in a fresh child process before CUDA is initialized, then load the model under that allocator. The allocator owns virtual address reservation, physical residency, mapping/unmapping, pressure response, budget guards, and transfer accounting.
+- Avoid adding Python-side residency heuristics that try to pin a prefix, preserve a suffix, or otherwise simulate allocator pressure from hook order. Such experiments may be kept only as explicitly marked diagnostics, not as the target VMM path.
+- Do not remove or rewrite the working non-VMM runtime while implementing VMM. Once `vmm_runtime` is validated, add profile support for it separately.
 
 ## Experiment Tracking
 

@@ -44,6 +44,7 @@ from .profiles import (
     normalize_dynamic_offload_profile_context,
     record_dynamic_offload_profile,
 )
+from .vmm_weight_store import VmmWeightLease, VmmWeightStore, VmmWeightStoreStats
 
 __all__ = [
     "DDO_PRESETS",
@@ -88,4 +89,7 @@ __all__ = [
     "load_dynamic_offload_profile",
     "normalize_dynamic_offload_profile_context",
     "record_dynamic_offload_profile",
+    "VmmWeightLease",
+    "VmmWeightStore",
+    "VmmWeightStoreStats",
 ]

@@ -478,14 +478,12 @@ class DynamicOffloadConfig:
     vmm_staging_buffer_gb: float = 0.625
     vmm_windows_file_read_chunk_mb: int = 2
     vmm_virtual_host_transport: bool = False
-    vmm_managed_weight_backing: bool = False
-    vmm_managed_weight_backing_max_gb: float = 4.0
+    # Optional persistent cache of existing CPU source pages registered with
+    # CUDA.  It never allocates CUDA managed memory.  Pages beyond this budget
+    # retain the bounded checkpoint-file transport.
+    vmm_host_cache_gb: float = 0.0
     vmm_pin_source_weights: bool = False
     vmm_fault_fallback: bool = False
-    # Experimental diagnostic only.  Registering every tensor in an already
-    # materialized PyTorch checkpoint is not the intended VMM data path and
-    # can be very expensive under Windows/WDDM.
-    vmm_register_source_weights: bool = False
     pin_cpu_memory: bool = False
     allow_pin_memory_fallback: bool = True
     pin_cpu_workers: int = 1
@@ -561,11 +559,9 @@ class DynamicOffloadSettings:
             "dynamic_offload_vmm_staging_buffer_gb": config.vmm_staging_buffer_gb,
             "dynamic_offload_vmm_windows_file_read_chunk_mb": config.vmm_windows_file_read_chunk_mb,
             "dynamic_offload_vmm_virtual_host_transport": config.vmm_virtual_host_transport,
-            "dynamic_offload_vmm_managed_weight_backing": config.vmm_managed_weight_backing,
-            "dynamic_offload_vmm_managed_weight_backing_max_gb": config.vmm_managed_weight_backing_max_gb,
+            "dynamic_offload_vmm_host_cache_gb": config.vmm_host_cache_gb,
             "dynamic_offload_vmm_pin_source_weights": config.vmm_pin_source_weights,
             "dynamic_offload_vmm_fault_fallback": config.vmm_fault_fallback,
-            "dynamic_offload_vmm_register_source_weights": config.vmm_register_source_weights,
             "dynamic_offload_pin_cpu_memory": self.requested_pin_cpu_memory,
             "dynamic_offload_effective_pin_cpu_memory": self.effective_pin_cpu_memory,
             "dynamic_offload_allow_pin_memory_fallback": config.allow_pin_memory_fallback,
@@ -826,7 +822,6 @@ class DynamicOffloadHook(ModelHook):
         self._vmm_arena = None
         self._vmm_host_registry = None
         self._vmm_file_slices = None
-        self._vmm_managed_backing = None
         self._vmm_staging_pool = None
         self._vmm_upload_stream = None
         self._vmm_group_hooks: list[Any] = []
@@ -959,10 +954,9 @@ class DynamicOffloadHook(ModelHook):
             result["copied_bytes"] += arena_stats.copied_bytes
             result["reserved_bytes"] += arena_stats.reserved_bytes
             result["resident_bytes"] += arena_stats.resident_bytes
-        if self._vmm_managed_backing is not None:
-            result["managed_backing_planned_bytes"] = self._vmm_managed_backing.size_bytes
-            result["managed_backing_populated_bytes"] = self._vmm_managed_backing.populated_bytes
-            result["managed_backing_populate_seconds"] = self._vmm_managed_backing.populate_seconds
+        if self._vmm_host_registry is not None:
+            result["host_cache_registered_bytes"] = self._vmm_host_registry.registered_bytes
+            result["host_cache_skipped_bytes"] = self._vmm_host_registry.skipped_bytes
         return result
 
     def deinitalize_hook(self, module: nn.Module) -> nn.Module:
@@ -1137,9 +1131,10 @@ class DynamicOffloadHook(ModelHook):
             self._vmm_prefetch_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="ddo-vmm-read")
         file_slice_summary = getattr(module, "_ddo_safetensor_slice_summary", {})
         self._vmm_upload_stream = torch.cuda.Stream(device=self.execution_device)
+        host_cache_bytes = int(max(0.0, self.config.vmm_host_cache_gb) * 1024**3)
         self._vmm_host_registry = (
-            RegisteredHostWeightRegistry(self.execution_device.index or 0)
-            if self.config.vmm_register_source_weights
+            RegisteredHostWeightRegistry(self.execution_device.index or 0, max_bytes=host_cache_bytes)
+            if host_cache_bytes > 0
             else None
         )
         self.state.planner_decisions.update(
@@ -1153,6 +1148,7 @@ class DynamicOffloadHook(ModelHook):
                 "vmm_file_slice_transport": self._vmm_file_slices is not None,
                 "vmm_file_slice_background_prefetch": self._vmm_file_slices is not None,
                 "vmm_fault_fallback": self.config.vmm_fault_fallback,
+                "vmm_host_cache_budget_gb": round(host_cache_bytes / 1024**3, 4),
                 "vmm_windows_overlapped_file_io": self._vmm_staging_pool.uses_windows_overlapped_file_io,
                 "vmm_safetensor_slices_bound": int(file_slice_summary.get("bound", 0)),
                 "vmm_safetensor_slices_available": int(file_slice_summary.get("available", 0)),
@@ -1197,11 +1193,11 @@ class DynamicOffloadHook(ModelHook):
                     registered_bytes += _tensor_size_bytes(weight)
                 else:
                     rejected_weights += 1
-            self.state.add_setup("vmm_register_source_weights", time.perf_counter() - start, registered_bytes)
-            self.state.planner_decisions["vmm_registered_source_weight_gb"] = round(
+            self.state.add_setup("vmm_host_cache_registration", time.perf_counter() - start, registered_bytes)
+            self.state.planner_decisions["vmm_host_cache_registered_gb"] = round(
                 registered_bytes / 1024**3, 4
             )
-            self.state.planner_decisions["vmm_rejected_source_weight_count"] = rejected_weights
+            self.state.planner_decisions["vmm_host_cache_skipped_weight_count"] = rejected_weights
         self._register_vmm_execution_groups(module)
         for module_name, submodule in module.named_modules():
             if not module_name:
@@ -1321,35 +1317,6 @@ class DynamicOffloadHook(ModelHook):
             [(group_name, [(linear_name, linear.weight.data) for linear_name, linear in linears]) for group_name, _, linears in groups]
         )
         self.state.planner_decisions["vmm_persistent_virtual_views"] = self._vmm_arena.stats.persistent_virtual_views
-        if self.config.vmm_managed_weight_backing:
-            if os.name == "nt":
-                raise RuntimeError(
-                    "vmm_managed_weight_backing is disabled on Windows: bulk CUDA managed-memory "
-                    "population is unsafe under WDDM. Use bounded file transport instead."
-                )
-            from .vmm_weight_store import ManagedWeightBacking
-
-            backing_groups = [
-                (group_name, [(linear_name, linear.weight.data) for linear_name, linear in linears])
-                for group_name, _, linears in groups
-            ]
-            try:
-                self._vmm_managed_backing = ManagedWeightBacking(
-                    backing_groups,
-                    max_bytes=int(max(0.0, self.config.vmm_managed_weight_backing_max_gb) * 1024**3),
-                )
-                self._vmm_arena.configure_managed_backing(self._vmm_managed_backing)
-                self.state.planner_decisions["vmm_managed_weight_backing"] = True
-                self.state.planner_decisions["vmm_managed_weight_backing_planned_gb"] = round(
-                    self._vmm_managed_backing.size_bytes / 1024**3, 4
-                )
-                self.state.planner_decisions["vmm_managed_weight_backing_max_gb"] = round(
-                    self._vmm_managed_backing.max_bytes / 1024**3, 4
-                )
-            except Exception as error:
-                self._vmm_managed_backing = None
-                self.state.planner_decisions["vmm_managed_weight_backing"] = False
-                self.state.planner_decisions["vmm_managed_weight_backing_fallback"] = type(error).__name__
         for group_index, (group_name, group_module, _linears) in enumerate(groups):
             pre_handle = group_module.register_forward_pre_hook(
                 lambda _module, _args, index=group_index: self._enter_vmm_execution_group(index)
@@ -1389,7 +1356,6 @@ class DynamicOffloadHook(ModelHook):
                     self._vmm_upload_stream,
                     self._vmm_host_registry,
                     self._vmm_file_slices,
-                    self._vmm_managed_backing,
                     allow_eviction=not self.config.vmm_fault_fallback,
                 )
             )
@@ -1479,9 +1445,6 @@ class DynamicOffloadHook(ModelHook):
         if self._vmm_arena is not None:
             self._vmm_arena.close()
             self._vmm_arena = None
-        if self._vmm_managed_backing is not None:
-            self._vmm_managed_backing.close()
-            self._vmm_managed_backing = None
         if self._vmm_host_registry is not None:
             self._vmm_host_registry.close()
             self._vmm_host_registry = None
@@ -2216,8 +2179,8 @@ class DynamicOffloadHook(ModelHook):
                 f"persistent_virtual_views={vmm_stats.get('arena_persistent_virtual_views', 0)} "
                 f"file_stage_seconds={vmm_stats['arena_file_slice_staging_seconds']:.4f} "
                 f"direct_dma_seconds={vmm_stats['arena_direct_dma_seconds']:.4f} "
-                f"managed_populated_gb={vmm_stats.get('managed_backing_populated_bytes', 0) / 1024**3:.4f} "
-                f"managed_populate_seconds={vmm_stats.get('managed_backing_populate_seconds', 0.0):.4f}",
+                f"host_cache_gb={vmm_stats.get('host_cache_registered_bytes', 0) / 1024**3:.4f} "
+                f"host_cache_skipped_gb={vmm_stats.get('host_cache_skipped_bytes', 0) / 1024**3:.4f}",
                 flush=True,
             )
 
@@ -2332,11 +2295,9 @@ def load_dynamic_offload_settings_from_env(
         vmm_staging_buffer_gb=float(preset_env("DDO_VMM_STAGING_BUFFER_GB", "0.625")),
         vmm_windows_file_read_chunk_mb=int(preset_env("DDO_VMM_WINDOWS_FILE_READ_CHUNK_MB", "2")),
         vmm_virtual_host_transport=preset_bool("DDO_VMM_VIRTUAL_HOST_TRANSPORT", "0"),
-        vmm_managed_weight_backing=preset_bool("DDO_VMM_MANAGED_WEIGHT_BACKING", "0"),
-        vmm_managed_weight_backing_max_gb=float(preset_env("DDO_VMM_MANAGED_WEIGHT_BACKING_MAX_GB", "4.0")),
+        vmm_host_cache_gb=float(preset_env("DDO_VMM_HOST_CACHE_GB", "0")),
         vmm_pin_source_weights=preset_bool("DDO_VMM_PIN_SOURCE_WEIGHTS", "0"),
         vmm_fault_fallback=preset_bool("DDO_VMM_FAULT_FALLBACK", "0"),
-        vmm_register_source_weights=preset_bool("DDO_VMM_REGISTER_SOURCE_WEIGHTS", "0"),
         pin_cpu_memory=effective_pin_cpu_memory,
         allow_pin_memory_fallback=allow_pin_memory_fallback,
         pin_cpu_workers=int(preset_env("DDO_PIN_CPU_WORKERS", "4")),

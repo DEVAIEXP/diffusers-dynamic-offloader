@@ -201,10 +201,6 @@ class VmmModelArena:
                 self._persistent_virtual_views += len(views)
             self._native.reset_runtime_stats()
 
-    def configure_managed_backing(self, managed_backing: Any | None) -> None:
-        if managed_backing is not None:
-            self._native.configure_managed_source(managed_backing)
-
     def acquire(
         self,
         group_key: str,
@@ -213,10 +209,9 @@ class VmmModelArena:
         stream: Any,
         registered_host: RegisteredHostWeightRegistry | None = None,
         file_slices: SafetensorSliceRegistry | None = None,
-        managed_backing: Any | None = None,
         allow_eviction: bool = True,
     ) -> VmmModelArenaLease:
-        del sources, staging, registered_host, file_slices, managed_backing, allow_eviction
+        del sources, staging, registered_host, file_slices, allow_eviction
         with self._lock:
             self._require_open()
             group = self._groups[group_key]

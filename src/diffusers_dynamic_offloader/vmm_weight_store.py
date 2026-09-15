@@ -415,6 +415,7 @@ class RegisteredHostWeightRegistry:
         self.registered_bytes = 0
         self.skipped_bytes = 0
         self._registrations: dict[tuple[int, int], tuple[torch.Tensor, bool]] = {}
+        self._budget_skips: set[tuple[int, int]] = set()
         self._lock = threading.RLock()
 
     def register(self, source: torch.Tensor) -> bool:
@@ -429,7 +430,9 @@ class RegisteredHostWeightRegistry:
             if key in self._registrations:
                 return True
             if self.registered_bytes + size_bytes > self.max_bytes:
-                self.skipped_bytes += size_bytes
+                if key not in self._budget_skips:
+                    self._budget_skips.add(key)
+                    self.skipped_bytes += size_bytes
                 return False
             driver, _, _ = _cuda_modules()
             flags = driver.CU_MEMHOSTREGISTER_PORTABLE
@@ -459,7 +462,9 @@ class RegisteredHostWeightRegistry:
                 if owned:
                     _require_success(driver.cuMemHostUnregister(pointer), "cuMemHostUnregister")
             self._registrations.clear()
+            self._budget_skips.clear()
             self.registered_bytes = 0
+            self.skipped_bytes = 0
 
 
 class VmmWeightStore:

@@ -105,6 +105,11 @@ no device reset or speculative remapping strategy is authorized by this closure.
 Next implementation block: [native Linux portability](native-linux-port-plan.md).
 The current file source/cache/transport still has Windows-only branches;
 compiling a `.so` alone cannot run the accepted native route.
+Use the [Linux continuation checklist](linux-handoff.md) for a new session:
+separate `.venv-linux`, CPU-only native contracts, explicit library build
+selection and the remaining source/cache/DMA block. Preparation passed seven
+shared C++ CPU contracts on Windows and66 Python recipe/routing contracts;
+the Linux-only POSIX contract and actual `.so` remain unvalidated.
 
 Reporting-only precision/route labels passed82 CPU tests in5.09s and syntax
 compilation, without a new CUDA run. The recorded real-model artifacts predate

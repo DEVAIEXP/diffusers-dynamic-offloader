@@ -134,3 +134,21 @@ This is CPU only, not a proposed full `.so` build or a CUDA authorization.
 Next finish the portable native ring/storage/cache/admission and batch path as
 the same Linux block before proposing the bounded CUDA smoke. No additional
 full-model performance tuning or broad test matrix is scheduled.
+
+## Linux handoff preparation (2026-10-03)
+
+[Continuation checklist](linux-handoff.md) records local revisions, accepted
+Windows artifacts/evidence, environment separation and the exact remaining
+native work. `scripts/build_linux.py` in the allocator provides reviewable
+CPU/library commands, refuses real execution on Windows and never runs CUDA.
+The standalone `native/tests/cpu` project has no CUDA dependency: seven shared
+helper contracts plus the Linux-only POSIX source contract. Windows compilation
+and all seven shared contracts passed (CTest 0.08s). The POSIX contract still
+has not compiled/run on Linux. Main library thread linkage is now explicit;
+the shared library itself was not rebuilt in this preparation.
+
+66 Python recipe/bootstrap/protected-route tests passed in5.28s. Initial pytest
+temporary-directory access was denied; the same sequence passed using a new
+isolated build temporary directory. No CUDA, benchmark, Linux execution or
+default/candidate DLL mutation occurred. Transport/cache portability remains
+pending and is deliberately assigned to the next native Linux session.

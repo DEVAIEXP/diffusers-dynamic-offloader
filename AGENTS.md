@@ -53,6 +53,7 @@ This repository is focused on `diffusers-dynamic-offloader` (DDO), a generic Dif
 
 - Current user-approved closure is lean: accept the selected Windows performance and critical ownership/capacity/cancellation gates, without an open-ended long-run or model/platform test matrix. Extend tests when a critical implementation change or a reported defect requires it; do not automatically repeat the full benchmark.
 - Next platform block is native Linux `.so` portability, not a claim that changing the library suffix enables the existing Windows-only source/cache transport. Preserve the accepted Windows build/route; Linux execution remains experimental until the user tests it. WSL is not a substitute for native Linux validation.
+- For a new Linux session, read `docs/linux-handoff.md` first. Use a separate `.venv-linux` and `build-linux`; the isolated native CPU recipe never authorizes CUDA execution. Complete native transport with a real Linux compiler before proposing the small CUDA gate.
 
 - `.[vmm-dev]` is the Windows CUDA development profile. It is optional; ordinary DDO installs must not acquire CUDA development dependencies.
 - Windows is the initial supported VMM platform. Linux validation follows a successful Windows route. Do not promise WSL or macOS VMM support.

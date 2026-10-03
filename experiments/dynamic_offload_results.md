@@ -4020,3 +4020,23 @@ large host capacity, LTX throughput or a performance regression baseline.
 - New CUDA window/neighbor/EOF/DMA contract passed in the approved 21-test repeat.
   Harness parity, larger registered capacity and LTX performance are pending.
   No new denoise measurement; previous baselines remain unchanged.
+
+## Linux handoff preparation — 2026-10-03 (CPU only)
+
+Prepared an isolated native CPU CMake project and a reviewable Linux build
+helper, with separate `build-linux-cpu` / `build-linux` outputs and no automatic
+GPU probe execution. Explicit library selection preserves span pool ON, source
+dispatcher OFF and lifecycle fault hooks OFF. No Windows DLL rebuild/promotion.
+
+- Seven shared C++ CPU contracts compiled with MSVC and passed: CTest 0.08s.
+  The Linux-only eighth POSIX source contract is prepared, not executed here.
+- 66 Python build-recipe/bootstrap/protected-route contracts passed in5.28s.
+  Initial temporary-directory permission errors were resolved by using a new
+  build-local pytest directory; the failing attempt is not a passing gate.
+- Ruff for the new helper/tests passed. Candidate/default DLL SHA256 remained
+  unchanged from the support checkpoint.
+- No CUDA or model run; no new performance comparison. Native Linux host
+  storage/cache/ring/admission/batch work remains pending for the real compiler.
+
+Resume through [Linux checklist](../docs/linux-handoff.md); selected Windows
+performance remains accepted within [documented scope](../docs/native-support-status.md).

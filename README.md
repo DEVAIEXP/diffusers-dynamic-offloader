@@ -112,6 +112,7 @@ When a component cannot be accelerated safely, DDO routes it through the compati
 - [Configuration reference](docs/configuration.md): settings fields, recognized `DDO_*` variables, and override precedence.
 - [Metrics reference](docs/metrics.md): stable telemetry snapshots for runners, JSON, and `--show-profile` output.
 - [Native VMM support checkpoint](docs/native-support-status.md): validated Windows scope, component lifecycle, public reporting and remaining release gates. Native component ownership remains opt-in.
+- [Linux continuation checklist](docs/linux-handoff.md): separate environment/build recipes and pending native transport work; Linux execution remains experimental.
 - [Capacity profiles](docs/capacity-profiles.md): persist real workload observations under `~/.ddo/profiles` and warn when a later run exceeds a validated range.
 - [Dynamic offload results](experiments/dynamic_offload_results.md): report-ready benchmark summary and comparison tables.
 
@@ -238,11 +239,13 @@ consumes the public metrics report. See [Metrics reference](docs/metrics.md).
 
 Experimental retained-source storage now separates native host bytes from
 CUDA registration lifetime. Storage and registration ceilings remain explicit;
-the selected functional CPU/CUDA gate passed, while full-model capacity and
-performance validation remain pending. See the
+selected Windows staged performance and critical robustness gates passed within
+their recorded scope; Linux validation remains pending. See the
+[support checkpoint](docs/native-support-status.md) and the
 [native source plan](docs/native-source-cache-plan.md).
 
 The persistent-source route now includes two reusable native execution slots
 and immutable C++ transfer batches. This latest pipeline is compiled and
 CPU-tested, and its selected CUDA functional gate passed; full-model
-performance validation remains pending.
+Windows results are recorded in the support checkpoint, not a guarantee for
+arbitrary models or platforms.

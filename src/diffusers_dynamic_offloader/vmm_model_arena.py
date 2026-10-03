@@ -7,6 +7,7 @@ physical residency, map/unmap operations, budget guards, and transfer counters.
 
 from __future__ import annotations
 
+import os
 import sys
 import threading
 from contextlib import AbstractContextManager
@@ -95,7 +96,9 @@ def _load_native_allocator(library_path: str | None):
                 "vmm_runtime requires ddo-vmm-allocator. Install it or run from the DDO source tree."
             ) from error
 
-    resolved_library = library_path
+    # Match bootstrap/native binding precedence. Otherwise a diagnostic DLL
+    # and the model arena can silently use distinct native global state.
+    resolved_library = library_path if library_path is not None else os.environ.get("DDO_VMM_LIBRARY_PATH")
     if resolved_library is None:
         root = _allocator_source_root().parent
         platform_library = root / "build" / "Release" / "ddo_vmm.dll"

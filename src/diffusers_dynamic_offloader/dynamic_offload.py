@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import math
 import os
 import re
 import threading
@@ -15,6 +16,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from diffusers.hooks.hooks import HookRegistry, ModelHook
+
+from .metrics import DynamicOffloadMetrics
 
 _DEFAULT_TARGET_MODULE_CLASSES = (nn.Linear, nn.Embedding)
 _DYNAMIC_OFFLOAD_HOOK = "dynamic_offload"
@@ -462,6 +465,69 @@ def _parse_pattern_list_value(value: str) -> tuple[str, ...]:
     return tuple(item.strip() for item in re.split(r"[;,]", value) if item.strip())
 
 
+def _native_source_cache_transport_config(
+    staging_bytes: int, slot_mb: int, slots: int, host_cache_gb: float, *, native_transport: bool = False,
+    source_cache_gb: float = 0.0, source_registered_gb: float = 0.0
+) -> dict[str, int]:
+    """Resolve a total native ring capacity, independently of cache admission.
+
+    Cache opt-in also selects the native ring. Explicit native transport allows
+    cache-off controls to use the same ring without allocating PyTorch staging.
+    """
+    if not math.isfinite(source_cache_gb) or source_cache_gb < 0 or source_cache_gb > 32:
+        raise ValueError("native model source cache must be finite and between 0 and 32 GiB")
+    if not math.isfinite(source_registered_gb) or source_registered_gb < 0 or source_registered_gb > source_cache_gb:
+        raise ValueError("native source registration ceiling must be finite, non-negative and <= retained capacity")
+    model_windows = source_cache_gb > 0
+    if model_windows and (slot_mb or slots):
+        raise ValueError("choose model source-cache GiB or legacy cache slots, not both")
+    if model_windows:
+        slot_mb = 64
+        slots = math.ceil(source_cache_gb * 1024 / slot_mb)
+    cache_requested = bool(slot_mb or slots)
+    if not cache_requested and not native_transport:
+        return {}
+    if cache_requested and (slot_mb <= 0 or slots <= 0):
+        raise ValueError("vmm_fast native source cache requires positive slot MB and slot count together")
+    if cache_requested and host_cache_gb:
+        raise ValueError("vmm_fast native source cache cannot share the unaccounted CPU weight registry")
+    if staging_bytes <= 0:
+        raise ValueError("vmm_fast native transport requires positive staging bytes")
+    cache_slot_bytes = slot_mb * 1024**2
+    window_bytes = min(64 * 1024**2, staging_bytes)
+    staging_slots = (staging_bytes + window_bytes - 1) // window_bytes
+    process_limit_bytes = window_bytes * staging_slots + cache_slot_bytes * slots
+    if not cache_requested and staging_bytes > 2 * 1024**3:
+        raise ValueError("native ring total capacity must be <=2 GiB")
+    if (cache_slot_bytes > 64 * 1024**2
+            or cache_slot_bytes * slots > (32 * 1024**3 if model_windows else 128 * 1024**2)
+            or (cache_requested and process_limit_bytes > (40 * 1024**3 if model_windows else 1024**3))):
+        raise ValueError(
+            "vmm_fast native source cache requires slot <=64 MiB, cache <=128 MiB "
+            "and registered staging + cache <=1 GiB"
+        )
+    transport = {
+        "native_transport_slot_size_bytes": window_bytes,
+        "native_transport_slots": staging_slots,
+    }
+    if not cache_requested:
+        return transport
+    config = {
+        **transport,
+        "native_source_cache_slot_bytes": cache_slot_bytes,
+        "native_source_cache_slots": slots,
+        "native_source_cache_process_limit_bytes": process_limit_bytes,
+    }
+    if model_windows:
+        config["native_source_cache_model_windows"] = True
+        if source_registered_gb:
+            registered_bytes = int(source_registered_gb * 1024**3)
+            if registered_bytes < cache_slot_bytes or registered_bytes % cache_slot_bytes:
+                raise ValueError("native source registration ceiling must cover whole 64 MiB segments")
+            config["native_source_cache_registered_limit_bytes"] = registered_bytes
+    return config
+
+
 @dataclass(frozen=True)
 class DynamicOffloadConfig:
     """Configuration for the experimental dynamic offload planner/runtime."""
@@ -478,10 +544,28 @@ class DynamicOffloadConfig:
     vmm_staging_buffer_gb: float = 0.625
     vmm_windows_file_read_chunk_mb: int = 2
     vmm_virtual_host_transport: bool = False
+    # Explicitly use native registered-host windows with or without source
+    # retention. The staging budget is total capacity, not capacity per slot.
+    vmm_native_transport: bool = False
+    vmm_source_cache_gb: float = 0.0
+    vmm_source_registered_gb: float = 0.0
+    vmm_module_pattern: str = r".*"
+    # Experimental full-component ownership; never changes the default route.
+    vmm_component_tensor_ownership: bool = False
+    vmm_component_buffer_limit_mb: int = 1
+    vmm_page_mb: int = 0
+    vmm_dxgi_local_headroom_gb: float = 0.0
+    vmm_dxgi_shared_headroom_gb: float = 0.0
+    vmm_dxgi_system_headroom_gb: float = 0.0
     # Optional persistent cache of existing CPU source pages registered with
     # CUDA.  It never allocates CUDA managed memory.  Pages beyond this budget
     # retain the bounded checkpoint-file transport.
     vmm_host_cache_gb: float = 0.0
+    # Experimental native retained-source cache. Zero slots preserve the
+    # configured staging route; local cache and aggregate process caps
+    # are validated separately before constructing the arena.
+    vmm_native_source_cache_slot_mb: int = 0
+    vmm_native_source_cache_slots: int = 0
     vmm_pin_source_weights: bool = False
     vmm_fault_fallback: bool = False
     pin_cpu_memory: bool = False
@@ -559,7 +643,19 @@ class DynamicOffloadSettings:
             "dynamic_offload_vmm_staging_buffer_gb": config.vmm_staging_buffer_gb,
             "dynamic_offload_vmm_windows_file_read_chunk_mb": config.vmm_windows_file_read_chunk_mb,
             "dynamic_offload_vmm_virtual_host_transport": config.vmm_virtual_host_transport,
+            "dynamic_offload_vmm_native_transport": config.vmm_native_transport,
+            "dynamic_offload_vmm_source_cache_gb": config.vmm_source_cache_gb,
+            "dynamic_offload_vmm_source_registered_gb": config.vmm_source_registered_gb,
+            "dynamic_offload_vmm_module_pattern": config.vmm_module_pattern,
+            "dynamic_offload_vmm_component_tensor_ownership": config.vmm_component_tensor_ownership,
+            "dynamic_offload_vmm_component_buffer_limit_mb": config.vmm_component_buffer_limit_mb,
+            "dynamic_offload_vmm_page_mb": config.vmm_page_mb,
+            "dynamic_offload_vmm_dxgi_local_headroom_gb": config.vmm_dxgi_local_headroom_gb,
+            "dynamic_offload_vmm_dxgi_shared_headroom_gb": config.vmm_dxgi_shared_headroom_gb,
+            "dynamic_offload_vmm_dxgi_system_headroom_gb": config.vmm_dxgi_system_headroom_gb,
             "dynamic_offload_vmm_host_cache_gb": config.vmm_host_cache_gb,
+            "dynamic_offload_vmm_native_source_cache_slot_mb": config.vmm_native_source_cache_slot_mb,
+            "dynamic_offload_vmm_native_source_cache_slots": config.vmm_native_source_cache_slots,
             "dynamic_offload_vmm_pin_source_weights": config.vmm_pin_source_weights,
             "dynamic_offload_vmm_fault_fallback": config.vmm_fault_fallback,
             "dynamic_offload_pin_cpu_memory": self.requested_pin_cpu_memory,
@@ -677,6 +773,35 @@ class DynamicOffloadLoadResult:
     should_move_to_execution_device: bool = True
     _profile: Any = field(default=None, repr=False)
 
+    def inspect_vmm_component(self, *, component="model", buffer_limit_bytes=1024**2) -> DynamicOffloadMetrics:
+        """Loaded immutable-source/ownership preflight, without CUDA or attach.
+
+        Returns detached geometry, not an admission/residency decision or proof
+        of numerical support. The optional allocator is needed only on request.
+        """
+        if not isinstance(component, str) or not component.strip():
+            raise ValueError("component must be a nonempty string")
+        from ddo_vmm_allocator.component_arena_adapter import discover_component_layout
+
+        layout = discover_component_layout(
+            self.module, getattr(self.module, "_ddo_safetensor_slices", None),
+            buffer_limit_bytes=buffer_limit_bytes,
+        )
+        return DynamicOffloadMetrics(
+            route="vmm_component_preflight", configuration={"component": component},
+            setup={**self.metrics_snapshot().as_dict()["setup"],
+                   "component_capacity": layout.capacity_snapshot()},
+        )
+
+    def metrics_snapshot(self) -> DynamicOffloadMetrics:
+        """Loader-source metadata only; no CUDA/device queries or hook inspection."""
+        from copy import deepcopy
+
+        return DynamicOffloadMetrics(
+            route="model_load",
+            setup={"weight_source": deepcopy(getattr(self.module, "_ddo_safetensor_slice_summary", {}))},
+        )
+
     def profile_run(self):
         """Measure and save a calibration; a no-op for ordinary inference."""
         return self._profile.measure() if self._profile is not None else contextlib.nullcontext()
@@ -695,6 +820,51 @@ class DynamicOffloadApplyResult:
     def profile_run(self):
         """Measure and save a calibration; a no-op for ordinary inference."""
         return self._profile.measure() if self._profile is not None else contextlib.nullcontext()
+
+    def execution_timer(self, *, enabled=False, native_units=False, native_capacity=4096,
+                        diagnostic_step_wait=False):
+        """Opt-in event timing; ordinary inference remains unchanged."""
+        from .timing import DynamicOffloadExecutionTimer
+        device = self.settings.config.execution_device if self.settings is not None else "cuda"
+        factory = None
+        if diagnostic_step_wait and not native_units:
+            raise ValueError("diagnostic step wait requires native unit timing on vmm_fast")
+        if native_units:
+            if not isinstance(native_capacity, int) or not 1 <= native_capacity <= 8192:
+                raise ValueError("native timeline capacity must be an integer in 1..8192")
+            store = getattr(self.hook, "_vmm_fast_store", None)
+            if not enabled or store is None:
+                raise ValueError("native unit timing requires enabled timing and an active vmm_fast component")
+            def factory(stream):
+                from ddo_vmm_allocator.timeline import NativeTimeline
+                timeline = NativeTimeline(store.native._owner, capacity=native_capacity, stream=stream)
+                timeline.units = dict(getattr(store, "_timeline_units", {}))
+                store._timeline = timeline
+                return timeline, lambda: setattr(store, "_timeline", None)
+        return DynamicOffloadExecutionTimer(enabled=enabled, device=device, native_factory=factory,
+                                           diagnostic_step_wait=diagnostic_step_wait)
+
+    def metrics_snapshot(self, *, collect_completed=False, execution_timing=None) -> DynamicOffloadMetrics:
+        """Return a runner-neutral telemetry snapshot without exposing hook internals."""
+        configuration = self.settings.as_metrics() if self.settings is not None else {}
+        runtime: dict[str, Any] = {}
+        if self.hook is not None:
+            if collect_completed:
+                runtime["completion_collection"] = self.hook.collect_completed_runtime_resources()
+            runtime["state"] = self.hook.state.as_dict()
+            vmm_stats = self.hook.vmm_runtime_stats()
+            if vmm_stats is not None:
+                runtime["vmm"] = vmm_stats
+            component_report = getattr(getattr(self.hook, "_vmm_fast_adapter", None), "component_report", None)
+            if component_report is not None:
+                runtime["component_ownership"] = dict(component_report)
+        report = DynamicOffloadMetrics(
+            route=self.route,
+            configuration=configuration,
+            setup=self.event_payload,
+            runtime=runtime,
+        )
+        return execution_timing.attach(report) if execution_timing is not None else report
 
 
 @dataclass
@@ -818,6 +988,8 @@ class DynamicOffloadHook(ModelHook):
         )
         self.vmm_staging_buffer_bytes = int(max(0.0, float(config.vmm_staging_buffer_gb)) * 1024**3)
         self._vmm_store = None
+        self._vmm_fast_store = None
+        self._vmm_fast_adapter = None
         self._vmm_runtime_active = False
         self._vmm_arena = None
         self._vmm_host_registry = None
@@ -857,10 +1029,16 @@ class DynamicOffloadHook(ModelHook):
             self.config.pinned_weight_cache_namespace.strip()
             or f"{module.__class__.__module__}.{module.__class__.__qualname__}"
         )
-        self.state = build_dynamic_offload_plan(module, self.config)
-        if self.execution_mode not in {"plan", "linear_runtime", "sdnq_runtime", "vmm_runtime"}:
+        if self.execution_mode == "vmm_fast_runtime":
+            metadata_start = time.perf_counter()
+            self.state = build_dynamic_offload_plan(module, self.config)
+            self.state.add_setup("vmm_fast_plan_metadata", time.perf_counter() - metadata_start)
+        else:
+            self.state = build_dynamic_offload_plan(module, self.config)
+        if self.execution_mode not in {"plan", "linear_runtime", "sdnq_runtime", "vmm_runtime", "vmm_fast_runtime"}:
             raise ValueError(
-                "DynamicOffloadConfig.execution_mode must be 'plan', 'linear_runtime', 'sdnq_runtime', or 'vmm_runtime'"
+                "DynamicOffloadConfig.execution_mode must be 'plan', 'linear_runtime', 'sdnq_runtime', "
+                "'vmm_runtime', or 'vmm_fast_runtime'"
             )
         if self.execution_mode == "linear_runtime":
             self._prepare_linear_runtime(module)
@@ -868,6 +1046,8 @@ class DynamicOffloadHook(ModelHook):
             self._prepare_sdnq_runtime(module)
         elif self.execution_mode == "vmm_runtime":
             self._prepare_vmm_runtime(module)
+        elif self.execution_mode == "vmm_fast_runtime":
+            self._prepare_vmm_fast_runtime(module)
         if self.config.verbose:
             summary = self.state.as_dict()
             print(
@@ -916,12 +1096,26 @@ class DynamicOffloadHook(ModelHook):
     def detach_hook(self, module: nn.Module) -> nn.Module:
         self._clear_vmm_execution_groups()
         self._restore_patches()
-        self._close_vmm_store()
+        self._close_vmm_store(module)
         return module
+
+    def collect_completed_runtime_resources(self) -> dict[str, Any]:
+        """Explicit phase-boundary native collection; never changes residency."""
+        store = self._vmm_fast_store
+        transport = getattr(store, "_native_shard_transport", None)
+        cache = getattr(transport, "cache", None)
+        if cache is None:
+            return {"status": "not_applicable", "blocking": False}
+        before = cache.snapshot()["live_tickets"]
+        cache.collect_completed()
+        after = cache.snapshot()["live_tickets"]
+        return {"status": "collected", "blocking": False,
+                "tickets_before": before, "tickets_after": after,
+                "tickets_retired": before - after}
 
     def vmm_runtime_stats(self) -> dict[str, int] | None:
         """Return a snapshot of VMM cache activity while the hook is active."""
-        if self._vmm_arena is None:
+        if self._vmm_arena is None and self._vmm_fast_store is None:
             return None
         result = {
             "reserved_bytes": 0,
@@ -957,12 +1151,19 @@ class DynamicOffloadHook(ModelHook):
         if self._vmm_host_registry is not None:
             result["host_cache_registered_bytes"] = self._vmm_host_registry.registered_bytes
             result["host_cache_skipped_bytes"] = self._vmm_host_registry.skipped_bytes
+        if self._vmm_fast_store is not None:
+            fast_stats = self._vmm_fast_store.runtime_stats()
+            result.update({f"fast_{name}": value for name, value in fast_stats.items()})
+            result["reserved_bytes"] += fast_stats["virtual_bytes"]
+            result["resident_bytes"] += fast_stats["resident_bytes"]
+            result["materializations"] += fast_stats["faults"]
+            result["copied_bytes"] += fast_stats["upload_bytes"]
         return result
 
     def deinitalize_hook(self, module: nn.Module) -> nn.Module:
         self._clear_vmm_execution_groups()
         self._restore_patches()
-        self._close_vmm_store()
+        self._close_vmm_store(module)
         return module
 
     def pre_forward(self, module: nn.Module, *args, **kwargs) -> tuple[tuple[Any, ...], dict[str, Any]]:
@@ -1220,6 +1421,166 @@ class DynamicOffloadHook(ModelHook):
             else:
                 self._move_small_local_tensors_to_device(submodule)
 
+    def _prepare_vmm_fast_runtime(self, module: nn.Module) -> None:
+        """Attach the single native model-address arena used by ``vmm_fast``.
+
+        Unlike the protected ``vmm_runtime`` baseline, this route delegates
+        individual range faults, signatures, unpin events, and temporary
+        fallbacks to the allocator submodule.  DDO only supplies immutable
+        checkpoint descriptors, bounded staging, and lifecycle ownership.
+        """
+        resources_start = time.perf_counter()
+        if self.execution_device.type != "cuda" or self.offload_device.type != "cpu":
+            raise ValueError("vmm_fast_runtime requires execution_device='cuda:*' and offload_device='cpu'")
+        if self.vmm_resident_weight_budget_bytes <= 0:
+            raise ValueError("vmm_fast_runtime requires a positive vmm_resident_weight_budget_gb")
+        if self.vmm_staging_buffer_bytes <= 0:
+            raise ValueError("vmm_fast_runtime requires a positive vmm_staging_buffer_gb")
+        if self.config.vmm_page_mb < 0:
+            raise ValueError("vmm_fast page size must be non-negative")
+        re.compile(self.config.vmm_module_pattern)
+        if self.config.vmm_component_tensor_ownership:
+            if not self.config.vmm_native_transport or self.config.vmm_module_pattern != ".*":
+                raise ValueError("component ownership requires native transport and full-component selection")
+            if type(self.config.vmm_component_buffer_limit_mb) is not int or self.config.vmm_component_buffer_limit_mb < 0:
+                raise ValueError("component buffer limit must be a non-negative integer MiB")
+            from ddo_vmm_allocator.component_arena_adapter import discover_component_layout
+
+            discover_component_layout(
+                module, getattr(module, "_ddo_safetensor_slices", None),
+                buffer_limit_bytes=self.config.vmm_component_buffer_limit_mb * 1024**2,
+            )
+        if detect_quantized_backend_modules(module):
+            raise ValueError("vmm_fast_runtime supports only standard dense nn.Linear weights, not quantized backends")
+
+        cache_slot_mb = int(self.config.vmm_native_source_cache_slot_mb)
+        cache_slots = int(self.config.vmm_native_source_cache_slots)
+        native_transport_kwargs = _native_source_cache_transport_config(
+            self.vmm_staging_buffer_bytes, cache_slot_mb, cache_slots, self.config.vmm_host_cache_gb,
+            native_transport=self.config.vmm_native_transport,
+            source_cache_gb=self.config.vmm_source_cache_gb,
+            source_registered_gb=self.config.vmm_source_registered_gb,
+        )
+
+        from .vmm_model_arena import _load_native_allocator
+        from .vmm_weight_store import PinnedStagingPool, SafetensorSliceRegistry
+
+        library, _arena_type = _load_native_allocator(None)
+        headrooms = (self.config.vmm_dxgi_local_headroom_gb, self.config.vmm_dxgi_shared_headroom_gb,
+                     self.config.vmm_dxgi_system_headroom_gb)
+        if any(not math.isfinite(value) or value < 0 for value in headrooms):
+            raise ValueError("native DXGI headrooms must be finite and non-negative")
+        if any(headrooms):
+            library.set_dxgi_budget_guard(
+                device_ordinal=self.execution_device.index or 0,
+                local_reserve_bytes=int(headrooms[0] * 1024**3),
+                shared_reserve_bytes=int(headrooms[1] * 1024**3),
+                system_reserve_bytes=int(headrooms[2] * 1024**3),
+            )
+        try:
+            from ddo_vmm_allocator.model_arena_adapter import attach_model_linear_modules
+        except ImportError as error:  # pragma: no cover - source fallback is covered by _load_native_allocator.
+            raise RuntimeError(
+                "vmm_fast_runtime requires ddo-vmm-allocator. Install the submodule package or run from the DDO source tree."
+            ) from error
+
+        self._vmm_file_slices = getattr(module, "_ddo_safetensor_slices", None)
+        if self._vmm_file_slices is not None and not isinstance(self._vmm_file_slices, SafetensorSliceRegistry):
+            self._vmm_file_slices = None
+        if native_transport_kwargs:
+            self._vmm_staging_pool = None
+        else:
+            self._vmm_staging_pool = PinnedStagingPool(
+                self.vmm_staging_buffer_bytes,
+                registered_virtual_host=self.config.vmm_virtual_host_transport,
+                windows_file_read_chunk_bytes=max(1, int(self.config.vmm_windows_file_read_chunk_mb)) * 1024**2,
+            )
+        file_slice_summary = getattr(module, "_ddo_safetensor_slice_summary", {})
+        self.state.add_setup("vmm_fast_native_resources", time.perf_counter() - resources_start)
+        start = time.perf_counter()
+        report, store = attach_model_linear_modules(
+            module,
+            library,
+            module_pattern=self.config.vmm_module_pattern,
+            page_size_bytes=int(self.config.vmm_page_mb) * 1024**2,
+            resident_budget_bytes=self.vmm_resident_weight_budget_bytes,
+            device_ordinal=self.execution_device.index or 0,
+            staging_pool=self._vmm_staging_pool,
+            file_slices=self._vmm_file_slices,
+            host_cache_bytes=int(max(0.0, self.config.vmm_host_cache_gb) * 1024**3),
+            component_tensor_ownership=self.config.vmm_component_tensor_ownership,
+            component_buffer_limit_bytes=self.config.vmm_component_buffer_limit_mb * 1024**2,
+            **native_transport_kwargs,
+        )
+        self._vmm_fast_store = store
+        self._vmm_fast_adapter = report.adapter
+        self._vmm_runtime_active = True
+        self.state.add_setup("vmm_fast_attach_native_model_arena", time.perf_counter() - start, report.payload_bytes)
+        self.state.patched_module_count += report.attached_modules
+        self.state.planner_decisions.update(
+            {
+                "vmm_runtime": "native_model_arena",
+                "vmm_backend": "native_model_arena",
+                "vmm_native_library": str(library.path),
+                "vmm_resident_weight_budget_gb": round(self.vmm_resident_weight_budget_bytes / 1024**3, 4),
+                "vmm_staging_buffer_gb": round(self.vmm_staging_buffer_bytes / 1024**3, 4),
+                "vmm_staging_slots": (
+                    self._vmm_staging_pool.slots if self._vmm_staging_pool is not None
+                    else native_transport_kwargs["native_transport_slots"]
+                ),
+                "vmm_virtual_host_transport": (
+                    self._vmm_staging_pool.uses_registered_virtual_host if self._vmm_staging_pool is not None else True
+                ),
+                "vmm_native_source_cache_slot_mb": native_transport_kwargs.get("native_source_cache_slot_bytes", 0) // 1024**2,
+                "vmm_source_cache_gb": self.config.vmm_source_cache_gb,
+                "vmm_source_registered_gb": self.config.vmm_source_registered_gb,
+                "vmm_native_source_persistent_buffer": bool(self.config.vmm_source_cache_gb),
+                "vmm_native_transport": bool(native_transport_kwargs),
+                "vmm_native_transport_registered_capacity_bytes": (
+                    native_transport_kwargs.get("native_transport_slot_size_bytes", 0)
+                    * native_transport_kwargs.get("native_transport_slots", 0)
+                ),
+                "vmm_native_source_cache_slots": native_transport_kwargs.get("native_source_cache_slots", 0),
+                "vmm_native_source_cache_model_windows": native_transport_kwargs.get("native_source_cache_model_windows", False),
+                "vmm_native_source_cache_process_limit_bytes": (
+                    native_transport_kwargs.get("native_source_cache_process_limit_bytes", 0)
+                ),
+                "vmm_file_slice_transport": self._vmm_file_slices is not None,
+                "vmm_safetensor_slices_bound": int(file_slice_summary.get("bound", 0)),
+                "vmm_safetensor_slices_available": int(file_slice_summary.get("available", 0)),
+                "vmm_fast_attached_modules": report.attached_modules,
+                "vmm_fast_attached_tensors": report.attached_tensors,
+                "vmm_fast_payload_bytes": report.payload_bytes,
+                "vmm_fast_virtual_bytes": report.virtual_bytes,
+                "vmm_fast_page_bytes": report.page_bytes,
+            }
+        )
+        self._prepare_vmm_fast_auxiliary_tensors(module)
+
+    def _prepare_vmm_fast_auxiliary_tensors(self, module: nn.Module) -> None:
+        """Preserve auxiliary placement, but account for previously untimed copies.
+
+        This is exclusive to fast VMM. No new stream, async copy, bulk buffer,
+        residency decision or deferred work is introduced by these timers.
+        """
+        if self.config.vmm_component_tensor_ownership:
+            return  # Component adapter owns every parameter and bounded buffer.
+        self._move_root_local_tensors_to_device(module)
+        for module_name, submodule in module.named_modules():
+            if isinstance(submodule, nn.Linear) and submodule.weight.device.type == "cpu":
+                moved_bytes = sum(
+                    _tensor_size_bytes(tensor)
+                    for tensor in (*submodule.parameters(recurse=True), *submodule.buffers(recurse=True))
+                    if tensor.device != self.execution_device
+                )
+                start = time.perf_counter()
+                self._move_module_tensors_to_execution_device(submodule)
+                self.state.add_setup(
+                    "vmm_fast_auxiliary_linears_to_device", time.perf_counter() - start, moved_bytes,
+                )
+            elif module_name and not isinstance(submodule, nn.Linear):
+                self._move_small_local_tensors_to_device(submodule)
+
     def _register_vmm_execution_groups(self, module: nn.Module) -> None:
         """Lease one sequential execution group at a time when one is discoverable.
 
@@ -1437,11 +1798,17 @@ class DynamicOffloadHook(ModelHook):
         for lease in reversed(leases):
             lease.__exit__(None, None, None)
 
-    def _close_vmm_store(self) -> None:
-        if not self._vmm_runtime_active and self._vmm_arena is None:
+    def _close_vmm_store(self, module: nn.Module | None = None) -> None:
+        if not self._vmm_runtime_active and self._vmm_arena is None and self._vmm_fast_store is None:
             return
         self._vmm_store = None
         self._vmm_runtime_active = False
+        if self._vmm_fast_adapter is not None:
+            self._vmm_fast_adapter.close()
+            self._vmm_fast_adapter = None
+        if self._vmm_fast_store is not None:
+            self._vmm_fast_store.close()
+            self._vmm_fast_store = None
         if self._vmm_arena is not None:
             self._vmm_arena.close()
             self._vmm_arena = None
@@ -1452,6 +1819,12 @@ class DynamicOffloadHook(ModelHook):
             self._vmm_staging_pool.close()
         self._vmm_staging_pool = None
         self._vmm_upload_stream = None
+        if self._vmm_file_slices is not None:
+            self._vmm_file_slices.close()
+            if module is not None and getattr(module, "_ddo_safetensor_slices", None) is self._vmm_file_slices:
+                delattr(module, "_ddo_safetensor_slices")
+                if hasattr(module, "_ddo_safetensor_slice_summary"):
+                    delattr(module, "_ddo_safetensor_slice_summary")
         self._vmm_file_slices = None
 
     @staticmethod
@@ -2295,7 +2668,17 @@ def load_dynamic_offload_settings_from_env(
         vmm_staging_buffer_gb=float(preset_env("DDO_VMM_STAGING_BUFFER_GB", "0.625")),
         vmm_windows_file_read_chunk_mb=int(preset_env("DDO_VMM_WINDOWS_FILE_READ_CHUNK_MB", "2")),
         vmm_virtual_host_transport=preset_bool("DDO_VMM_VIRTUAL_HOST_TRANSPORT", "0"),
+        vmm_native_transport=preset_bool("DDO_VMM_NATIVE_TRANSPORT", "0"),
+        vmm_source_cache_gb=float(preset_env("DDO_VMM_SOURCE_CACHE_GB", "0")),
+        vmm_source_registered_gb=float(preset_env("DDO_VMM_SOURCE_REGISTERED_GB", "0")),
+        vmm_module_pattern=preset_env("DDO_VMM_MODULE_PATTERN", r".*"),
+        vmm_page_mb=int(preset_env("DDO_VMM_PAGE_MB", "0")),
+        vmm_dxgi_local_headroom_gb=float(preset_env("DDO_VMM_DXGI_LOCAL_HEADROOM_GB", "0")),
+        vmm_dxgi_shared_headroom_gb=float(preset_env("DDO_VMM_DXGI_SHARED_HEADROOM_GB", "0")),
+        vmm_dxgi_system_headroom_gb=float(preset_env("DDO_VMM_DXGI_SYSTEM_HEADROOM_GB", "0")),
         vmm_host_cache_gb=float(preset_env("DDO_VMM_HOST_CACHE_GB", "0")),
+        vmm_native_source_cache_slot_mb=int(preset_env("DDO_VMM_NATIVE_SOURCE_CACHE_SLOT_MB", "0")),
+        vmm_native_source_cache_slots=int(preset_env("DDO_VMM_NATIVE_SOURCE_CACHE_SLOTS", "0")),
         vmm_pin_source_weights=preset_bool("DDO_VMM_PIN_SOURCE_WEIGHTS", "0"),
         vmm_fault_fallback=preset_bool("DDO_VMM_FAULT_FALLBACK", "0"),
         pin_cpu_memory=effective_pin_cpu_memory,
@@ -2589,6 +2972,7 @@ def enable_offload(
     if route_value == "dynamic_offload":
         result = enable_dynamic_offload(
             module,
+            component=component,
             settings=settings,
             config=config,
             execution_device=execution_device,
@@ -2717,6 +3101,7 @@ def enable_pipeline_offload(
 def enable_dynamic_offload(
     module: nn.Module,
     *,
+    component: str = "model",
     settings: DynamicOffloadSettings | None = None,
     config: DynamicOffloadConfig | None = None,
     preset: str = "auto",
@@ -2778,7 +3163,7 @@ def enable_dynamic_offload(
 
     from .profiles import _NamedProfile
 
-    profile = _NamedProfile(module, effective_config)
+    profile = _NamedProfile(module, effective_config, component=component)
     effective_config = profile.prepare()
     if effective_config is not settings.config:
         settings = replace(settings, config=effective_config)
@@ -2788,6 +3173,7 @@ def enable_dynamic_offload(
     quantized_backend_payload = detect_quantized_backend_modules(module)
     if apply_hook and settings.enabled:
         hook = apply_dynamic_offload(module, effective_config)
+        profile.attach_hook(hook)
         event_payload = build_dynamic_offload_event_payload(settings, hook.state, effective_config)
     if quantized_backend_payload:
         event_payload["quantized_backend"] = quantized_backend_payload
@@ -2825,10 +3211,8 @@ def _temporary_safetensors_backend(backend: str):
     original_torch_load_file = safetensors.torch.load_file
 
     def safe_open_with_backend(filename, framework, device=None, **kwargs):
-        try:
+        with contextlib.suppress(OSError, TypeError):
             opened_files.add(Path(filename).resolve())
-        except (OSError, TypeError):
-            pass
         if backend:
             kwargs.setdefault("backend", backend)
         if device is None:
@@ -2836,10 +3220,8 @@ def _temporary_safetensors_backend(backend: str):
         return original_safe_open(filename, framework=framework, device=device, **kwargs)
 
     def torch_load_file_with_backend(filename, device="cpu", **kwargs):
-        try:
+        with contextlib.suppress(OSError, TypeError):
             opened_files.add(Path(filename).resolve())
-        except (OSError, TypeError):
-            pass
         if backend:
             kwargs.setdefault("backend", backend)
         return original_torch_load_file(filename, device=device, **kwargs)
@@ -2873,54 +3255,90 @@ def _temporary_safetensors_backend(backend: str):
         safetensors.torch.load_file = original_torch_load_file
 
 
-def _safetensor_file_slices(paths: list[Path]) -> dict[str, Any]:
+def _safetensor_file_slices(paths: list[Path], *, diagnostics=None) -> dict[str, Any]:
     """Read local safetensors headers without materializing any tensor payload."""
     from .vmm_weight_store import SafetensorFileSlice
 
     result: dict[str, SafetensorFileSlice] = {}
+    ambiguous = set()
+    diagnostics = diagnostics if diagnostics is not None else {}
+    diagnostics.update(invalid_files=0, invalid_entries=0, ambiguous_key_count=0)
     for checkpoint in paths:
         if checkpoint.suffix != ".safetensors" or not checkpoint.is_file():
             continue
         try:
+            file_size = checkpoint.stat().st_size
             with checkpoint.open("rb") as source:
                 header_size = int.from_bytes(source.read(8), "little")
+                if header_size <= 0 or header_size > min(file_size - 8, 100 * 1024**2):
+                    diagnostics["invalid_files"] += 1
+                    continue
                 header = json.loads(source.read(header_size))
             data_start = 8 + header_size
         except (OSError, ValueError, json.JSONDecodeError):
+            diagnostics["invalid_files"] += 1
+            continue
+        if not isinstance(header, dict):
+            diagnostics["invalid_files"] += 1
             continue
         for tensor_name, entry in header.items():
             if tensor_name == "__metadata__" or not isinstance(entry, dict):
+                if tensor_name != "__metadata__":
+                    diagnostics["invalid_entries"] += 1
                 continue
             offsets = entry.get("data_offsets")
             if not isinstance(offsets, list) or len(offsets) != 2:
+                diagnostics["invalid_entries"] += 1
                 continue
             start, end = offsets
-            if not isinstance(start, int) or not isinstance(end, int) or end < start:
+            if type(start) is not int or type(end) is not int or start < 0 or end < start or data_start + end > file_size:
+                diagnostics["invalid_entries"] += 1
                 continue
-            result[tensor_name] = SafetensorFileSlice(checkpoint, data_start + start, end - start)
-    return result
+            shape, dtype = entry.get("shape"), entry.get("dtype")
+            if not isinstance(shape, list) or any(type(size) is not int or size < 0 for size in shape) or not isinstance(dtype, str):
+                diagnostics["invalid_entries"] += 1
+                continue
+            descriptor = SafetensorFileSlice(checkpoint, data_start + start, end - start, tuple(shape), dtype)
+            if tensor_name in ambiguous:
+                continue
+            if tensor_name in result and result[tensor_name] != descriptor:
+                ambiguous.add(tensor_name)
+                del result[tensor_name]
+                continue
+            result[tensor_name] = descriptor
+    # A duplicate checkpoint key may also alias a different parameter name.
+    # Do not publish partial provenance from an ambiguous shard set.
+    diagnostics["ambiguous_key_count"] = len(ambiguous)
+    return {} if ambiguous else result
 
 
-def _attach_safetensor_file_slices(module: nn.Module, paths: list[Path]) -> tuple[int, int]:
+def _attach_safetensor_file_slices(module: nn.Module, paths: list[Path], *, key_mapping=None) -> tuple[int, int]:
     """Associate loaded parameter storage with its original safetensors bytes.
 
     This metadata is intentionally private to the optional VMM runtime.  It
     leaves Diffusers/Transformers loader semantics and normal CPU tensors
     unchanged.
     """
-    from .vmm_weight_store import SafetensorSliceRegistry
+    from .weight_source_metadata import associate_source_metadata
 
-    available = _safetensor_file_slices(paths)
+    if getattr(module, "_ddo_safetensor_slices", None) is not None:
+        raise RuntimeError("Source descriptors are already associated; close their lifecycle before rebinding")
+    diagnostics = {}
+    available = _safetensor_file_slices(paths, diagnostics=diagnostics)
     if not available:
+        if paths:
+            module._ddo_safetensor_slice_summary = {
+                "bound": 0, "available": 0, "resolver": "no_valid_source_metadata",
+                "header": diagnostics, "rejected_storage_groups": 0,
+                "missing_storage_groups": 0, "ineligible_parameter_aliases": 0,
+            }
         return 0, 0
-    registry = SafetensorSliceRegistry()
-    bound = 0
-    for name, parameter in module.named_parameters():
-        file_slice = available.get(name)
-        if file_slice is not None and registry.bind(parameter.data, file_slice):
-            bound += 1
+    registry, summary = associate_source_metadata(module, available, key_mapping=key_mapping)
+    summary["header"] = diagnostics
+    bound = registry.descriptor_count
+    module._ddo_safetensor_slice_summary = summary
     if bound:
-        setattr(module, "_ddo_safetensor_slices", registry)
+        module._ddo_safetensor_slices = registry
     return bound, len(available)
 
 
@@ -2958,9 +3376,7 @@ def from_pretrained_with_dynamic_offload(
         checkpoint_directory /= subfolder
     fallback_files = list(checkpoint_directory.glob("*.safetensors")) if checkpoint_directory.is_dir() else []
     source_files = list(opened_safetensor_files) or fallback_files
-    bound_slices, discovered_slices = _attach_safetensor_file_slices(module, source_files)
-    if discovered_slices:
-        setattr(module, "_ddo_safetensor_slice_summary", {"bound": bound_slices, "available": discovered_slices})
+    _attach_safetensor_file_slices(module, source_files, key_mapping=from_pretrained_kwargs.get("key_mapping"))
     if not apply_dynamic:
         return DynamicOffloadLoadResult(module=module)
 
@@ -2969,6 +3385,7 @@ def from_pretrained_with_dynamic_offload(
     profile = _NamedProfile(module, config)
     config = profile.prepare()
     hook = apply_dynamic_offload(module, config)
+    profile.attach_hook(hook)
     return DynamicOffloadLoadResult(
         module=module,
         hook=hook,

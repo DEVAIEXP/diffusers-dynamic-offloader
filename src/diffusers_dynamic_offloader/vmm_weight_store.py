@@ -7,14 +7,14 @@ replace PyTorch's allocator or expose unmapped storage to a caller.
 
 from __future__ import annotations
 
-import threading
-import time
-import os
 import ctypes
 import mmap
-from pathlib import Path
+import os
+import threading
+import time
 from contextlib import AbstractContextManager
 from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -50,6 +50,18 @@ class VmmWeightStoreStats:
     materializations: int = 0
     evictions: int = 0
     copied_bytes: int = 0
+
+
+@dataclass(frozen=True)
+class PinnedStagingPoolStats:
+    """Host-side transport timings for the bounded VMM staging ring."""
+
+    slot_reuse_wait_seconds: float = 0.0
+    slot_reuse_waits: int = 0
+    source_copy_seconds: float = 0.0
+    source_copy_bytes: int = 0
+    shard_read_seconds: float = 0.0
+    shard_read_bytes: int = 0
 
 
 class _VmmWeightSlot:
@@ -185,6 +197,7 @@ class PinnedStagingPool:
         else:
             self._buffers = [torch.empty(size_bytes, dtype=torch.uint8, device="cpu", pin_memory=True) for _ in range(slots)]
         self._ready_events: list[Any | None] = [None] * slots
+        self._stats = PinnedStagingPoolStats()
         self._next_slot = 0
         self._active_slot: int | None = None
         self._offset = 0
@@ -203,9 +216,27 @@ class PinnedStagingPool:
         self._next_slot = (slot + 1) % self.slots
         event = self._ready_events[slot]
         if event is not None:
+            start = time.perf_counter()
             event.synchronize()
+            self._stats = PinnedStagingPoolStats(
+                slot_reuse_wait_seconds=self._stats.slot_reuse_wait_seconds + time.perf_counter() - start,
+                slot_reuse_waits=self._stats.slot_reuse_waits + 1,
+                source_copy_seconds=self._stats.source_copy_seconds,
+                source_copy_bytes=self._stats.source_copy_bytes,
+                shard_read_seconds=self._stats.shard_read_seconds,
+                shard_read_bytes=self._stats.shard_read_bytes,
+            )
         self._active_slot = slot
         self._offset = 0
+
+    @property
+    def next_slot_ready(self) -> bool:
+        """Whether a speculative upload can acquire its next slot without waiting."""
+
+        if self._active_slot is not None:
+            return False
+        event = self._ready_events[self._next_slot]
+        return event is None or event.query()
 
     def _active_buffer(self) -> Any:
         if self._active_slot is None:
@@ -224,7 +255,16 @@ class PinnedStagingPool:
             )
         storage = self._active_buffer()[self._offset : end]
         staged = storage.view(dtype=source.dtype).view(source.shape)
+        start = time.perf_counter()
         staged.copy_(source)
+        self._stats = PinnedStagingPoolStats(
+            slot_reuse_wait_seconds=self._stats.slot_reuse_wait_seconds,
+            slot_reuse_waits=self._stats.slot_reuse_waits,
+            source_copy_seconds=self._stats.source_copy_seconds + time.perf_counter() - start,
+            source_copy_bytes=self._stats.source_copy_bytes + size_bytes,
+            shard_read_seconds=self._stats.shard_read_seconds,
+            shard_read_bytes=self._stats.shard_read_bytes,
+        )
         self._offset = end
         return staged
 
@@ -251,14 +291,19 @@ class PinnedStagingPool:
         self._offset = end
         return staged
 
-    def stage_file_slices(self, entries: list[tuple[torch.Tensor, "SafetensorFileSlice"]]) -> int:
+    def stage_file_slices(self, entries: list[tuple[torch.Tensor, "SafetensorFileSlice"]]) -> list[torch.Tensor]:
         """Stage packed slices, joining adjacent ranges in the same shard."""
         if not entries:
-            return 0
+            return []
         start = self._offset
         runs: list[tuple[SafetensorFileSlice, int, int]] = []
+        staged: list[torch.Tensor] = []
         for source, file_slice in entries:
-            if source.device.type != "cpu" or not source.is_contiguous():
+            source_device = getattr(source, "device", None)
+            source_contiguous = getattr(source, "is_contiguous", None)
+            if ((source_device is not None and source_device.type != "cpu") or (
+                callable(source_contiguous) and not source_contiguous()
+            )):
                 raise ValueError("Pinned file staging accepts contiguous CPU tensors only")
             size_bytes = source.numel() * source.element_size()
             if size_bytes != file_slice.size_bytes:
@@ -279,15 +324,67 @@ class PinnedStagingPool:
                 runs[-1] = (previous_slice, destination_offset, run_bytes + size_bytes)
             else:
                 runs.append((file_slice, self._offset, size_bytes))
+            staged.append(self._active_buffer()[self._offset : end].view(dtype=source.dtype).view(source.shape))
             self._offset = end
         for file_slice, destination_offset, run_bytes in runs:
             self._read_file_slice(
                 SafetensorFileSlice(file_slice.path, file_slice.offset_bytes, run_bytes),
                 self._active_buffer()[destination_offset : destination_offset + run_bytes],
             )
-        return self._offset - start
+        assert self._offset - start == sum(file_slice.size_bytes for _source, file_slice in entries)
+        return staged
+
+    def stage_file_slices_async(
+        self, entries: list[tuple[torch.Tensor, "SafetensorFileSlice"]]
+    ) -> tuple[list[torch.Tensor], list[Any]]:
+        """Reserve one slot and start shard reads without blocking its consumer.
+
+        The caller owns the returned futures and must wait for them before
+        placing a CUDA DMA on this slot, then call :meth:`mark_upload` as
+        usual. Non-Windows transports deliberately retain the synchronous
+        path because their mmap fallback is already local and deterministic.
+        """
+
+        if self._windows_file_reader is None:
+            return self.stage_file_slices(entries), []
+        if not entries:
+            return [], []
+        start = self._offset
+        runs: list[tuple[SafetensorFileSlice, int, int]] = []
+        staged: list[torch.Tensor] = []
+        for source, file_slice in entries:
+            size_bytes = source.numel() * source.element_size()
+            if size_bytes != file_slice.size_bytes:
+                raise ValueError("Safetensor slice size does not match the source tensor")
+            end = self._offset + size_bytes
+            if end > self.size_bytes:
+                raise RuntimeError("Pinned staging buffer is too small for asynchronous file staging")
+            if (
+                runs
+                and runs[-1][0].path == file_slice.path
+                and runs[-1][0].offset_bytes + runs[-1][2] == file_slice.offset_bytes
+                and runs[-1][1] + runs[-1][2] == self._offset
+            ):
+                previous_slice, destination_offset, run_bytes = runs[-1]
+                runs[-1] = (previous_slice, destination_offset, run_bytes + size_bytes)
+            else:
+                runs.append((file_slice, self._offset, size_bytes))
+            staged.append(self._active_buffer()[self._offset : end].view(dtype=source.dtype).view(source.shape))
+            self._offset = end
+        futures = [
+            self._windows_file_reader.read_at_async(
+                file_slice.path,
+                file_slice.offset_bytes,
+                self._active_buffer()[destination_offset : destination_offset + run_bytes].data_ptr(),
+                run_bytes,
+            )
+            for file_slice, destination_offset, run_bytes in runs
+        ]
+        assert self._offset - start == sum(file_slice.size_bytes for _source, file_slice in entries)
+        return staged, futures
 
     def _read_file_slice(self, file_slice: "SafetensorFileSlice", storage: torch.Tensor) -> None:
+        start = time.perf_counter()
         if self._windows_file_reader is not None:
             self._windows_file_reader.read_at(
                 file_slice.path,
@@ -295,12 +392,13 @@ class PinnedStagingPool:
                 storage.data_ptr(),
                 file_slice.size_bytes,
             )
+            self._record_shard_read(file_slice.size_bytes, time.perf_counter() - start)
             return
         target = memoryview(storage.numpy()).cast("B")
         with self._file_lock:
             mapped = self._checkpoint_maps.get(file_slice.path)
             if mapped is None:
-                checkpoint = open(file_slice.path, "rb", buffering=0)
+                checkpoint = open(file_slice.path, "rb", buffering=0)  # noqa: SIM115 - mapping owns this handle until close.
                 mapped = mmap.mmap(checkpoint.fileno(), 0, access=mmap.ACCESS_READ)
                 self._checkpoint_files[file_slice.path] = checkpoint
                 self._checkpoint_maps[file_slice.path] = mapped
@@ -313,6 +411,22 @@ class PinnedStagingPool:
             raise OSError(
                 f"Short safetensor read from {file_slice.path!s}: expected {file_slice.size_bytes}, got {read}"
             )
+        self._record_shard_read(file_slice.size_bytes, time.perf_counter() - start)
+
+    def _record_shard_read(self, size_bytes: int, seconds: float) -> None:
+        self._stats = PinnedStagingPoolStats(
+            slot_reuse_wait_seconds=self._stats.slot_reuse_wait_seconds,
+            slot_reuse_waits=self._stats.slot_reuse_waits,
+            source_copy_seconds=self._stats.source_copy_seconds,
+            source_copy_bytes=self._stats.source_copy_bytes,
+            shard_read_seconds=self._stats.shard_read_seconds + seconds,
+            shard_read_bytes=self._stats.shard_read_bytes + size_bytes,
+        )
+
+    @property
+    def transport_stats(self) -> PinnedStagingPoolStats:
+        """Return a stable snapshot; timings are host-wall-clock measurements."""
+        return self._stats
 
     def mark_upload(self, event: Any) -> None:
         if self._active_slot is None:
@@ -367,25 +481,71 @@ class SafetensorFileSlice:
     path: Path
     offset_bytes: int
     size_bytes: int
+    shape: tuple[int, ...] | None = None
+    dtype: str | None = None
 
 
 class SafetensorSliceRegistry:
-    """Maps materialized CPU tensor storage back to its immutable file slice."""
+    """Maps CPU storage addresses to immutable, shard-local file descriptors.
+
+    The registry deliberately keeps neither a tensor nor a mapped file alive:
+    its entries contain only a storage address, byte count, and frozen
+    :class:`SafetensorFileSlice`. The transport owns file mappings and must
+    close them separately before this registry is discarded.
+    """
 
     def __init__(self) -> None:
         self._slices: dict[tuple[int, int], SafetensorFileSlice] = {}
+        self._closed = False
 
     def bind(self, tensor: torch.Tensor, file_slice: SafetensorFileSlice) -> bool:
+        self._require_open()
         if tensor.device.type != "cpu" or not tensor.is_contiguous():
             return False
         size_bytes = tensor.numel() * tensor.element_size()
         if size_bytes != file_slice.size_bytes:
             return False
-        self._slices[(tensor.data_ptr(), size_bytes)] = file_slice
+        if file_slice.shape is not None and tuple(tensor.shape) != file_slice.shape:
+            return False
+        dtype_names = {
+            "BOOL": "torch.bool", "U8": "torch.uint8", "I8": "torch.int8",
+            "I16": "torch.int16", "I32": "torch.int32", "I64": "torch.int64",
+            "F16": "torch.float16", "BF16": "torch.bfloat16",
+            "F32": "torch.float32", "F64": "torch.float64",
+            "F8_E4M3": "torch.float8_e4m3fn", "F8_E5M2": "torch.float8_e5m2",
+        }
+        if file_slice.dtype is not None and dtype_names.get(file_slice.dtype) != str(tensor.dtype):
+            return False
+        key = (tensor.data_ptr(), size_bytes)
+        if key in self._slices and self._slices[key] != file_slice:
+            return False
+        self._slices[key] = file_slice
         return True
 
     def lookup(self, tensor: torch.Tensor) -> SafetensorFileSlice | None:
+        self._require_open()
         return self._slices.get((tensor.data_ptr(), tensor.numel() * tensor.element_size()))
+
+    @property
+    def descriptor_count(self) -> int:
+        return len(self._slices)
+
+    @property
+    def descriptor_bytes(self) -> int:
+        return sum(file_slice.size_bytes for file_slice in self._slices.values())
+
+    @property
+    def closed(self) -> bool:
+        return self._closed
+
+    def close(self) -> None:
+        """Drop all descriptors without retaining CPU tensor storage."""
+        self._slices.clear()
+        self._closed = True
+
+    def _require_open(self) -> None:
+        if self._closed:
+            raise RuntimeError("Safetensor slice registry is closed")
 
 
 class RegisteredHostWeightRegistry:

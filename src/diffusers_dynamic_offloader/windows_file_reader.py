@@ -11,9 +11,8 @@ from __future__ import annotations
 import ctypes
 import os
 import threading
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
-
 
 _CHUNK_BYTES = 2 * 1024**2
 _WORKERS = 8
@@ -50,6 +49,10 @@ class WindowsPinnedFileReader:
         self._handles: dict[Path, int] = {}
         self._handles_lock = threading.Lock()
         self._executor = ThreadPoolExecutor(max_workers=workers, thread_name_prefix="ddo-file-read")
+        # Request workers own only request orchestration; chunk reads stay on
+        # the I/O pool so a caller can overlap one staged shard range with GPU
+        # work without occupying its Python execution hook.
+        self._requests = ThreadPoolExecutor(max_workers=2, thread_name_prefix="ddo-file-request")
 
     def _handle(self, path: Path) -> int:
         with self._handles_lock:
@@ -89,7 +92,13 @@ class WindowsPinnedFileReader:
         for future in futures:
             future.result()
 
+    def read_at_async(self, path: Path, offset: int, destination: int, size: int) -> Future[None]:
+        """Schedule a positional read into pinned storage without blocking the caller."""
+
+        return self._requests.submit(self.read_at, path, offset, destination, size)
+
     def close(self) -> None:
+        self._requests.shutdown(wait=True)
         self._executor.shutdown(wait=True)
         with self._handles_lock:
             for handle in self._handles.values():

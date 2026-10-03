@@ -29,6 +29,18 @@ cd diffusers-dynamic-offloader
 uv pip install -e .
 ```
 
+For native VMM development on the validated Windows CUDA profile, initialize
+the allocator submodule and install the optional development extra:
+
+```powershell
+git submodule update --init --recursive
+uv venv .venv-vmm --python 3.12
+uv pip install --system-certs --python .venv-vmm\Scripts\python.exe -e ".[vmm-dev]"
+```
+
+This profile is optional and currently targets Windows. Linux validation follows
+the Windows native route; WSL and macOS are not supported VMM targets.
+
 Or, from another project environment, install the local checkout by path:
 
 ```powershell
@@ -98,6 +110,8 @@ When a component cannot be accelerated safely, DDO routes it through the compati
 - [Dynamic module loading](docs/dynamic-loading.md): load a component independently before attaching and routing it.
 - [Presets and platforms](docs/presets-and-platforms.md): what each preset means and what `auto` currently chooses.
 - [Configuration reference](docs/configuration.md): settings fields, recognized `DDO_*` variables, and override precedence.
+- [Metrics reference](docs/metrics.md): stable telemetry snapshots for runners, JSON, and `--show-profile` output.
+- [Native VMM support checkpoint](docs/native-support-status.md): validated Windows scope, component lifecycle, public reporting and remaining release gates. Native component ownership remains opt-in.
 - [Capacity profiles](docs/capacity-profiles.md): persist real workload observations under `~/.ddo/profiles` and warn when a later run exceeds a validated range.
 - [Dynamic offload results](experiments/dynamic_offload_results.md): report-ready benchmark summary and comparison tables.
 
@@ -215,4 +229,20 @@ The current report is in [experiments/dynamic_offload_results.md](experiments/dy
 
 ## Project Scope
 
-DDO intentionally avoids native low-level memory hooks. The priority is a portable PyTorch/Diffusers layer that is easy to integrate, easy to disable, and safe across different hardware and driver stacks.
+  `linear_runtime` remains DDO's portable PyTorch/Diffusers route and universal
+  fallback. Native memory work is confined to experimental `vmm_fast_runtime`,
+  while `vmm_runtime` remains the protected NVMe baseline; both use the pinned
+  `ddo-vmm-allocator` submodule. The runner-facing API stays
+small: it selects a backend/preset, calls the VMM bootstrap when required, and
+consumes the public metrics report. See [Metrics reference](docs/metrics.md).
+
+Experimental retained-source storage now separates native host bytes from
+CUDA registration lifetime. Storage and registration ceilings remain explicit;
+the selected functional CPU/CUDA gate passed, while full-model capacity and
+performance validation remain pending. See the
+[native source plan](docs/native-source-cache-plan.md).
+
+The persistent-source route now includes two reusable native execution slots
+and immutable C++ transfer batches. This latest pipeline is compiled and
+CPU-tested, and its selected CUDA functional gate passed; full-model
+performance validation remains pending.

@@ -21,13 +21,42 @@ vmm = [
     "cuda-core>=1.2.0",
     "cuda-bindings>=13.4.0",
 ]
+vmm-dev = [
+    "pytest",
+    "ruff>=0.14.3",
+    "cuda-core>=1.2.0",
+    "cuda-bindings>=13.4.0",
+    "torch==2.12.1+cu132 ; sys_platform == 'win32' and python_version == '3.12'",
+    # Optional Windows development harness dependencies. They keep the DDO
+    # library itself model-agnostic while allowing its VMM contracts to be
+    # exercised against the sibling Diffusers host environment.
+    "torchvision==0.27.1+cu132 ; sys_platform == 'win32' and python_version == '3.12'",
+    "accelerate==1.14.0",
+    "transformers==5.15.1",
+    "einops==0.8.2",
+    "peft==0.20.0",
+    "diffusers @ git+https://github.com/DEVAIEXP/diffusers.git@e71ebc5858961e2a37d6a7b161d00ae0063c3ab7",
+    "diffusers-mm @ git+https://github.com/asomoza/diffusers-mm.git@ec5a40f1b8279e86f2b8c7a1872018f213d441f6",
+]
 
 [build-system]
 requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
+[tool.setuptools]
+py-modules = ["ddo_vmm_bootstrap"]
+
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.uv.sources]
+torch = { index = "pytorch-cu132", marker = "sys_platform == 'win32' and python_version == '3.12'" }
+torchvision = { index = "pytorch-cu132", marker = "sys_platform == 'win32' and python_version == '3.12'" }
+
+[[tool.uv.index]]
+name = "pytorch-cu132"
+url = "https://download.pytorch.org/whl/cu132"
+explicit = true
 
 [tool.ruff]
 target-version = "py310"
@@ -52,3 +81,8 @@ ignore = [
 
 [tool.ruff.lint.isort]
 known-first-party = ["diffusers_dynamic_offloader"]
+
+[tool.pytest.ini_options]
+markers = [
+    "vmm: requires the native VMM allocator and CUDA.",
+]

@@ -4,6 +4,7 @@ from unittest.mock import patch
 import torch
 import torch.nn as nn
 
+from diffusers_dynamic_offloader import DYNAMIC_OFFLOAD_METRICS_SCHEMA_VERSION
 from diffusers_dynamic_offloader.dynamic_offload import (
     DDO_PRESETS,
     DynamicOffloadConfig,
@@ -24,6 +25,12 @@ from diffusers_dynamic_offloader.dynamic_offload import (
 
 
 class DynamicOffloadPresetTests(unittest.TestCase):
+    def setUp(self):
+        # These routing/planner contracts must not query a real CUDA device.
+        guard = patch("diffusers_dynamic_offloader.dynamic_offload.get_cuda_total_vram_gb", return_value=8.0)
+        guard.start()
+        self.addCleanup(guard.stop)
+
     def test_auto_resolves_to_one_shot_fast(self):
         self.assertEqual(resolve_dynamic_offload_preset("auto", running_on_wsl=False), "one_shot_fast")
         self.assertEqual(resolve_dynamic_offload_preset("auto", running_on_wsl=True), "one_shot_fast")
@@ -257,6 +264,23 @@ class DynamicOffloadPresetTests(unittest.TestCase):
         self.assertEqual(results["transformer"].route, "dynamic_offload")
         self.assertIs(results["text_encoder"].settings, settings)
         self.assertIs(results["transformer"].settings, settings)
+
+    def test_apply_result_exposes_versioned_runner_neutral_metrics(self):
+        settings = load_dynamic_offload_settings_from_env(
+            running_on_wsl=False,
+            environ={"DDO_PRESET": "one_shot_fast"},
+        )
+        result = enable_dynamic_offload(nn.Linear(2, 2), settings=settings, apply_hook=False)
+
+        metrics = result.metrics_snapshot()
+        payload = metrics.as_dict()
+
+        self.assertEqual(payload["schema_version"], DYNAMIC_OFFLOAD_METRICS_SCHEMA_VERSION)
+        self.assertEqual(payload["route"], "dynamic_offload")
+        self.assertEqual(payload["configuration"]["dynamic_offload_effective_preset"], "one_shot_fast")
+        self.assertEqual(payload["setup"], result.event_payload)
+        self.assertEqual(payload["runtime"], {})
+        self.assertIn("DDO profile", metrics.format_profile())
 
     def test_enable_offload_routes_diffusers_compat_transformer_to_group_offload(self):
         settings = load_dynamic_offload_settings_from_env(

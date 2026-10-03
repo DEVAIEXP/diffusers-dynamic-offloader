@@ -1,3 +1,4 @@
+from .backend import DynamicOffloadBackend, add_dynamic_offload_arguments, resolve_dynamic_offload_backend
 from .dynamic_offload import (
     DDO_PRESETS,
     DiffusersGroupOffloadResult,
@@ -32,6 +33,8 @@ from .dynamic_offload import (
     remove_dynamic_offload,
     resolve_dynamic_offload_preset,
 )
+from .metrics import DYNAMIC_OFFLOAD_METRICS_SCHEMA_VERSION, DynamicOffloadMetrics
+from .timing import DynamicOffloadExecutionTimer
 from .profiles import (
     DYNAMIC_OFFLOAD_PROFILE_SCHEMA_VERSION,
     DynamicOffloadProfileSession,
@@ -40,6 +43,7 @@ from .profiles import (
     get_dynamic_offload_profile_capacity,
     get_dynamic_offload_profile_dir,
     get_dynamic_offload_profile_recommendation,
+    inspect_vmm_component,
     load_dynamic_offload_profile,
     normalize_dynamic_offload_profile_context,
     record_dynamic_offload_profile,
@@ -56,6 +60,12 @@ __all__ = [
     "DynamicOffloadSettings",
     "DynamicOffloadState",
     "DiffusersGroupOffloadResult",
+    "DYNAMIC_OFFLOAD_METRICS_SCHEMA_VERSION",
+    "DynamicOffloadMetrics",
+    "DynamicOffloadExecutionTimer",
+    "DynamicOffloadBackend",
+    "add_dynamic_offload_arguments",
+    "resolve_dynamic_offload_backend",
     "apply_dynamic_offload",
     "detect_quantized_backend_modules",
     "enable_dynamic_offload",
@@ -86,6 +96,7 @@ __all__ = [
     "get_dynamic_offload_profile_capacity",
     "get_dynamic_offload_profile_dir",
     "get_dynamic_offload_profile_recommendation",
+    "inspect_vmm_component",
     "load_dynamic_offload_profile",
     "normalize_dynamic_offload_profile_context",
     "record_dynamic_offload_profile",

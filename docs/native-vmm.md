@@ -42,6 +42,13 @@ The benchmark used full-source coverage; smaller host capacity can introduce
 rereads or fallback and does not promise the same throughput. VMM capacity
 profiles are observations, not Python residency calibration.
 
+Generic hosts can pass `--ddo-vmm-source-cache-gb` for retained storage and
+`--ddo-vmm-source-registered-gb` for the separate registration ceiling through
+`add_dynamic_offload_arguments()` / `build_config_from_args()`. Registration
+zero retains the existing storage-ceiling default. Values are GiB; explicit
+registration must fit retained storage and whole native segments. Adding this
+argument does not alter the selected benchmark's capacities or native policy.
+
 ## Phase-staged execution
 
 For tight memory, encode/read back outputs, collect the component's completed
@@ -90,3 +97,7 @@ Windows standby purge is optional and safely no-ops on Linux.
 [Final results](../experiments/dynamic_offload_results.md) and the
 [benchmark manifest](benchmark-reproduction.md) state what was measured and
 what remains necessary for an independent Diffusers comparison.
+
+For user-driven validation on other models/environments, use the short
+[manual checklist](manual-validation.md); it is not an exhaustive test matrix
+or an automatic publication gate.

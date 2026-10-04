@@ -69,3 +69,32 @@ def test_argument_helper_keeps_runner_surface_small():
     assert (args.ddo_backend, args.ddo_preset, args.show_metrics) == ("vmm", "auto", True)
     config = resolve_dynamic_offload_backend(args.ddo_backend, args.ddo_preset).build_config_from_args(args)
     assert config.vmm_resident_weight_budget_gb == 4.0
+
+
+def test_runner_arguments_preserve_independent_source_storage_and_registration():
+    parser = add_dynamic_offload_arguments(argparse.ArgumentParser())
+    args = parser.parse_args([
+        "--ddo-backend", "vmm", "--ddo-vmm-source-cache-gb", "24.625",
+        "--ddo-vmm-source-registered-gb", "0.5",
+    ])
+    config = resolve_dynamic_offload_backend(args.ddo_backend, args.ddo_preset).build_config_from_args(args)
+    assert config.vmm_source_cache_gb == 24.625
+    assert config.vmm_source_registered_gb == 0.5
+    assert config.vmm_resident_weight_budget_gb == 4.0
+
+
+def test_registration_argument_defaults_do_not_change_protected_routes():
+    parser = add_dynamic_offload_arguments(argparse.ArgumentParser())
+    for arguments, mode in (([], "linear_runtime"),
+                            (["--ddo-backend", "vmm", "--ddo-preset", "nvme_baseline"], "vmm_runtime")):
+        args = parser.parse_args(arguments)
+        config = resolve_dynamic_offload_backend(args.ddo_backend, args.ddo_preset).build_config_from_args(args)
+        assert config.execution_mode == mode
+        assert config.vmm_source_cache_gb == 0.0
+        assert config.vmm_source_registered_gb == 0.0
+
+
+def test_existing_argument_namespaces_without_registration_remain_compatible():
+    args = add_dynamic_offload_arguments(argparse.ArgumentParser()).parse_args(["--ddo-backend", "vmm"])
+    del args.ddo_vmm_source_registered_gb
+    assert resolve_dynamic_offload_backend("vmm").build_config_from_args(args).vmm_source_registered_gb == 0.0

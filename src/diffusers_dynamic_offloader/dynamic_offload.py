@@ -821,6 +821,33 @@ class DynamicOffloadApplyResult:
         """Measure and save a calibration; a no-op for ordinary inference."""
         return self._profile.measure() if self._profile is not None else contextlib.nullcontext()
 
+    @contextlib.contextmanager
+    def cleanup_on_error(self):
+        """Unwind an attached component on failure; successful cleanup is unchanged.
+
+        Keep the original exception when native cleanup also fails. Failed
+        retirement remains owned by the hook; this does not reset the device,
+        force-release views or claim recovery from a poisoned CUDA context.
+        """
+        try:
+            yield self
+        except BaseException as error:
+            if self.hook is not None:
+                try:
+                    remove_dynamic_offload(self.module)
+                except BaseException as cleanup_error:
+                    # add_note is unavailable on Python 3.10. Retain a detached
+                    # diagnostic there, without replacing the forward failure.
+                    try:
+                        note = f"DDO component cleanup also failed: {cleanup_error!r}"
+                        if hasattr(error, "add_note"):
+                            error.add_note(note)
+                        else:
+                            error.ddo_cleanup_error = cleanup_error
+                    except BaseException:
+                        pass  # Even diagnostic failure must not mask the original.
+            raise
+
     def execution_timer(self, *, enabled=False, native_units=False, native_capacity=4096,
                         diagnostic_step_wait=False):
         """Opt-in event timing; ordinary inference remains unchanged."""

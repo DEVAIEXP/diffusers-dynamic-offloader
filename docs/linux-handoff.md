@@ -4,6 +4,25 @@ Read this first in a new Linux chat. This document carries project state without
 requiring the Windows conversation history. It is a handoff, not a declaration
 of Linux runtime support.
 
+Linux environment preparation on 2026-10-04 is now recorded in
+[Linux environment](linux-environment.md). Its optional `vmm-dev-linux` profile
+and explicit `UV_PROJECT_ENVIRONMENT=.venv-linux` commands supersede manual
+Torch-wheel selection below for this machine. System C++ tools are installed;
+the native source/ring/cache/batch port compiled and passed CPU gates. See
+[Linux transport checkpoint](native-linux-transport-gate.md) for current evidence
+and the approved small CUDA sequence, now PASS. The subsequently approved
+[staged real-model gate](native-linux-staged-gate.md) also passed on the corrected
+binary: native encoder and transformer,1.050970s/step, tracker32.2142s.
+New GPU runs still require reviewed commands/limits and confirmation. Remaining
+port-work wording below describes the pre-implementation handoff.
+
+After that gate, native overcommit-mode admission was corrected with CPU/build
+evidence first. The original CUDA-validated .so is preserved; current corrected
+candidate subsequently passed three cache contracts and the single staged model
+generation. No kernel policy or DDO ceiling was changed. Linux allocator checkpoint
+`433d3e47ff7a6e7f5635ebedf0acc3c3191f6308` is committed locally and pinned by
+the DDO closure checkpoint; no push. Bounded acceptance is not general model support.
+
 ## Accepted state: do not reopen Windows tuning
 
 Local checkpoints before this preparation:
@@ -84,7 +103,7 @@ Stop on the first failure. Pass means eight native CPU tests actually executed
 on Linux, including `posix_source_cpu`; Windows' seven passes do not prove that.
 The helper never installs tools or runs a CUDA probe/benchmark.
 
-## Remaining native implementation: one coherent Linux block
+## Historical implementation checklist — completed on 2026-10-04
 
 The POSIX immutable file source and bootstrap discovery exist. The accepted
 Windows source/cache/transport **still has Windows-only branches**. Do not

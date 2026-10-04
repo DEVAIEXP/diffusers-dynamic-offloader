@@ -2,6 +2,14 @@
 
 ## Scope
 
+Update2026-10-04: the initial native Linux ring/storage/cache/batch implementation
+now compiles and passes CPU gates. [Checkpoint](native-linux-transport-gate.md)
+records actual build flags, artifact and the subsequently approved CUDA smoke:
+allocator probe and seven small contracts PASS. The pre-port gap list below is
+historical. The corrected candidate subsequently passed three CUDA cache contracts
+and the selected staged real-model generation; [evidence](native-linux-staged-gate.md).
+Do not reopen completed port work or infer general model/platform support.
+
 Windows selected performance/critical robustness is accepted for development;
 do not reopen performance tuning or add an exhaustive model/platform matrix.
 Preserve its candidate, source/event contracts and protected linear/NVMe routes.
@@ -9,7 +17,8 @@ Encoder native ownership is working for the validated text-only case, remains
 opt-in, and should use the same public API on Linux rather than a separate runner
 implementation. See [support checkpoint](native-support-status.md).
 
-This is a port plan based on local source inspection, not a completed Linux
+Historical pre-port assessment (superseded by the executed checkpoint above):
+this was a port plan based on local source inspection, not a completed Linux
 build or execution. Current host is Windows; no native Linux CUDA environment
 has been used for this checkpoint. Do not install a VM/WSL/container or use a
 different host without agreement. A real Linux build will produce

@@ -8,6 +8,81 @@ This file is the report-ready benchmark sidecar. It summarizes what DDO is tryin
 
 ## Native VMM development gate
 
+### Native Linux staged real model — PASS (2026-10-04)
+
+User-approved corrected-binary sequence:3 selected CUDA cache contracts PASS
+in3.10s, no skips, then ONE offline native BF16 encoder→unload→transformer→VAE/save
+generation. DDO .venv-linux, RTX3060Ti,1280×704,seed43,real prompt,eight steps,
+no PAG; active budget4GiB, source/registration24.625GiB, staging1.5GiB,
+allocator cache512MiB; no tuning or additional GPU runs.
+Library SHA256 a87979f8773a010ddc2c781a37f3ef55112ca558a9d93083b972f51246a2b245.
+
+| Scope | Linux | Accepted Windows reference |
+| --- | ---: | ---: |
+| Transformer load / prepare | 0.3953 /0.7808s | 0.3965 /0.6261s |
+| First CUDA step | 5.788787s | 6.729011s |
+| CUDA steady state | 1.050970s/step | 1.395602s/step |
+| CUDA phase | 13.145578s | 16.498256s |
+| Entire prompt phase | 11.7280s | 12.6624s |
+| Entire Generate phase | 19.0590s | 24.2141s |
+| RunTracker total, excluding bootstrap/import startup | 32.2142s | 38.5135s |
+
+Sampled absolute driver GPU6.499573GiB (baseline0.722290, delta5.7773),
+RSS27.3482GiB, monitor errors null. Encoder source zero at transformer boundary;
+completion tickets31→0 and411→0. Transformer source committed/registered24.25GiB,
+staging separate1.5GiB. No temporary fallback, admission denial/bypass, read
+failure, execution mismatch or allocator quarantine. Aggregate source reads
+25,846,148,360 bytes vs187,588,136,576 DMA bytes demonstrate reuse, not a per-step
+read trace. PNG1280×704 visually plausible; no cross-platform numerical/pixel
+equivalence claim. This single observation is not a statistical speed guarantee
+or arbitrary-model/platform support. Windows artifacts and frozen routes unchanged;
+their performance benchmarks were not repeated. Local delivery CPU/package
+checks are recorded separately; no additional model run was required.
+[Executed manifest, artifact hashes and limitations](../docs/native-linux-staged-gate.md).
+
+### Linux mode-aware admission correction; CPU/build PASS, CUDA pending (2026-10-04)
+
+Historical pre-execution checkpoint; the approved corrected-binary CUDA/model
+sequence subsequently passed as recorded above. Keep original binary evidence separate.
+
+Preparing the integral model found mode0/MemAvailable54.5GiB but remaining
+CommitLimit20.9GiB. User approved fixing the overly restrictive all-modes commit
+guard: mode2 retains remaining commit; modes0/1 use finite physical admission,
+then existing cgroup/process bounds. Unknown mode refuses growth. No sysctl,
+driver, swap, configured cap/reserve or CUDA/event/Windows implementation change.
+Nine C++ CPU PASS, expanded mode fixtures;122 Python CPU PASS in3.25s, no skips.
+Corrected .so compiled SHA256
+a87979f8773a010ddc2c781a37f3ef55112ca558a9d93083b972f51246a2b245.
+Previous CUDA-validated e712887... saved as libddo_vmm.pre-overcommit-mode-20261004.so;
+its result does not validate the new binary. No CUDA or LTX after this correction.
+[Proposed three cache contracts then one staged real-model run](../docs/native-linux-staged-gate.md)
+requires separate approval;8steps/BF16/real prompt/1280x704/seed43, no tuning.
+
+### Linux transport compiled; CPU and small CUDA PASS (2026-10-04)
+
+Native positioned workers, lazy mmap storage, separate CUDA registration,
+persistent-cache admission/trim and immutable batches connected on Linux, with
+no Python cache/host heuristic or budget expansion. Conservative host commit,
+cgroup v2 ancestor and process-limit guards refuse unavailable observations.
+GCC15.2.0/CMake4.2.3/toolkit13.2.78 build: span pool ON, dispatcher/hooks/probes
+OFF verified in CMakeCache (recipe -D spelling corrected). Nine C++ CPU PASS;
+Final122 Python CPU PASS in3.22s, no skips, including actual .so file ABI,
+platform admission, transport, component ownership and lifecycle failure cases.
+The first expanded sequence stopped for a missing explicit ABI-library path;
+the same sequence passed with DDO_VMM_LIBRARY_PATH selecting this .so.
+Library SHA256 e71288717924c66acb8205284c02eb4089ab9aa09e921515768fb690f3aee503.
+Windows candidate/default DLL hashes unchanged; protected route tests passed,
+not repeated Windows CUDA/performance validation. Changes remain uncommitted
+over allocator84f17ba/DDOddcac71. User-approved allocator probe PASS outside
+the sandbox (inside, CUDA availability was blocked before GPU allocation):
+16MiB, zero live allocations after free, stable-address reuse, stream lifetime
+and nonblocking renewed consumer fence verified. Seven selected small CUDA
+contracts PASS in3.64s, no skips, exit0; source/registration/batch ownership,
+numerical forward, buffer ceilings and cancellation assertions passed.
+No independent process-wide peak monitor or full-model Linux benchmark;
+no source/library/budget change, Windows rerun or further CUDA case in this gate.
+[Evidence and executed bounded gate](../docs/native-linux-transport-gate.md).
+
 ### Linux file-source/bootstrap groundwork (2026-10-03; native Linux pending)
 
 Linux-only positioned file I/O and source C ABI metadata/shared-handle lifecycle

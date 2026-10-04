@@ -3,7 +3,8 @@
 Selected development acceptance, updated 2026-10-04. DDO is model-agnostic;
 LTX is the benchmark workload, not a library dependency or architecture policy.
 Intermediate validation runs are retained locally in the internal implementation
-report, separately from this public summary. Historical Git records are unchanged.
+report, separately from this public summary. Recorded measurements and raw
+benchmark artifacts are unchanged.
 
 ## Workload and scope
 

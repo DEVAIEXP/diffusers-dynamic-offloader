@@ -51,6 +51,7 @@ class DynamicOffloadBackend:
             vmm_native_source_cache_slot_mb=getattr(args, "ddo_vmm_native_source_cache_slot_mb", 0),
             vmm_native_source_cache_slots=getattr(args, "ddo_vmm_native_source_cache_slots", 0),
             vmm_source_cache_gb=getattr(args, "ddo_vmm_source_cache_gb", 0.0),
+            vmm_source_registered_gb=getattr(args, "ddo_vmm_source_registered_gb", 0.0),
             vmm_component_tensor_ownership=getattr(args, "ddo_vmm_component_tensor_ownership", False),
             vmm_component_buffer_limit_mb=getattr(args, "ddo_vmm_component_buffer_limit_mb", 1),
         )
@@ -119,8 +120,12 @@ def add_dynamic_offload_arguments(parser: argparse.ArgumentParser) -> argparse.A
         "--ddo-vmm-source-cache-gb", type=float, default=0.0,
         help="Opt-in native shared-window source capacity in GiB (maximum 32; lazy registration; default off).",
     )
+    parser.add_argument(
+        "--ddo-vmm-source-registered-gb", type=float, default=0.0,
+        help="Separate CUDA registration ceiling within retained source storage, in GiB (0 uses the storage ceiling).",
+    )
     parser.add_argument("--ddo-vmm-component-tensor-ownership", action="store_true",
-                        help="Experimental whole-component ownership; requires native file transport; not validated encoder support.")
+                        help="Experimental whole-component ownership; requires native file transport; selected text-only workloads validated, not general encoder support.")
     parser.add_argument("--ddo-vmm-component-buffer-limit-mb", type=int, default=1,
                         help="Explicit device-buffer ceiling in MiB for the opt-in component route.")
     parser.add_argument("--show-metrics", action="store_true", help="Print the DDO metrics JSON.")

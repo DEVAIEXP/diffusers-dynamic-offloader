@@ -28,10 +28,13 @@ def test_library_recipe_preserves_explicit_feature_selection_and_never_runs_prob
     commands = recipe.build_commands(ROOT / "ddo-vmm-allocator", "library", 2)
     assert len(commands) == 2
     assert commands[0][4].endswith("build-linux")
-    assert "-DDO_VMM_BUILD_PROBES=OFF" in commands[0]
-    assert "-DDO_VMM_NATIVE_SPAN_POOL=ON" in commands[0]
-    assert "-DDO_VMM_NATIVE_SOURCE_DISPATCHER=OFF" in commands[0]
-    assert "-DDO_VMM_SOURCE_TEST_HOOKS=OFF" in commands[0]
+    assert "-DDDO_VMM_BUILD_PROBES=OFF" in commands[0]
+    assert "-DDDO_VMM_NATIVE_SPAN_POOL=ON" in commands[0]
+    assert "-DDDO_VMM_NATIVE_SOURCE_DISPATCHER=OFF" in commands[0]
+    assert "-DDDO_VMM_SOURCE_TEST_HOOKS=OFF" in commands[0]
+    # CMake consumes the first -D. The variable itself begins with DDO, so
+    # two D's after '-' would silently configure unused DO_* variables.
+    assert all(part[2:].startswith("DDO_") for part in commands[0] if part.startswith("-D") and "VMM" in part)
 
 
 @pytest.mark.parametrize("jobs", [0, -1, 65])

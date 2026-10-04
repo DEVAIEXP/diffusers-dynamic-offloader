@@ -38,8 +38,11 @@ uv venv .venv-vmm --python 3.12
 uv pip install --system-certs --python .venv-vmm\Scripts\python.exe -e ".[vmm-dev]"
 ```
 
-This profile is optional and currently targets Windows. Linux validation follows
-the Windows native route; WSL and macOS are not supported VMM targets.
+This profile is optional and targets Windows. Native Linux development uses
+the separate `vmm-dev-linux` profile and `.venv-linux`; see the
+[Linux environment guide](docs/linux-environment.md). Both platforms have passed
+the selected staged native encoder/transformer workload, not an arbitrary-model
+support matrix. WSL and macOS are not supported VMM targets.
 
 Or, from another project environment, install the local checkout by path:
 
@@ -111,8 +114,9 @@ When a component cannot be accelerated safely, DDO routes it through the compati
 - [Presets and platforms](docs/presets-and-platforms.md): what each preset means and what `auto` currently chooses.
 - [Configuration reference](docs/configuration.md): settings fields, recognized `DDO_*` variables, and override precedence.
 - [Metrics reference](docs/metrics.md): stable telemetry snapshots for runners, JSON, and `--show-profile` output.
-- [Native VMM support checkpoint](docs/native-support-status.md): validated Windows scope, component lifecycle, public reporting and remaining release gates. Native component ownership remains opt-in.
-- [Linux continuation checklist](docs/linux-handoff.md): separate environment/build recipes and pending native transport work; Linux execution remains experimental.
+- [Native VMM support checkpoint](docs/native-support-status.md): selected Windows/Linux validation, component lifecycle, public reporting and remaining release work. Native component ownership remains opt-in.
+- [Linux continuation checklist](docs/linux-handoff.md): separate environment/build recipes and completed portability checkpoint; support beyond the selected Linux workload remains experimental.
+- [Linux development environment](docs/linux-environment.md): optional pinned `vmm-dev-linux` profile, uv environment isolation and compiler prerequisites.
 - [Capacity profiles](docs/capacity-profiles.md): persist real workload observations under `~/.ddo/profiles` and warn when a later run exceeds a validated range.
 - [Dynamic offload results](experiments/dynamic_offload_results.md): report-ready benchmark summary and comparison tables.
 

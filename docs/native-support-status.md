@@ -6,9 +6,31 @@
 experimental fast native route and `vmm/nvme_baseline` selects the protected
 legacy fallback. The allocator is a pinned Git submodule; native sources and
 adapters live there. No candidate DLL was promoted during the gates below.
-Windows CUDA is the initial validated platform; Linux validation is pending,
+Windows CUDA is the initial real-model validated platform; native Linux now has
+a selected staged real-model PASS (2026-10-04),
 with no WSL/macOS VMM support promise. Ordinary installs do not require the
 optional Windows `.[vmm-dev]` environment.
+
+Linux2026-10-04: initial native source/ring/storage/cache/batches implemented and
+.so compiled; nine C++ CPU and122 Python CPU contracts PASS. Optional
+`.[vmm-dev-linux]` supplies the separate Linux development environment. The
+approved allocator probe and seven small CUDA contracts PASS (7 in3.64s,
+no skips): stream reuse, retained source/registration/batch ownership and
+public numerical/buffer/cancellation cases. GPU execution required permission
+escalation outside the sandbox. That initial gate alone was not real-model evidence.
+[Linux checkpoint](native-linux-transport-gate.md).
+
+Subsequent user-approved correction distinguishes strict overcommit mode2 from
+physically bounded modes0/1. Nine C++ CPU and122 Python CPU PASS (3.25s), .so
+recompiled; the preceding CUDA evidence belongs to the preserved original
+binary, not this corrected candidate. The subsequently approved corrected-binary
+sequence passed three CUDA cache contracts in3.10s, then one native BF16 staged
+encoder→unload→transformer→VAE/save generation:1280×704,seed43,real prompt,
+eight steps. CUDA steady state1.050970s/step, phase13.145578s, tracker32.2142s;
+sampled absolute GPU6.499573GiB and RSS27.3482GiB. No temporary fallback,
+admission denial/bypass, quarantine, execution mismatch or monitor error;
+encoder source counters zero at transformer boundary, collected tickets zero.
+[Executed manifest and limitations](native-linux-staged-gate.md).
 
 - Transformer: selected real-model three-generation reuse gate passed warm
   1.401990/1.397915/1.394595s/it. [Evidence](native-hardened-reuse-gate.md).
@@ -102,20 +124,20 @@ on unproven cleanup, cooperative cancellation/unload and clear failure metrics.
 A failed/poisoned CUDA context must not be treated as successfully recovered;
 no device reset or speculative remapping strategy is authorized by this closure.
 
-Next implementation block: [native Linux portability](native-linux-port-plan.md).
-The current file source/cache/transport still has Windows-only branches;
-compiling a `.so` alone cannot run the accepted native route.
-Use the [Linux continuation checklist](linux-handoff.md) for a new session:
-separate `.venv-linux`, CPU-only native contracts, explicit library build
-selection and the remaining source/cache/DMA block. Preparation passed seven
-shared C++ CPU contracts on Windows and66 Python recipe/routing contracts;
-the Linux-only POSIX contract and actual `.so` remain unvalidated.
+Native Linux portability and its selected real-model gate are now complete;
+see [executed evidence](native-linux-staged-gate.md). Use the
+[Linux continuation checklist](linux-handoff.md) for a new session, with separate
+`.venv-linux`/`build-linux`, explicit build selection and preserved Windows
+artifacts. The older pre-port checklist is historical, not outstanding transport
+work. Compiling a new candidate alone never transfers existing CUDA acceptance.
 
 Reporting-only precision/route labels passed82 CPU tests in5.09s and syntax
 compilation, without a new CUDA run. The recorded real-model artifacts predate
 those additive fields and are not rewritten. Final release validation of the
-chosen source/submodule revision/build, Linux portability/user support checks and
-publication audit remain separate work. No extra Windows benchmark is scheduled
+chosen source/submodule revision/build, broader user support checks and publication
+audit remain separate work; no exhaustive matrix is required for development
+closure. Local Linux checkpoint commits and the public/internal documentation
+split are the immediate delivery steps. No extra Windows benchmark is scheduled
 by this release wording. Do not rewrite private history, remove compatibility,
 publish or promote a candidate without the existing explicit scope/approval.
 Any provenance audit must retain truthful licensing/attribution obligations;

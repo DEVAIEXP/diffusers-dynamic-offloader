@@ -17,6 +17,12 @@ DDO presets are route policies, not model-specific hacks. The same preset can ap
 
 ## Component Policy
 
+The table above and default component policy below describe the linear/compat
+family. Explicit `--ddo-backend vmm --ddo-preset auto` selects `vmm_fast`;
+`vmm/nvme_baseline` selects the protected legacy VMM route. Selected native
+encoder/transformer staged workloads passed on Windows and native Linux, but
+whole-component encoder ownership remains opt-in. See [native VMM usage](native-vmm.md).
+
 Typical policy shape:
 
 | Component | Dense BF16 default | Quantized/backend-specific default |

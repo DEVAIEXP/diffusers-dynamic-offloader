@@ -52,3 +52,6 @@ download.py
 # Binary files
 *.so
 experiments/ltx2_image_experiments.md
+
+# Local implementation reports; not part of the public delivery.
+/.internal/

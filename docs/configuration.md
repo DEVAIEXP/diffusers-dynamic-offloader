@@ -10,6 +10,12 @@ Python arguments should be preferred for reusable application code. Environment 
 
 ## Override Order
 
+This catalog includes linear defaults and the protected legacy VMM route.
+For the current experimental native route, start with
+[native VMM usage](native-vmm.md): runner backend/preset selection, fresh-process
+bootstrap and independent host/GPU capacities are part of its contract.
+The retained-source configuration does not turn VMM into the linear default.
+
 Configuration is resolved in this order:
 
 1. Built-in preset defaults.

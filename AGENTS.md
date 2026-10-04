@@ -23,6 +23,8 @@ This repository is focused on `diffusers-dynamic-offloader` (DDO), a generic Dif
 ## Experiment Tracking
 
 - `experiments/dynamic_offload_results.md` is the compact benchmark sidecar for current comparison tables and report-ready notes.
+- The implementation history formerly in that sidecar is preserved locally in `.internal/reports/dynamic_offload_results-implementation.md`; `.internal/` is ignored and not cloned/published. Keep it backed up separately. Public benchmark conditions live in `docs/benchmark-reproduction.md`; do not use older linear/compatibility results as matched evidence for the final native encoder workload.
+- Public native integration guidance is `docs/native-vmm.md`. Existing `docs/native-*` plans/gates and handoff checklists are engineering records, not all current user instructions. Preserve their acceptance evidence and historical labels during the later publication review; do not silently rewrite raw results or licensing/attribution.
 - `experiments/ltx2_image_experiments.md` is local-only historical LTX scratch material and should stay ignored/untracked in this repository.
 - Historical results may stay in experiment docs, but stale recommendations must be marked as historical or corrected.
 - Use DDO environment names in new docs and commands:

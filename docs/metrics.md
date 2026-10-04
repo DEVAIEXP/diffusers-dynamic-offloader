@@ -1,6 +1,6 @@
 # Metrics reference
 
-## Experimental component ownership (selected Windows CUDA gates validated)
+## Experimental component ownership (selected Windows/Linux workloads validated)
 
 `DynamicOffloadApplyResult.metrics_snapshot()` exposes `runtime.component_ownership`
 only for the opt-in component adapter. `format_profile()` marks it experimental;
@@ -8,8 +8,9 @@ normal runners do not inspect bindings/owners. Values are attachment metadata,
 not GPU/RAM use or proof of numerical support.
 
 The selected component contracts, real text-only encoder and staged pipeline
-passed their Windows gates; this is not general encoder/multimodal support.
-See [current support and evidence](native-support-status.md).
+passed their Windows gates. Linux passed selected contracts and one staged
+real-model generation; coverage is not identical and is not general encoder or
+multimodal support. See [current usage and support](native-vmm.md).
 
 | Field | Unit / collection | Meaning / action |
 | --- | --- | --- |
@@ -575,7 +576,10 @@ of retained-source caching. Add `--ddo-vmm-native-source-cache-slot-mb` and
 `--ddo-vmm-native-source-cache-slots` together to enable retention; that also
 selects the ring. Both options default to zero. Cache slots are currently at
 most 64 MiB each and 128 MiB in total; ring plus cache is limited to 1 GiB.
-These are development limits, not full-model cache coverage.
+These limits describe the legacy explicit micro-cache configuration, not the
+full-source route. `--ddo-vmm-source-cache-gb` selects larger retained storage;
+its separate registration ceiling is described below. Do not extrapolate
+micro-cache measurements to full-model coverage.
 
 `--ddo-vmm-staging-buffer-gb` means **total** staging capacity. The native route
 rounds it up once to whole windows of at most 64 MiB, not once per logical
@@ -625,8 +629,10 @@ acquired for DMA and protected until its own completion; recycling it must
 not increase source-read bytes. Source leases protect contents independently
 of registration. Host pressure can still discard unleased ready storage, so
 zero rereads is conditional on coverage and available memory, not guaranteed
-for a partial buffer. The selected CPU/CUDA functional gate passed (63 tests,
-5.67 s); full-model capacity and inference performance remain unvalidated.
+for a partial buffer. Selected full-model staged Windows/Linux runs have now
+passed with explicit source/registration ceilings. See the
+[final benchmark](../experiments/dynamic_offload_results.md); that evidence is
+not a promise for partial buffers or arbitrary models.
 
 ### Native model-source windows and GPU look-ahead
 

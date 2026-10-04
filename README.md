@@ -114,8 +114,8 @@ When a component cannot be accelerated safely, DDO routes it through the compati
 - [Presets and platforms](docs/presets-and-platforms.md): what each preset means and what `auto` currently chooses.
 - [Configuration reference](docs/configuration.md): settings fields, recognized `DDO_*` variables, and override precedence.
 - [Metrics reference](docs/metrics.md): stable telemetry snapshots for runners, JSON, and `--show-profile` output.
-- [Native VMM support checkpoint](docs/native-support-status.md): selected Windows/Linux validation, component lifecycle, public reporting and remaining release work. Native component ownership remains opt-in.
-- [Linux continuation checklist](docs/linux-handoff.md): separate environment/build recipes and completed portability checkpoint; support beyond the selected Linux workload remains experimental.
+- [Native VMM usage](docs/native-vmm.md): route selection, bootstrap, lifecycle, metrics and selected Windows/Linux support. Native component ownership remains opt-in.
+- [Benchmark reproduction](docs/benchmark-reproduction.md): workload, environment, host fixture, binary identity and measurement boundaries.
 - [Linux development environment](docs/linux-environment.md): optional pinned `vmm-dev-linux` profile, uv environment isolation and compiler prerequisites.
 - [Capacity profiles](docs/capacity-profiles.md): persist real workload observations under `~/.ddo/profiles` and warn when a later run exceeds a validated range.
 - [Dynamic offload results](experiments/dynamic_offload_results.md): report-ready benchmark summary and comparison tables.
@@ -224,13 +224,11 @@ Runner-specific variables should use a separate prefix such as `DDO_RUNNER_*`; D
 
 ## Results
 
-The current report is in [experiments/dynamic_offload_results.md](experiments/dynamic_offload_results.md). It includes:
-
-- Windows, WSL, and native-Ubuntu BF16 benchmark comparisons;
-- DDO dynamic offload versus official Diffusers block/leaf group offload;
-- full-pipeline versus phase-staged execution comparisons;
-- quantized SDNQ compatibility notes;
-- exploratory FLUX.2 Klein and Z-Image observations for auto-budget behavior.
+The [public benchmark summary](experiments/dynamic_offload_results.md) reports
+the selected final native staged Windows/Linux runs, memory definitions and
+limitations. Intermediate experiments and legacy comparisons are kept in a
+local internal report, not mixed into the current results. No matched official
+Diffusers comparison was run with the final native encoder configuration.
 
 ## Project Scope
 
@@ -243,10 +241,9 @@ consumes the public metrics report. See [Metrics reference](docs/metrics.md).
 
 Experimental retained-source storage now separates native host bytes from
 CUDA registration lifetime. Storage and registration ceilings remain explicit;
-selected Windows staged performance and critical robustness gates passed within
-their recorded scope; Linux validation remains pending. See the
-[support checkpoint](docs/native-support-status.md) and the
-[native source plan](docs/native-source-cache-plan.md).
+selected Windows and native Linux staged workloads passed within their recorded
+scopes. See [native usage and support](docs/native-vmm.md). Other model/platform
+support, native binary distribution and publication remain separate release work.
 
 The persistent-source route now includes two reusable native execution slots
 and immutable C++ transfer batches. This latest pipeline is compiled and

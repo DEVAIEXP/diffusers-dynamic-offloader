@@ -177,6 +177,15 @@ See [native usage](native-vmm.md) for bootstrap/lifecycle, and
 bytes. The LTX fixture's historical staging CLI is per logical slot and is
 converted to total capacity; do not copy that numerical value to generic DDO CLI.
 
+The sibling LTX VMM harness also exposes `--ddo-vmm-module-pattern`,
+`--ddo-vmm-page-mb` and `--ddo-vmm-dxgi-{local,shared,system}-headroom-gb`.
+These map to the matching config fields above; they are host options, not
+additional flags in the generic DDO argument helper. Its diagnostic adapter
+is explicitly selected by `--ddo-vmm-diagnostic-adapter`; other diagnostic
+controls use `--ddo-vmm-diagnostic-*`. Those controls are not native presets
+and do not change the public route defaults. The renamed host options have
+no compatibility aliases; older diagnostic command lines must be migrated.
+
 ### Full-pin zero-resident behavior
 
 When balanced auto resolves to `full_pin_zero_resident`, DDO offloads even the default

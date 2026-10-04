@@ -1,6 +1,6 @@
 """Windows overlapped file reads into already pinned host memory.
 
-This is a small DDO transport primitive for the optional VMM runtime.
+This is a small file transport primitive for the optional DDO VMM runtime.
 It uses only documented Win32 I/O through ``ctypes``; CUDA ownership remains
 with the cuda-python/PyTorch caller.  Non-Windows callers deliberately use the
 ordinary Python file fallback.

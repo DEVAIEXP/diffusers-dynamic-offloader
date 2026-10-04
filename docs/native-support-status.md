@@ -85,6 +85,14 @@ examples are not proof that simultaneous native components fit the same budget.
 
 ## Reporting boundary
 
+Post-benchmark delivery change (2026-10-04): `DynamicOffloadApplyResult.cleanup_on_error()`
+provides an opt-in error-only lifecycle scope. The LTX public native runner uses
+it after transformer attachment through setup/denoise/readback/reporting;
+successful unload remains at the existing boundary. Original errors are retained
+if cleanup also fails; no force release or poisoned-context recovery is implied.
+99 selected CPU contracts, lint and runner syntax PASS. No new CUDA/performance
+run for this host wrapper; earlier benchmark artifacts are not rewritten.
+
 Hosts consume the public DDO report rather than hook state or native attribute
 names. After a completed component phase, the existing minimal protocol is:
 

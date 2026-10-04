@@ -58,6 +58,22 @@ cleanup completes. Cleanup belongs in `finally`; preserve the original forward
 error if cleanup also fails. No per-step global synchronization is required.
 Native unload invalidates weights to meta placeholders; reload before reuse.
 
+An attached DDO result offers an error-only boundary:
+
+```python
+with result.cleanup_on_error():
+    output = run_component(result.module)
+    report = result.metrics_snapshot(collect_completed=True)
+# Successful-path unload remains explicit at the application's phase boundary.
+```
+
+Success performs no automatic unload/wait. On an exception or interruption,
+DDO attempts the existing hook cleanup once and re-raises the original error;
+a second cleanup error is attached as a diagnostic. Failed native retirement
+retains ownership rather than force-releasing it. This boundary does not cover
+attachment before the result exists, nor promise poisoned-driver recovery.
+The host wrapper is CPU-tested; no new CUDA/performance run has been made for it.
+
 Generic full-pipeline linear/compatibility examples do not prove simultaneous
 native encoder and transformer fit the configured ceilings. Native whole-component
 ownership is opt-in; supported immutable tensors, bounded buffers and shared

@@ -90,6 +90,10 @@ The defaults below are the `DynamicOffloadConfig(...)` dataclass defaults. `Dyna
 
 ### Experimental CUDA VMM runtime
 
+The following subsection describes the protected `vmm_runtime` / NVMe route,
+not the current native retained-source route. Both are preserved; the linear
+preset family is not being removed or replaced.
+
 `vmm_runtime` is an opt-in, CUDA-only route for standard dense `nn.Linear`
 weights. It reserves a stable CUDA virtual-address slot for each weight, then
 maps bounded physical backing only while that weight is needed. It is intended
@@ -116,6 +120,62 @@ support and CPU-resident contiguous BF16 or FP16 `nn.Linear` weights. It does
 not support quantized/custom linear forwards, embeddings, or a zero mapping
 budget. VMM reduces weight-residency pressure; activation and KV/cache memory
 must still fit independently.
+
+### Native VMM fast configuration
+
+Use `--ddo-backend vmm --ddo-preset auto` to select `vmm_fast_runtime`.
+`auto` here selects a route, not a calibrated residency or performance preset.
+There are no additional named native tuning presets. Choose capacities for the
+actual component/workload; the accepted benchmark manifest is not a universal
+default. `vmm/nvme_baseline` retains the protected legacy route.
+
+All fields below belong to `DynamicOffloadConfig`. Defaults are dataclass
+defaults, not the LTX harness's chosen benchmark settings. Size suffixes `gb`
+mean GiB, `mb` mean MiB. Python config applies directly; environment entries
+are consumed by `DynamicOffloadSettings.from_env(...)`.
+
+| Config field | Default | Environment | Generic DDO CLI / meaning |
+| --- | --- | --- | --- |
+| `vmm_native_transport` | `False` | `DDO_VMM_NATIVE_TRANSPORT` | `--ddo-vmm-native-transport`; native reusable registered-host windows. Source retention also selects this transport. |
+| `vmm_resident_weight_budget_gb` | `0.0` | `DDO_VMM_RESIDENT_WEIGHT_BUDGET_GB` | `--ddo-vmm-resident-weight-budget-gb`; active weight capacity, not complete driver GPU usage. CLI helper default4GiB; activations/auxiliaries need additional headroom. |
+| `vmm_staging_buffer_gb` | `0.625` | `DDO_VMM_STAGING_BUFFER_GB` | `--ddo-vmm-staging-buffer-gb`; TOTAL host staging, rounded to native windows, not per slot. |
+| `vmm_source_cache_gb` | `0.0` | `DDO_VMM_SOURCE_CACHE_GB` | `--ddo-vmm-source-cache-gb`; native retained-storage ceiling, separate from GPU and registration. Zero disables this large retained-source configuration. |
+| `vmm_source_registered_gb` | `0.0` | `DDO_VMM_SOURCE_REGISTERED_GB` | `--ddo-vmm-source-registered-gb`; registration within retained storage; zero uses storage ceiling, explicit values require whole64MiB segments within storage capacity. |
+| `vmm_module_pattern` | `.*` | `DDO_VMM_MODULE_PATTERN` | Config/ENV; select native attachment units, not model architecture detection. No generic CLI flag currently. |
+| `vmm_page_mb` | `0` | `DDO_VMM_PAGE_MB` | Config/ENV; zero requests native/default geometry. Explicit page size must satisfy native alignment/support checks. No generic CLI flag currently. |
+| `vmm_dxgi_local_headroom_gb` | `0.0` | `DDO_VMM_DXGI_LOCAL_HEADROOM_GB` | Config/ENV; Windows local budget reserve, not a Linux requirement. |
+| `vmm_dxgi_shared_headroom_gb` | `0.0` | `DDO_VMM_DXGI_SHARED_HEADROOM_GB` | Config/ENV; Windows non-local budget reserve, not measured shared-memory usage. |
+| `vmm_dxgi_system_headroom_gb` | `0.0` | `DDO_VMM_DXGI_SYSTEM_HEADROOM_GB` | Config/ENV; Windows system reserve. Linux uses native host/cgroup/process admission instead. |
+| `vmm_component_tensor_ownership` | `False` | Not currently parsed from ENV | `--ddo-vmm-component-tensor-ownership` or Python; opt-in whole-component ownership, native fast only, not automatic encoder support. |
+| `vmm_component_buffer_limit_mb` | `1` | Not currently parsed from ENV | `--ddo-vmm-component-buffer-limit-mb` or Python; explicit once-copied device-buffer payload ceiling, not total GPU usage. |
+| `vmm_native_source_cache_slot_mb` | `0` | `DDO_VMM_NATIVE_SOURCE_CACHE_SLOT_MB` | `--ddo-vmm-native-source-cache-slot-mb`; legacy explicit micro-cache geometry, distinct from large retained-source config. |
+| `vmm_native_source_cache_slots` | `0` | `DDO_VMM_NATIVE_SOURCE_CACHE_SLOTS` | `--ddo-vmm-native-source-cache-slots`; paired with slot size; zero preserves cache-off selection. |
+
+`vmm_host_cache_gb` / `DDO_VMM_HOST_CACHE_GB` describe the older CPU-source
+registration cache, not the native retained file-source buffer. Likewise,
+CPU pinning and `vmm_pin_source_weights` must not be conflated with native
+source registration. Keep legacy controls available for the routes that use them.
+
+CLI, config and environment are not three universally interchangeable inputs
+today: `build_config_from_args()` constructs config from the namespace and does
+not itself merge `DDO_*` variables. `use_environment=False` deliberately avoids
+environment overrides. Some host parsers replace environment values with their
+own defaults. Application code must explicitly select one resolution path and
+document precedence; do not assume an environment value wins over a supplied
+config or runner argument. Changes to that precedence need separate contracts.
+
+Bootstrap controls are process setup, not residency presets/config fields:
+
+| Control | Meaning |
+| --- | --- |
+| `DDO_VMM_LIBRARY_PATH` / bootstrap `library_path` | Matching platform native library; chosen before CUDA initialization. |
+| Bootstrap `allocator_cache_mib` | Global native PyTorch allocator cache; default512MiB. Bootstrap writes `DDO_VMM_TORCH_CACHE_MIB` for the child; it does not automatically honor a conflicting pre-existing cache environment value. |
+| `DDO_VMM_ALLOCATOR_ROOT` | Host-harness checkout locator where supported, not a universal `DynamicOffloadConfig` option. |
+
+See [native usage](native-vmm.md) for bootstrap/lifecycle, and
+[metrics](metrics.md) for requested capacities versus executed routes and observed
+bytes. The LTX fixture's historical staging CLI is per logical slot and is
+converted to total capacity; do not copy that numerical value to generic DDO CLI.
 
 ### Full-pin zero-resident behavior
 

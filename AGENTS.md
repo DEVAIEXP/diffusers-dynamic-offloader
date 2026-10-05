@@ -2,6 +2,12 @@
 
 This repository is focused on `diffusers-dynamic-offloader` (DDO), a generic Diffusers-style dynamic offload manager for low-VRAM inference.
 
+## Documentation Language
+
+- Write all new or updated repository documentation in English, including README files, AGENTS.md, documentation pages, handoffs, plans, benchmark commentary, and explanatory examples or docstrings.
+- Preserve verbatim quotations, raw logs, benchmark prompts, and required license or attribution text in their original form; write surrounding explanations in English. Do not change recorded evidence merely to translate it.
+- This requirement applies to repository documentation, not to conversations with the user, which may remain in the user's preferred language.
+
 ## Project Direction
 
 - Keep the implementation model-agnostic. It must not depend on LTX-specific class names or component types.

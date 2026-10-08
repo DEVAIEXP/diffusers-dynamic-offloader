@@ -1,4 +1,5 @@
 import unittest
+from dataclasses import replace
 from unittest.mock import patch
 
 import torch
@@ -519,6 +520,24 @@ class DynamicOffloadPresetTests(unittest.TestCase):
         )
         result = maybe_purge_windows_standby_cache(settings, "before_run", print_message=False)
         self.assertEqual(result["reason"], "disabled")
+
+    def test_vmm_settings_use_lifecycle_defaults_without_linear_preset_lookup(self):
+        settings = load_dynamic_offload_settings_from_env(
+            running_on_wsl=False, environ={"DDO_PRESET": "off"},
+        )
+        for preset in ("vmm_fast", "nvme_baseline"):
+            with self.subTest(preset=preset):
+                native_settings = replace(settings, effective_preset=preset)
+                result = maybe_purge_windows_standby_cache(
+                    native_settings, "before_run", environ={}, print_message=False,
+                )
+                self.assertEqual(result["reason"], "disabled")
+                self.assertEqual(native_settings.preset_value("DDO_TEST", "fallback", {}), "fallback")
+                self.assertTrue(native_settings.preset_bool(
+                    "DDO_PURGE_WINDOWS_STANDBY_BEFORE_RUN", environ={
+                        "DDO_PURGE_WINDOWS_STANDBY_BEFORE_RUN": "1",
+                    },
+                ))
 
     def test_format_presets_lists_default_mapping(self):
         formatted = format_dynamic_offload_presets(default_preset="auto", running_on_wsl=False)

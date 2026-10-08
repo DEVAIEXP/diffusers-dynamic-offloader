@@ -453,6 +453,11 @@ def dynamic_offload_preset_env_value(
     if not preset_name:
         return default
 
+    # Native backend presets do not inherit linear planner/lifecycle defaults.
+    # Explicit environment overrides above still apply to shared helpers.
+    if preset_name in {"vmm_fast", "nvme_baseline"}:
+        return default
+
     preset_values = DDO_PRESETS[preset_name]
     return preset_values.get(name, default)
 
@@ -552,6 +557,7 @@ class DynamicOffloadConfig:
     vmm_module_pattern: str = r".*"
     # Experimental full-component ownership; never changes the default route.
     vmm_component_tensor_ownership: bool = False
+    vmm_execution_auxiliary_ownership: bool = False
     vmm_component_buffer_limit_mb: int = 1
     vmm_page_mb: int = 0
     vmm_dxgi_local_headroom_gb: float = 0.0
@@ -648,6 +654,7 @@ class DynamicOffloadSettings:
             "dynamic_offload_vmm_source_registered_gb": config.vmm_source_registered_gb,
             "dynamic_offload_vmm_module_pattern": config.vmm_module_pattern,
             "dynamic_offload_vmm_component_tensor_ownership": config.vmm_component_tensor_ownership,
+            "dynamic_offload_vmm_execution_auxiliary_ownership": config.vmm_execution_auxiliary_ownership,
             "dynamic_offload_vmm_component_buffer_limit_mb": config.vmm_component_buffer_limit_mb,
             "dynamic_offload_vmm_page_mb": config.vmm_page_mb,
             "dynamic_offload_vmm_dxgi_local_headroom_gb": config.vmm_dxgi_local_headroom_gb,
@@ -817,6 +824,12 @@ class DynamicOffloadApplyResult:
     route: str = "dynamic_offload"
     _profile: Any = field(default=None, repr=False)
 
+    def detach_auxiliary_cpu_sources(self, *, enabled=False, max_copy_bytes=16 * 1024**2):
+        """Opt-in bounded residual CPU source detachment before native inference."""
+        from .auxiliary_sources import detach_auxiliary_cpu_sources
+
+        return detach_auxiliary_cpu_sources(self, enabled=enabled, max_copy_bytes=max_copy_bytes)
+
     def profile_run(self):
         """Measure and save a calibration; a no-op for ordinary inference."""
         return self._profile.measure() if self._profile is not None else contextlib.nullcontext()
@@ -848,6 +861,24 @@ class DynamicOffloadApplyResult:
                         pass  # Even diagnostic failure must not mask the original.
             raise
 
+    def allocation_diagnostics(self, *, enabled=False):
+        """Diagnostic-only process scope; disabled mode never inspects native/CUDA."""
+        from .allocation_diagnostics import DynamicOffloadAllocationDiagnostics
+        native = None
+        if enabled:
+            store = getattr(self.hook, "_vmm_fast_store", None)
+            if store is None:
+                raise ValueError("Allocation diagnostics require an active vmm_fast component")
+            native = store.native._owner
+        return DynamicOffloadAllocationDiagnostics(enabled=enabled, native=native)
+
+    def operator_diagnostics(self, *, enabled=False, module_path=None,
+                             invocations=(0, 2), output_dir=None, use_cuda=True):
+        """Explicit sampled operator profiler; may synchronize, never a benchmark."""
+        from .operator_diagnostics import DynamicOffloadOperatorDiagnostics
+        return DynamicOffloadOperatorDiagnostics(enabled=enabled, module=self.module,
+            module_path=module_path, invocations=invocations, output_dir=output_dir, use_cuda=use_cuda)
+
     def execution_timer(self, *, enabled=False, native_units=False, native_capacity=4096,
                         diagnostic_step_wait=False):
         """Opt-in event timing; ordinary inference remains unchanged."""
@@ -871,6 +902,12 @@ class DynamicOffloadApplyResult:
         return DynamicOffloadExecutionTimer(enabled=enabled, device=device, native_factory=factory,
                                            diagnostic_step_wait=diagnostic_step_wait)
 
+    def metrics_journal(self, directory, *, enabled=False):
+        """Create an opt-in public partial-report journal, without CUDA waits."""
+        from .metrics_journal import DynamicOffloadMetricsJournal
+
+        return DynamicOffloadMetricsJournal(self, directory, enabled=enabled)
+
     def metrics_snapshot(self, *, collect_completed=False, execution_timing=None) -> DynamicOffloadMetrics:
         """Return a runner-neutral telemetry snapshot without exposing hook internals."""
         configuration = self.settings.as_metrics() if self.settings is not None else {}
@@ -885,6 +922,9 @@ class DynamicOffloadApplyResult:
             component_report = getattr(getattr(self.hook, "_vmm_fast_adapter", None), "component_report", None)
             if component_report is not None:
                 runtime["component_ownership"] = dict(component_report)
+            auxiliary_report = getattr(getattr(self.hook, "_vmm_fast_adapter", None), "auxiliary_report", None)
+            if auxiliary_report is not None:
+                runtime["execution_auxiliary_ownership"] = dict(auxiliary_report)
         report = DynamicOffloadMetrics(
             route=self.route,
             configuration=configuration,
@@ -1466,6 +1506,14 @@ class DynamicOffloadHook(ModelHook):
         if self.config.vmm_page_mb < 0:
             raise ValueError("vmm_fast page size must be non-negative")
         re.compile(self.config.vmm_module_pattern)
+        if self.config.vmm_execution_auxiliary_ownership:
+            if not self.config.vmm_native_transport or self.config.vmm_component_tensor_ownership:
+                raise ValueError("execution auxiliary ownership requires native transport without component ownership")
+            from ddo_vmm_allocator.execution_auxiliary import discover_execution_auxiliary_layout
+
+            discover_execution_auxiliary_layout(module, self.config.vmm_module_pattern,
+                                                getattr(module, "_ddo_safetensor_slices", None),
+                                                small_tensor_threshold_bytes=self.config.small_tensor_threshold_bytes)
         if self.config.vmm_component_tensor_ownership:
             if not self.config.vmm_native_transport or self.config.vmm_module_pattern != ".*":
                 raise ValueError("component ownership requires native transport and full-component selection")
@@ -1536,6 +1584,8 @@ class DynamicOffloadHook(ModelHook):
             file_slices=self._vmm_file_slices,
             host_cache_bytes=int(max(0.0, self.config.vmm_host_cache_gb) * 1024**3),
             component_tensor_ownership=self.config.vmm_component_tensor_ownership,
+            execution_auxiliary_ownership=self.config.vmm_execution_auxiliary_ownership,
+            execution_auxiliary_small_tensor_threshold_bytes=self.config.small_tensor_threshold_bytes,
             component_buffer_limit_bytes=self.config.vmm_component_buffer_limit_mb * 1024**2,
             **native_transport_kwargs,
         )
@@ -1577,6 +1627,7 @@ class DynamicOffloadHook(ModelHook):
                 "vmm_safetensor_slices_available": int(file_slice_summary.get("available", 0)),
                 "vmm_fast_attached_modules": report.attached_modules,
                 "vmm_fast_attached_tensors": report.attached_tensors,
+                "vmm_execution_auxiliary_ownership": self.config.vmm_execution_auxiliary_ownership,
                 "vmm_fast_payload_bytes": report.payload_bytes,
                 "vmm_fast_virtual_bytes": report.virtual_bytes,
                 "vmm_fast_page_bytes": report.page_bytes,

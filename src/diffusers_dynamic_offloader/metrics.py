@@ -50,6 +50,24 @@ class DynamicOffloadMetrics:
             f"  schema={self.schema_version} route={self.route}",
         ]
         requested = self.configuration.get("dynamic_offload_requested_preset")
+        detachment = self.setup.get("auxiliary_source_detachment", {})
+        if detachment:
+            lines.append(f"  auxiliary_source_detachment={detachment['status']} "
+                         f"copied_bytes={detachment['copied_bytes']} "
+                         "(CPU ownership only; commit recovery not proven)")
+        host_memory = self.setup.get("host_memory", {})
+        if host_memory:
+            host = host_memory.get("host", {})
+            storages = host_memory.get("cpu_storages", {})
+            lines.append(f"  host_memory={host_memory['status']} phase={host_memory['phase']} "
+                         f"private_bytes={host.get('process_private_bytes', 'unavailable')} "
+                         f"cpu_storage_bytes={storages.get('unique_storage_bytes', 'unavailable')} "
+                         "(phase observation, not a peak or allocation census)")
+        host_cache = self.setup.get("host_cache_release", {})
+        if host_cache:
+            delta = host_cache.get("allocator_bytes_delta")
+            lines.append(f"  host_cache_release={host_cache['status']} phase={host_cache['phase']} "
+                         f"allocator_bytes_delta={delta if delta is not None else 'unavailable'}")
         source = self.setup.get("weight_source", {})
         if source:
             lines.append(f"  weight_source={source.get('resolver', 'legacy_exact_names')} bound={source.get('bound', 0)} "
@@ -91,6 +109,47 @@ class DynamicOffloadMetrics:
                 f"temporary_fallbacks={temporary}"
             )
         timing = self.runtime.get("execution_timing", {})
+        allocation = self.runtime.get("allocation_diagnostics", {})
+        if allocation:
+            lines.append(f"  allocation_diagnostics={allocation.get('status', 'unknown')} "
+                         f"steps={len(allocation.get('steps', []))} "
+                         "(native host calls, no boundary wait; diagnostic only)")
+            for step in allocation.get("steps", []):
+                counters = step.get("driver_delta", {})
+                values = " ".join(f"{name}_host_s={counters.get(name + '_host_seconds', 0):.6f}"
+                                  for name in ("create", "map", "access", "unmap", "release"))
+                for name in ("access_retry_sync", "fault_range"):
+                    if name + "_host_seconds" in counters:
+                        values += f" {name}_host_s={counters[name + '_host_seconds']:.6f}"
+                if "access_return_not_ready_calls" in counters:
+                    values += f" access_not_ready_calls={counters['access_return_not_ready_calls']}"
+                lines.append(f"  allocation_step={step['step_index'] + 1} "
+                             f"host_submit_s={step['host_submission_seconds']:.6f} {values}")
+        operators = self.runtime.get('operator_diagnostics')
+        if operators:
+            lines.append(f"  operator_diagnostics={operators['status']} "
+                         f"samples={len(operators['samples'])} (sampled profiler; may synchronize; diagnostic only)")
+            for sample in operators['samples']:
+                lines.append(f"  operator_invocation={sample['invocation_index'] + 1} "
+                             f"host_forward_s={sample['host_forward_seconds']:.6f} "
+                             f"profiler_stop_s={sample['profiler_stop_seconds']:.6f} "
+                             f"device_events={sample['device_activity_events']} trace={sample['trace_path']}")
+                for category in ('top_host', 'top_device'):
+                    for row in sample[category][:3]:
+                        lines.append(f"    {category}={row['name']} calls={row['calls']} "
+                                     f"self_host_s={row['self_host_seconds']:.6f} "
+                                     f"self_device_s={row['self_device_seconds']:.6f}")
+        pressure_prefix = "fast_source_cache_pressure_observation_"
+        if vmm.get(pressure_prefix + "schema_version") == 1:
+            reasons = {0: "none", 1: "ram", 2: "commit", 3: "ram_and_commit", 4: "observation_unavailable"}
+            reason = reasons.get(vmm.get(pressure_prefix + "last_reason"), "unknown")
+            lines.append(
+                "  source_cache_pressure="
+                f"entries={vmm.get(pressure_prefix + 'entries', 0)} "
+                f"recoveries={vmm.get(pressure_prefix + 'recoveries', 0)} "
+                f"last_reason={reason} "
+                f"failed_observations={vmm.get(pressure_prefix + 'failed_observations', 0)}"
+            )
         if timing:
             lines.append(f"  cuda_timing={timing.get('status', 'unknown')} scope={timing.get('scope', 'unknown')}")
             diagnostic = timing.get("diagnostic_step_wait", {})

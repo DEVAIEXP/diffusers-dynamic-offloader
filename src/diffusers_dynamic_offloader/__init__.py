@@ -34,6 +34,8 @@ from .dynamic_offload import (
     resolve_dynamic_offload_preset,
 )
 from .metrics import DYNAMIC_OFFLOAD_METRICS_SCHEMA_VERSION, DynamicOffloadMetrics
+from .host_cache import release_pytorch_host_cache
+from .host_memory import inspect_host_memory
 from .timing import DynamicOffloadExecutionTimer
 from .profiles import (
     DYNAMIC_OFFLOAD_PROFILE_SCHEMA_VERSION,
@@ -62,6 +64,8 @@ __all__ = [
     "DiffusersGroupOffloadResult",
     "DYNAMIC_OFFLOAD_METRICS_SCHEMA_VERSION",
     "DynamicOffloadMetrics",
+    "release_pytorch_host_cache",
+    "inspect_host_memory",
     "DynamicOffloadExecutionTimer",
     "DynamicOffloadBackend",
     "add_dynamic_offload_arguments",

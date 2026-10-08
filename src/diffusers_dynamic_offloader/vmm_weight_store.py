@@ -526,6 +526,28 @@ class SafetensorSliceRegistry:
         self._require_open()
         return self._slices.get((tensor.data_ptr(), tensor.numel() * tensor.element_size()))
 
+    def rebind_many(self, replacements) -> None:
+        """Atomically relocate associations after value-preserving CPU copies.
+
+        The caller owns tensor/value equivalence and exclusive lifecycle access.
+        Immutable file descriptors do not change; validation failure leaves the
+        original associations intact. No tensor is retained by this registry.
+        """
+        self._require_open()
+        candidate = SafetensorSliceRegistry()
+        candidate._slices = dict(self._slices)
+        pending = []
+        for old, new in replacements:
+            descriptor = self.lookup(old)
+            if descriptor is None:
+                raise ValueError("Cannot relocate a tensor without source provenance")
+            pending.append((new, descriptor))
+            candidate._slices.pop((old.data_ptr(), old.numel() * old.element_size()), None)
+        for new, descriptor in pending:
+            if not candidate.bind(new, descriptor):
+                raise ValueError("Relocated CPU storage conflicts with source metadata")
+        self._slices = candidate._slices
+
     @property
     def descriptor_count(self) -> int:
         return len(self._slices)

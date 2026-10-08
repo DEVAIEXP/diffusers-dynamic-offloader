@@ -117,3 +117,11 @@ what remains necessary for an independent Diffusers comparison.
 For user-driven validation on other models/environments, use the short
 [manual checklist](manual-validation.md); it is not an exhaustive test matrix
 or an automatic publication gate.
+
+For an explicitly completed phase, DDO optionally exposes a
+[PyTorch pinned host-cache release helper](pytorch-host-cache-boundary.md).
+It defaults to disabled, returns a public report, and never clears native source
+storage or changes admission. Its opt-in video integration passed the selected
+small CUDA contract and matched video gate, with an observed improvement versus
+the pressure control. This is not a default preset or a general performance
+guarantee; commit pressure remained in the selected run.

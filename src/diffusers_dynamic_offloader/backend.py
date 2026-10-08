@@ -40,6 +40,8 @@ class DynamicOffloadBackend:
             raise ValueError("execution_mode is selected by the resolved DDO backend")
         if overrides.get("vmm_component_tensor_ownership") and self.execution_mode != "vmm_fast_runtime":
             raise ValueError("component ownership is exclusive to experimental vmm_fast")
+        if overrides.get("vmm_execution_auxiliary_ownership") and self.execution_mode != "vmm_fast_runtime":
+            raise ValueError("execution auxiliary ownership is exclusive to experimental vmm_fast")
         return DynamicOffloadConfig(execution_mode=self.execution_mode, **overrides)
 
     def build_config_from_args(self, args: argparse.Namespace) -> DynamicOffloadConfig:
@@ -53,6 +55,7 @@ class DynamicOffloadBackend:
             vmm_source_cache_gb=getattr(args, "ddo_vmm_source_cache_gb", 0.0),
             vmm_source_registered_gb=getattr(args, "ddo_vmm_source_registered_gb", 0.0),
             vmm_component_tensor_ownership=getattr(args, "ddo_vmm_component_tensor_ownership", False),
+            vmm_execution_auxiliary_ownership=getattr(args, "ddo_vmm_execution_auxiliary_ownership", False),
             vmm_component_buffer_limit_mb=getattr(args, "ddo_vmm_component_buffer_limit_mb", 1),
         )
 
@@ -126,6 +129,8 @@ def add_dynamic_offload_arguments(parser: argparse.ArgumentParser) -> argparse.A
     )
     parser.add_argument("--ddo-vmm-component-tensor-ownership", action="store_true",
                         help="Experimental whole-component ownership; requires native file transport; selected text-only workloads validated, not general encoder support.")
+    parser.add_argument("--ddo-vmm-execution-auxiliary-ownership", action="store_true",
+                        help="Experimental auxiliary parameters in native execution-unit batches; unchanged GPU ceiling; default off.")
     parser.add_argument("--ddo-vmm-component-buffer-limit-mb", type=int, default=1,
                         help="Explicit device-buffer ceiling in MiB for the opt-in component route.")
     parser.add_argument("--show-metrics", action="store_true", help="Print the DDO metrics JSON.")

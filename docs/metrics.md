@@ -780,6 +780,44 @@ Batch completion events can legitimately remain while reusable batches exist.
 Older DLLs omit these fields rather than report false zeros. Failed cleanup
 requires retained ownership, not forceful counter reset. See
 [the isolated lifecycle gate](native-lifecycle-cuda-gate.md).
+## Native source-cache pressure observations (candidate v1)
+
+An opt-in completed-phase PyTorch host-cache release has a separate public report
+with before/after allocator and Windows commit observations. See the
+[boundary API and metric catalog](pytorch-host-cache-boundary.md). It does not
+clear this native cache or change admission policy.
+
+Available on `vmm_fast_runtime` when the DLL exports the optional
+`ddo_vmm_source_cache_pressure_snapshot_v1`. Older binaries omit these fields:
+absence means unavailable, not zero. The existing cache stats ABI is unchanged.
+JSON fields below live in `runtime.vmm` with prefix
+`fast_source_cache_pressure_observation_`. `format_profile()` renders episode
+counts and the last cause; hosts only consume the public DDO report.
+
+Fixed-size observations reuse existing pressure samples and locks, without new
+OS queries, CUDA waits, capacity changes or runner policy. Counts are cumulative
+per cache lifetime, not per denoise step. Last-episode fields overwrite previous
+episodes; this is not a timestamped event trace.
+
+| Suffix | Unit / collection | Interpretation / diagnostic action |
+| --- | --- | --- |
+| `schema_version` | version / snapshot | 1; separate from main report/cache stats versions. |
+| `valid_observations`, `failed_observations` | count / existing pressure polls | Valid/failed OS samples; failure suspends growth rather than inventing headroom. |
+| `entries`, `recoveries` | count / suspension transitions | Pressure entries/resumption; a final resumed state does not erase earlier entries. |
+| `ram_limited_entries`, `commit_limited_entries`, `both_limited_entries`, `unknown_entries` | count / entry | Entry causes, not every blocked request; compare with bypass and eviction counters. |
+| `last_reason` | enum / last entry | 0 no entry, 1 RAM, 2 commit, 3 both, 4 unavailable observation. Does not identify the consuming external process. |
+| `last_entry_ram_bytes`, `last_entry_commit_bytes` | bytes / last entry | Available physical RAM/commit; zero with reason 4 means unavailable. Windows commit is `ullAvailPageFile`, not disk free space. |
+| `last_entry_committed_bytes`, `last_entry_registered_bytes` | bytes / last entry | Native source commitment/registered portion before reclaim; not process RSS or shared VRAM. |
+| `last_recovery_ram_bytes`, `last_recovery_commit_bytes` | bytes / last recovery | Headroom when growth resumed; meaningful only if recoveries is nonzero. |
+| `min_ram_bytes`, `min_commit_bytes` | bytes / valid samples | Sampled minima, not continuous peaks; meaningful only if valid observations is nonzero. |
+| `low_bytes`, `high_bytes` | bytes / poll | Suspend/resume hysteresis thresholds; zero before first poll. Do not automatically change budgets. |
+| `last_episode_reclaimed_bytes` | bytes / reclaim | Commitment released in the latest episode, including an active episode; zero before any entry. |
+| `blocked_reclaims`, `failed_reclaims` | count / reclaim attempts | Busy ownership prevented discard, or reclaim failed. Busy never authorizes freeing live data. |
+
+Observe RAM versus commit causes before changing policy. Bypass bytes do not
+prove physical disk reads. These diagnostics do not establish speedup or CUDA
+safety; see the [candidate gate](native-pressure-observations-gate.md).
+
 # Loaded component preflight
 
 `DynamicOffloadLoadResult.inspect_vmm_component(component=..., buffer_limit_bytes=...)`
@@ -799,3 +837,194 @@ contains detached ownership/execution geometry. Units are bytes unless noted:
 
 Use these observations to prepare an explicit capacity gate; never interpret
 them as successful CUDA execution or automatically increase a residency ceiling.
+
+## Read-only host phase observations
+
+`inspect_host_memory(module=None, phase="", max_storage_samples=16)` returns a
+`DynamicOffloadMetrics` report with route `host_memory_observation` and
+`setup.host_memory`. It never initializes/waits for CUDA, copies tensor data,
+collects garbage, changes placement or adjusts budgets. Call only at a
+nonconcurrent component boundary. The caller can omit the module for a host-only
+snapshot. `format_profile()` renders the phase and available private/storage
+bytes; normal trackers can print/save the unchanged public report.
+
+| Field | Unit / collection | Interpretation / diagnostic action |
+| --- | --- | --- |
+| `phase`, `status`, `elapsed_seconds` | label/status/seconds per call | `observed` or `partial` storage inspection; host-sampling errors remain explicit inside `host`. Not continuous monitoring or proof of native safety. |
+| `host` | bytes / adjacent CPU snapshot | Same RSS/private/physical/available-commit sampler as the host-cache boundary helper. Missing fields are unavailable, not zero. |
+| `cpu_storages.cpu_tensor_references`, `cpu_tensor_reference_bytes` | count/bytes / registered CPU parameters and buffers | Counts named references, including aliases; byte sum is not deduplicated physical storage. |
+| `unique_storage_count`, `unique_storage_bytes` | count/bytes / deduplicated CPU backing extents | Deduplicate address plus storage length. Tiny views can retain a whole shard. Extents are not proven private commitment or RSS. |
+| `non_cpu_tensor_references` | count / registered tensors | Skipped CUDA/meta/other-device references; no data/statistics are queried on those devices. |
+| `storage_samples` | bounded largest-storage records | Storage bytes, reference count, up to three tensor-name examples, and shard paths resolved by DDO's source descriptors when available. No tensor/storage object escapes the report. |
+| `omitted_storage_count` | count / sampled records | Storage groups excluded by the configurable sample limit; aggregate totals still include them. |
+| `inspection_errors`, `errors` | count/bounded records | Per-tensor storage/provenance failures; a partial census is not a zero-retention result. |
+
+This is a census only of the passed module's registered parameters/buffers. It
+does not enumerate closures, other components, arbitrary Python tensors, native
+allocations, driver backing or system/external-process consumers. Host and
+storage samples are sequential, not an atomic process-wide ownership census.
+In particular, safetensors/PyTorch storage slices can expose a per-tensor
+`nbytes()` while retaining a larger parent file mapping through hidden ownership.
+The reported extent sum is not a census of those parent mappings; combine shard
+provenance with an independent mapping/lifetime check before claiming release.
+
+## Opt-in residual CPU source detachment
+
+`DynamicOffloadApplyResult.detach_auxiliary_cpu_sources(enabled=False,
+max_copy_bytes=16 * 1024**2)` returns the public report route
+`vmm_auxiliary_source_detachment`. Fields below live in
+`setup.auxiliary_source_detachment`. Call only after fast-native attachment,
+before any forward, with exclusive component ownership. This diagnostic is not
+a residency policy and is disabled by default. Unsupported ownership, partial
+aliases, prior execution or insufficient copy allowance raise before admission;
+no automatic ceiling increase is performed.
+
+| Field | Unit / collection | Interpretation / diagnostic action |
+| --- | --- | --- |
+| `status`, `elapsed_seconds` | status/seconds per boundary | `disabled`, `detached`, or `no_source_backed_cpu_tensors`; not a performance acceptance result. Repeated successful calls return the original report without copying again. |
+| `copied_bytes`, `copied_storage_groups` | bytes/count | Deduplicated source-backed CPU payload cloned once. Not shard size, released RAM or recovered commit. |
+| `copied_tensor_owners`, `copied_named_references` | counts | Distinct registered tensor objects and named references, respectively; exact compatible aliases share the replacement storage. |
+| `unbound_cpu_storage_groups` | count | CPU spans without source provenance, left untouched. Does not enumerate arbitrary escaped tensor references. |
+| `source_shard_count`, `source_shard_samples` | count/up to 16 paths | Provenance of selected residual views; mapping release still requires separate evidence. |
+| `host_before`, `host_after` | bytes / adjacent CPU samples | Same best-effort sampler as the host-cache helper. Samples are not atomic; missing fields are unavailable, not zero. Compare private/available commit without assuming a decrease. |
+| `gpu_placement_changed`, `commit_recovery_proven` | booleans | Both false: no GPU placement is changed and the ownership operation alone does not prove OS commit recovery. |
+| `scope` | label | Registered source-backed CPU tensors only, after native attachment. Other components, closures, external storage references and native allocations are outside the census. |
+
+The operation preserves registered Parameter/Tensor identity, values, device,
+dtype and admitted exact aliases. It refuses pinned, subclassed, noncontiguous
+or incompatible aliases and whole-component ownership. CPU provenance is
+rebound transactionally without changing immutable managed-source descriptors.
+No CUDA initialization, device synchronization or garbage collection is added.
+
+## Opt-in native allocation diagnostics
+
+`result.allocation_diagnostics(enabled=False)` creates a single-use scope on an
+active fast-native component. Disabled mode never accesses native/CUDA state.
+Enabled mode requires the separate `DDO_VMM_ALLOCATION_DIAGNOSTICS=ON` build,
+acquires exclusive process diagnostic ownership and releases it on exit. Older
+or nondiagnostic binaries are refused, not interpreted as zero measurements.
+It does not change allocation, cache, ceilings, residency or event ownership.
+
+Use `scope.mark_step()` at the host's normal step callback, alongside
+`result.execution_timer(enabled=True, native_units=True).mark_step()`. Attach
+the finished diagnostic scope to the ordinary public metrics report:
+`scope.attach(result.metrics_snapshot(execution_timing=timer))`. Runners print
+or save that report; they do not read native or hook attributes. Resolve GPU
+markers only after the normal phase-completion boundary, never by adding a
+wait per step. This instrumentation is diagnostic, not performance evidence.
+
+Fields live in `runtime.allocation_diagnostics` (schema 1):
+
+| Field | Unit / collection | Interpretation and diagnostic action |
+| --- | --- | --- |
+| `status`, `failed`, `error` | scope status / CPU snapshot | Disabled, not finished, complete or failed; diagnostic failures must not mask an existing model error. |
+| `host_scope_seconds` | wall seconds / context entry to exit | Includes host launch work and phase readback; not kernel-only time. |
+| `steps[].step_index`, `host_submission_seconds` | zero-based index / seconds between CPU boundaries | No CUDA wait at the boundary; in-flight work can cross snapshots. Pair with the compute-stream event intervals, which include dependencies and host launch gaps. |
+| `steps[].driver_delta`, `total_delta` | cumulative counter differences / boundary and scope | For each of `create`, `map`, `access`, `unmap`, `release`, `reserve`, `address_free`: `_calls`, `_host_seconds`, `_failed_calls`. Times cover calls issued by this DLL only, including blocking inside the driver, not all CUDA calls made by other libraries. Failed calls include retries and do not necessarily mean an unrecovered inference failure. |
+| `pool_reuse_calls`, `pool_new_backings` inside deltas | successful reuse/new backing counts | Compare early versus late allocation churn. Reuse is counted after successful publication; new backing is counted even if its publication later fails. |
+| `pool_observed_peak_mapped_bytes` | bytes / new pool-backing insertion | Process diagnostic high-water mark for pool-owned backing; no reset per step, no model arenas, no absolute GPU/shared-memory peak. Zero means no backing-creation observation, not proven zero GPU use. |
+| `native_schema_version` | integer / scope snapshot | Native schema 1 lacks retry/fault observations; schema 2 adds them. Absent fields in older reports are unavailable, not zero. Public scope schema remains 1 with additive fields. |
+| `access_retry_sync_calls`, `access_retry_sync_host_seconds`, `access_retry_sync_failed_calls` inside deltas | count / seconds / non-success count | Schema 2 times only the existing context synchronization in the model-arena access retry. No additional waits. A non-success synchronization return is not equivalent to an existing final fault counter. |
+| `fault_range_calls`, `fault_range_host_seconds` inside deltas | count / seconds, entry through exit | Schema 2 measures enclosing native model-arena fault calls, including lock acquisition, materialization and retry waits. Overlaps driver and retry timers; never sum them as independent costs. Fault failed-call count is not supplied; use existing final native safety metrics. |
+| `access_return_success_calls`, `access_return_not_ready_calls`, `access_return_out_of_memory_calls`, `access_return_other_calls` inside deltas | return-category counts / driver calls | Schema 2 categorizes this DLL's access returns. Other is a category, not an exact error code. Combined with retry counters, determines whether the suspected retry occurs; does not identify WDDM paging. Concurrent reads may split category/timing updates. |
+| `boundary`, `scope`, `benchmark_eligible` | fixed labels / scope | CPU submission without CUDA wait; process native driver host calls; benchmark eligibility false. Concurrent calls may straddle reads; counters are not an atomic allocation census or an additive partition of GPU duration. |
+
+No WDDM paging, kernel-only compute, cuBLAS autotuning or driver-loss diagnosis
+is implied by these counters. Use the native unit timeline to locate slow
+windows; do not attribute unexplained residual time to the cache by subtraction.
+
+## Sampled operator diagnostics
+
+`result.operator_diagnostics(enabled=False, module_path=None, invocations=(0, 2),
+output_dir=None, use_cuda=True)` creates an explicitly diagnostic scope. The
+host supplies a module path; DDO contains no model-specific class or path names.
+Disabled mode installs no hooks and does not inspect the model, filesystem or
+CUDA. Enabled mode admits one module and up to four distinct invocation indices
+in 0..31. Selected forwards use PyTorch operator profiling with direct-child
+labels; shapes, stacks and memory recording are disabled. Model inputs/outputs
+are not retained by this scope. Existing forward functions remain unchanged.
+
+Profiling can synchronize at start/stop and perturb host submission. CUDA
+activity support must be available; an absent activity trace refuses capture
+rather than silently substituting legacy CUDA timing. See the
+[PyTorch profiler activity documentation](https://docs.pytorch.org/docs/2.14/profiler.html#torch.profiler.profiler.supported_activities).
+Use single-threaded, nonrecursive inference without another profiler. Remove
+diagnostic hooks before component retirement and report failures rather than
+retrying or tuning memory automatically. No trace overwrites are permitted.
+
+```python
+with result.operator_diagnostics(enabled=True, module_path=selected_module,
+                                 output_dir=diagnostic_directory) as operators:
+    run_pipeline()
+report = operators.attach(result.metrics_snapshot())
+print(report.format_profile())  # Or pass report to the host's existing consumer.
+```
+
+For the existing `RunTracker` integration use
+`tracker.record_ddo_metrics(report, component="transformer_diagnostics")`;
+no metric internals are required. Attach accepts `DynamicOffloadMetrics`.
+
+Fields in `runtime.operator_diagnostics` (schema 1):
+
+| Field | Unit / collection | Meaning and diagnostic action |
+| --- | --- | --- |
+| `status` | scope exit | Disabled/not-finished/failed/incomplete/complete; missing requested captures are not passing evidence. CUDA activity absence stops capture. |
+| `module_path`, `requested_invocations`, `observed_invocations` | path / zero-based indices / count | Invocations are module calls, not necessarily sampler steps or CFG passes. One sampled block is not representative proof for every block. |
+| `benchmark_eligible`, `may_synchronize`, `scope` | fixed diagnostic labels | Not performance evidence; profiler cadence differs from normal execution. |
+| `samples[].host_forward_seconds`, `profiler_stop_seconds` | wall seconds / selected forward and stop | Forward host duration may include blocking launches. Stop can drain work already queued, including earlier work; not independent kernel compute or an additive phase partition. |
+| `samples[].device_activity_events`, `trace_path` | count / file path | Activity count validates observed CUDA capture; inspect the Chrome trace to distinguish launch gaps and device activity. Not WDDM paging or hardware utilization proof. |
+| `samples[].top_host`, `top_device`, `child_ranges` | operator aggregates / microseconds normalized to seconds | Rows have name, calls, self/inclusive host and device seconds. Self excludes nested operators; inclusive rows overlap. Top lists retain at most 40 rows; full trace is the evidence for remaining events. Direct-child ranges label host-provided module structure. |
+| `samples[].operator_count`, `invocation_index` | distinct aggregate names / zero-based index | Check coverage and compare selected calls; do not extrapolate missing steps. |
+
+Missing or zero device activity is not evidence of zero GPU work. CUDA kernels,
+runtime events and host operators may overlap; do not subtract their aggregate
+durations from step time to claim driver paging. The normal allocator/residency
+policy and protected runtimes are unchanged by this diagnostic feature.
+
+## Execution auxiliary ownership candidate
+
+`runtime.execution_auxiliary_ownership` is present only for the opt-in native
+execution auxiliary adapter. Its `schema_version` is 1. `parameter_groups` is
+the count of identity-unique auxiliary Parameter groups attached; `parameter_bytes`
+is their unaligned payload in bytes, sampled at attachment. Neither is GPU
+residency or driver usage. `budget_policy="existing_native_ceiling"` records that
+these bytes enter existing native admission; `residency_cache=false` records that
+no additional Python residency cache exists. Use native aligned slot/capacity
+and transfer counters to diagnose actual admission and materialization.
+`preserved_small_tensor_threshold_bytes` is the unchanged existing DDO small
+placement threshold, in bytes; it is not a new residency ceiling. The narrowed
+candidate passed CPU and revised small CUDA contracts. The earlier broad candidate passed a small
+CUDA gate but regressed in an interrupted video diagnostic. Neither promotes
+this revised route or establishes image regression coverage. See
+[the approval gate](native-execution-auxiliary-gate.md).
+
+## Opt-in partial metrics journal
+
+```python
+with result.metrics_journal(output_dir / "denoise_snapshots", enabled=True) as journal:
+    journal.record()  # before_denoise.json
+    # Inside an existing host step callback:
+    journal.record(step_index)  # zero-based; step_0000.json etc
+```
+
+Default-off journals do not inspect the result or create directories. Enabled
+journals persist `result.metrics_snapshot(collect_completed=False).as_dict()`
+without resolving CUDA timing or collecting pending events. Hosts do not access
+native attribute names. The report is nested under `metrics` in a wrapper:
+
+| Field | Unit / collection | Interpretation |
+| --- | --- | --- |
+| `schema_version` | version / publication | Journal schema 1; nested metrics retains its own report schema. |
+| `observation` | label / publication | `partial_host_step_boundary`; not final acceptance. |
+| `step_index` | zero-based index / callback | Null before denoise; scheduler submission boundary, not GPU completion. |
+| `host_elapsed_seconds` | seconds / monotonic host clock | Time since journal construction; includes host and diagnostic I/O overhead, not GPU step time. |
+| `gpu_completion_proven` | boolean / publication | Always false; pending counters remain meaningful and must not be silently treated as retired. |
+| `completion_collection_requested` | boolean / publication | Always false; observation does not request resource collection. |
+
+Records are detached and individually published without overwriting existing
+files. File flush/publication is CPU I/O, not free benchmark instrumentation.
+Unsupported filesystem publication or serialization errors propagate; previous
+records remain intact. Abrupt termination can leave an unpublished `.tmp` file.
+The journal scope drops its result reference on exit, avoiding retention of an
+unloaded model. Final metrics, latent validation and cleanup gates remain
+separate requirements.

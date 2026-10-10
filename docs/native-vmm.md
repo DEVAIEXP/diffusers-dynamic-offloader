@@ -13,7 +13,10 @@ explicitly; it is not silently enabled by a model class or platform.
 
 Initialize the pinned `ddo-vmm-allocator` Git submodule, install its Python
 adapter, build the native library for the platform and select that library.
-Python wheels do not currently bundle a DLL/.so. Development extras are optional:
+Ordinary wheels do not bundle a DLL/.so. The separately assembled optional
+[Windows allocator wheel](native-wheel-delivery.md) now includes the selected DLL;
+it has CPU delivery acceptance, not new CUDA wheel-execution acceptance.
+Development extras are optional:
 Windows `.[vmm-dev]`, Linux `.[vmm-dev-linux]`. Ordinary installs should not
 acquire native development tools. See [Linux setup](linux-environment.md) and
 the allocator README for native build recipes.
@@ -21,8 +24,9 @@ the allocator README for native build recipes.
 Bootstrap discovers the conventional checkout build, then a platform binary
 inside the installed adapter: `ddo_vmm_allocator/native/win32/ddo_vmm.dll` or
 `ddo_vmm_allocator/native/linux/libddo_vmm.so`. A host need not specify a path
-when its installed distribution includes that binary. Current wheels do not
-yet include it; binary delivery remains [release work](release-readiness.md).
+when its installed distribution includes that binary. The optional local Windows
+wheel provides it; Linux wheel assembly and publication remain
+[release work](release-readiness.md).
 Explicit `library_path` takes precedence over `DDO_VMM_LIBRARY_PATH`, which
 takes precedence over automatic discovery. These are development/diagnostic
 overrides, not normal end-user requirements. Missing/invalid binaries fail

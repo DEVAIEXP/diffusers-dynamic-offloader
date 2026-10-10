@@ -8,6 +8,7 @@ install the native allocator before the runner imports Torch or Diffusers.
 from __future__ import annotations
 
 import os
+from importlib.util import find_spec
 import subprocess
 import sys
 from pathlib import Path
@@ -55,6 +56,33 @@ def _default_allocator_root() -> Path | None:
     return candidate if candidate.is_dir() else None
 
 
+def _installed_allocator_root() -> Path | None:
+    """Locate a top-level adapter package without importing it or CUDA."""
+    try:
+        spec = find_spec("ddo_vmm_allocator")
+    except (ImportError, ValueError):
+        return None
+    if spec is None or spec.origin is None or not spec.submodule_search_locations:
+        return None
+    return Path(spec.origin).resolve().parent
+
+
+def _discover_library(checkout: Path | None, package: Path | None) -> Path | None:
+    """Use conventional build or platform package paths, never scan candidates."""
+    if sys.platform == "win32":
+        builds = ("build/Release/ddo_vmm.dll",)
+        packaged = "native/win32/ddo_vmm.dll"
+    elif sys.platform == "linux":
+        builds = ("build-linux/libddo_vmm.so", "build/libddo_vmm.so")
+        packaged = "native/linux/libddo_vmm.so"
+    else:
+        return None
+    candidates = [checkout / name for name in builds] if checkout is not None else []
+    if package is not None:
+        candidates.append(package / packaged)
+    return next((path for path in candidates if path.is_file()), None)
+
+
 def ensure_vmm_fast_process(
     *,
     library_path: str | os.PathLike[str] | None = None,
@@ -65,8 +93,10 @@ def ensure_vmm_fast_process(
     """Run this script under the native allocator or exit the parent process.
 
     Call this as the first executable statement of a VMM-fast runner. In the
-    child this function is a no-op. ``library_path`` is optional only when
-    ``DDO_VMM_LIBRARY_PATH`` identifies the platform library.
+    child this function is a no-op. Discover a conventional checkout build or
+    platform-packaged binary automatically. Explicit paths and the environment
+    override discovery for diagnostics; missing binaries are never downloaded
+    or built during execution.
     """
     environment = os.environ if environ is None else environ
     if environment.get(_CHILD_MARKER) == "1":
@@ -81,34 +111,29 @@ def ensure_vmm_fast_process(
     if not arguments or not arguments[0]:
         raise RuntimeError("VMM bootstrap requires a runner script in argv[0]")
     target = Path(arguments[0]).resolve(strict=True)
+    root = _default_allocator_root()
+    package = _installed_allocator_root()
     library = library_path or environment.get("DDO_VMM_LIBRARY_PATH")
     if not library:
-        root = _default_allocator_root()
-        if root is not None:
-            candidates = (
-                (root / "build" / "Release" / "ddo_vmm.dll",)
-                if sys.platform == "win32" else
-                (root / "build-linux" / "libddo_vmm.so", root / "build" / "libddo_vmm.so")
-                if sys.platform == "linux" else ()
-            )
-            for candidate in candidates:
-                if candidate.is_file():
-                    library = str(candidate)
-                    break
+        library = _discover_library(root, package)
     if not library:
-        raise RuntimeError("vmm_fast requires DDO_VMM_LIBRARY_PATH or an explicit library_path")
+        raise RuntimeError(
+            "vmm_fast requires a platform native binary: install an allocator package "
+            "containing its binary or build the checkout's conventional native target. "
+            "For diagnostics, it requires DDO_VMM_LIBRARY_PATH or an explicit library_path."
+        )
     library = str(Path(library).resolve(strict=True))
 
-    root = _default_allocator_root()
-    if root is None:
+    if root is None and package is None:
         raise RuntimeError("vmm_fast requires the ddo-vmm-allocator submodule or installed package")
     child_environment = dict(environment)
     child_environment[_CHILD_MARKER] = "1"
     child_environment["DDO_VMM_LIBRARY_PATH"] = library
     child_environment["DDO_VMM_TORCH_CACHE_MIB"] = str(allocator_cache_mib)
-    source_root = str(root / "src")
-    existing_path = child_environment.get("PYTHONPATH")
-    child_environment["PYTHONPATH"] = source_root if not existing_path else source_root + os.pathsep + existing_path
+    if root is not None:
+        source_root = str(root / "src")
+        existing_path = child_environment.get("PYTHONPATH")
+        child_environment["PYTHONPATH"] = source_root if not existing_path else source_root + os.pathsep + existing_path
     result = subprocess.run(
         [sys.executable, "-c", _BOOTSTRAP, str(target), *arguments[1:]],
         env=child_environment,

@@ -20,13 +20,18 @@ no CUDA execution, binary promotion, dependency installation or history rewrite.
 
 ## Concrete distribution work
 
-1. **Installed-package bootstrap:** `ensure_vmm_fast_process()` currently
-   requires `_default_allocator_root()` even when `ddo_vmm_allocator` is
-   importable and an explicit library is supplied. A CPU-only review reproduced
-   the refusal with package discovery true and checkout discovery disabled.
-   Source-checkout integration works; standalone wheel integration is not ready.
-   Support the installed package without importing CUDA-owning modules in the
-   parent, preserve checkout precedence, and add bounded CPU relaunch contracts.
+1. **Installed-package bootstrap (CPU correction complete):** the review
+   reproduced refusal without a checkout even with an installed adapter and
+   explicit library. Discovery now accepts the installed package without
+   executing its initializer and locates a platform-packaged binary automatically.
+   Conventional checkout builds retain precedence; explicit overrides retain
+   precedence over both. It never scans experimental builds or builds/downloads
+   a binary at execution time. CPU relaunch/discovery contracts cover both
+   platforms; no new CUDA acceptance follows. Real clean-wheel integration
+   remains pending the binary-delivery decision below.
+   Validation: 20 CPU tests passed in 0.22 s, including a fresh interpreter
+   locating a deliberately non-importable package without importing Torch/CUDA.
+   Neither the Windows DLL nor the Linux .so changed.
 2. **Native artifact selection:** wheels do not bundle DLL/.so files. Choose
    source-build-only delivery or separately distributed binaries explicitly.
    Record source revision, build options, dependency environment and hash for

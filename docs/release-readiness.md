@@ -32,14 +32,20 @@ no CUDA execution, binary promotion, dependency installation or history rewrite.
    Validation: 20 CPU tests passed in 0.22 s, including a fresh interpreter
    locating a deliberately non-importable package without importing Torch/CUDA.
    Neither the Windows DLL nor the Linux .so changed.
-2. **Native artifact selection:** wheels do not bundle DLL/.so files. Choose
-   source-build-only delivery or separately distributed binaries explicitly.
+2. **Native artifact selection (local Windows assembly complete):** the user
+   approved an optional allocator wheel containing the unchanged selected DLL.
+   It is tagged `py3-none-win_amd64`, with verified bytes and an artifact manifest;
+   ordinary DDO and adapter wheels remain pure. See the
+   [artifact/assembly record](native-wheel-delivery.md). Linux wheel assembly
+   and publication are not complete.
    Record source revision, build options, dependency environment and hash for
    each selected artifact. A default CMake build is not automatically the
    accepted joined-span build. Do not copy/promote or rebuild binaries silently.
-3. **Clean installation:** run an isolated wheel/sdist install and bootstrap
-   smoke check outside the source tree after item 1. Verify public module and
-   license contents and optional dependency instructions. Native adapter and
+3. **Clean installation (Windows CPU smoke complete):** both local wheels
+   installed into a fresh dependency-free environment. Isolated `-I` discovery
+   and mocked child launch passed without checkout imports or CUDA dependencies;
+   license, tags, binary manifest and RECORD checks passed. This is not CUDA/model
+   wheel execution or sdist-install validation. Native adapter and
    TorchAO are not mandatory ordinary DDO dependencies; TorchAO 0.18.0 and the
    tested Diffusers serialization stack are required for the selected FP8 recipe.
    Do not claim latest development gates from an untested clean environment.

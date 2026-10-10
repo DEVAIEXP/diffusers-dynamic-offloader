@@ -96,3 +96,4 @@ This repository is focused on `diffusers-dynamic-offloader` (DDO), a generic Dif
 - Keep README examples short and link longer usage patterns from `docs/`.
 - Document both full-pipeline and phase-staged usage. Full-pipeline examples are for minimal integration; phase-staged examples are for memory-sensitive runs and benchmark comparisons.
 - Quantized backends should preserve backend-specific forward logic and usually route through Diffusers group-offload compatibility presets.
+- The explicit saved TorchAO FP8 weight-only native contract is model-agnostic, not LTX-specific. Keep physical payload loading/ownership/transport in DDO and the allocator, backend math in TorchAO/Diffusers, and model-specific timestep/residual/RoPE/chunk-conversion optimizations in the host. Optional compute compilation is separate from FP8 compatibility, never a required or automatic route. Selected model acceptance must not be presented as arbitrary-model or arbitrary-recipe support.

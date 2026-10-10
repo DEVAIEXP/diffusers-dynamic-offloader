@@ -28,8 +28,11 @@ This repository is focused on `diffusers-dynamic-offloader` (DDO), a generic Dif
 
 ## Experiment Tracking
 
-- `experiments/dynamic_offload_results.md` is the compact benchmark sidecar for current comparison tables and report-ready notes.
-- The implementation history formerly in that sidecar is preserved locally in `.internal/reports/dynamic_offload_results-implementation.md`; `.internal/` is ignored and not cloned/published. Keep it backed up separately. Public benchmark conditions live in `docs/benchmark-reproduction.md`; do not use older linear/compatibility results as matched evidence for the final native encoder workload.
+- Pipeline benchmark results belong to the sibling `ddo-examples` repository,
+  in `experiments/dynamic_offload_results.md`; reproduction guidance lives in
+  its `docs/benchmarks.md`. Old DDO benchmark paths are redirects, not copies.
+  Keep generic runtime/allocator contracts and technical gates in DDO.
+- The implementation history formerly in that sidecar is preserved locally in `.internal/reports/dynamic_offload_results-implementation.md`; `.internal/` is ignored and not cloned/published. Keep it backed up separately. Public benchmark conditions now live in `ddo-examples/docs/benchmark-reproduction.md`; do not use older linear/compatibility results as matched evidence for the final native encoder workload.
 - Public native integration guidance is `docs/native-vmm.md`. Existing `docs/native-*` plans/gates and handoff checklists are engineering records, not all current user instructions. Preserve their acceptance evidence and historical labels during the later publication review; do not silently rewrite raw results or licensing/attribution.
 - `experiments/ltx2_image_experiments.md` is local-only historical LTX scratch material and should stay ignored/untracked in this repository.
 - Historical results may stay in experiment docs, but stale recommendations must be marked as historical or corrected.
@@ -70,7 +73,7 @@ This repository is focused on `diffusers-dynamic-offloader` (DDO), a generic Dif
 - Before any CUDA test, benchmark, benchmark-parameter change, compatibility removal, or history cleanup, show the command, hypothesis, and approval criterion and wait for user confirmation.
 - Prefer consolidated, explicitly approved validation sequences over fragmented micro-runs. Approval may cover a capacity gate followed by named benchmark cases; stop at the first failed gate or memory anomaly, and do not extend the approved parameters or scope.
 - Each incremental VMM block must compile, pass its unit/CUDA contracts, and retain the NVMe baseline before the next block. Do not recalibrate residency budgets during the persistent-source through fallback blocks.
-- Record deliverable benchmark results in `experiments/dynamic_offload_results.md`.
+- Record deliverable pipeline benchmark results in `ddo-examples/experiments/dynamic_offload_results.md`, not in this repository.
 - Follow `docs/native-source-cache-plan.md` for the native persistent-source work.
   The registered source cache owns native bytes, not loader CPU tensors. Host
   cache capacity is separate from GPU residency; no Python cache-admission policy.

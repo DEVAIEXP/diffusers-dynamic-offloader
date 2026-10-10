@@ -59,7 +59,7 @@ reference, interruption and cleanup. Selected real-model Windows FP8 generations
 completed at five and ten seconds. The latest five-second/eight-step comparison
 recorded 235.2354 s native denoise versus 411.2244 s official streamless leaf group,
 and 316.2860 s versus 443.4385 s tracked total, with exactly equal finite video/audio
-latents. Decode/encoding was excluded. See [results](../experiments/dynamic_offload_results.md).
+latents. Decode/encoding was excluded. See [results](https://github.com/DEVAIEXP/ddo-examples/blob/main/experiments/dynamic_offload_results.md).
 
 The selected official group stack failed streamed Float8Tensor pinning and failed
 streamless transfers under `torch.inference_mode()`. The host control alone uses

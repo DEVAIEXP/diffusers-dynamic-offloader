@@ -125,10 +125,10 @@ When a component cannot be accelerated safely, DDO routes it through the compati
 - [Configuration reference](docs/configuration.md): settings fields, recognized `DDO_*` variables, and override precedence.
 - [Metrics reference](docs/metrics.md): stable telemetry snapshots for runners, JSON, and `--show-profile` output.
 - [Native VMM usage](docs/native-vmm.md): route selection, bootstrap, lifecycle, metrics and selected Windows/Linux support. Native component ownership remains opt-in.
-- [Benchmark reproduction](docs/benchmark-reproduction.md): workload, environment, host fixture, binary identity and measurement boundaries.
+- [Benchmark reproduction](https://github.com/DEVAIEXP/ddo-examples/blob/main/docs/benchmark-reproduction.md): workload, environment, host fixture, binary identity and measurement boundaries.
 - [Linux development environment](docs/linux-environment.md): optional pinned `vmm-dev-linux` profile, uv environment isolation and compiler prerequisites.
 - [Capacity profiles](docs/capacity-profiles.md): persist real workload observations under `~/.ddo/profiles` and warn when a later run exceeds a validated range.
-- [Dynamic offload results](experiments/dynamic_offload_results.md): report-ready benchmark summary and comparison tables.
+- [Dynamic offload results](https://github.com/DEVAIEXP/ddo-examples/blob/main/experiments/dynamic_offload_results.md): report-ready benchmark summary and comparison tables.
 
 ## Recommended Patterns
 
@@ -234,11 +234,12 @@ Runner-specific variables should use a separate prefix such as `DDO_RUNNER_*`; D
 
 ## Results
 
-The [public benchmark summary](experiments/dynamic_offload_results.md) reports
-the selected final native staged Windows/Linux runs, memory definitions and
-limitations. Intermediate experiments and legacy comparisons are kept in a
-local internal report, not mixed into the current results. No matched official
-Diffusers comparison was run with the final native encoder configuration.
+The [public benchmark summary](https://github.com/DEVAIEXP/ddo-examples/blob/main/experiments/dynamic_offload_results.md) reports
+pipeline measurements, reproduction conditions and limitations in the
+`ddo-examples` host repository. Historical records retain their original
+acceptance boundaries. This repository owns generic runtime, API, metrics
+and allocator technical documentation; model-specific runners and benchmark
+updates belong in `ddo-examples`.
 
 ## Project Scope
 

@@ -18,6 +18,10 @@ Windows `.[vmm-dev]`, Linux `.[vmm-dev-linux]`. Ordinary installs should not
 acquire native development tools. See [Linux setup](linux-environment.md) and
 the allocator README for native build recipes.
 
+The current bootstrap requires the source checkout/submodule layout even if the
+adapter is separately installed. Standalone wheel bootstrap and binary delivery
+are outstanding release work; see the [delivery review](release-readiness.md).
+
 The runner must bootstrap before any CUDA-owning imports:
 
 ```python

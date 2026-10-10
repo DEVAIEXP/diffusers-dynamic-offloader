@@ -89,7 +89,7 @@ This repository is focused on `diffusers-dynamic-offloader` (DDO), a generic Dif
 - Host memory reports must distinguish baseline-relative GPU deltas from sampled absolute driver usage, and requested controls from executed component routes. Missing historical fields are unavailable, not zero; do not rewrite old benchmark artifacts.
 
 - Do not add LTX runners or custom blocks back into this repository unless they are explicitly turned into small, generic examples.
-- Keep LTX-specific execution experiments in the sibling host repository and install DDO there with `pip install -e` or `uv pip install -e`.
+- Keep model-specific Modular Diffusers runners in the sibling `ddo-examples` host repository, organized under `scripts/<model>/`. Its independent custom-block clones are ignored under `modular_diffusers/custom_blocks/`. Install DDO there as a dependency; historical LTX image/video host repositories remain optional references, not required execution roots.
 - Use `apply_patch` for manual edits when the sandbox permits it.
 - Before changing experiment conclusions, check the latest pasted benchmark numbers and avoid resurrecting older assumptions.
 

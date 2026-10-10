@@ -79,6 +79,11 @@ This is the simplest path. It is also the least memory-aware path because the pi
 
 ## Minimal Modular Usage
 
+Model-specific runners and environment setup live in the separate
+[ddo-examples repository](https://github.com/DEVAIEXP/ddo-examples).
+DDO remains the generic runtime library; custom blocks and model optimizations
+belong to that host and their independent code repositories.
+
 For Modular Diffusers, load the custom blocks and components, then apply DDO to the exposed modules:
 
 ```python

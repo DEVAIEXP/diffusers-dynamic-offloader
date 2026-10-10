@@ -6,6 +6,40 @@ Intermediate validation runs are retained locally in the internal implementation
 report, separately from this public summary. Recorded measurements and raw
 benchmark artifacts are unchanged.
 
+## Windows image host migration gate — 2026-10-10
+
+One approved BF16 image generation completed in the independent `ddo-examples`
+uv-managed `.venv`: real prompt, 1280x704, seed43, eight steps, no PAG,
+native encoder then native transformer. Preserved active4GiB, total staging1.5GiB,
+source/registration24.625GiB and candidate DLL SHA256
+`755fcdd8dd1a72b371402750c071ca4b2146c0ac6bfe6b94c9b78f50f1ebb729`.
+No native build, library promotion, budget or runtime-default change.
+
+| Measurement | Historical staged Windows gate | New host, single run |
+| --- | ---: | ---: |
+| CUDA warm steps2–8 | 1.395602 s/it | 1.524931 s/it |
+| CUDA transformer phase with dependencies | 16.498256 s | 18.657049 s |
+| Encoder phase | 12.6624 s | 20.6153 s |
+| RunTracker total | 38.5135 s | 50.7519 s |
+| Sampled peak RSS | 27.3479 GiB | 27.4590 GiB |
+
+Functional migration **PASS**: exit0, saved plausible 1280x704 image; selected
+fault/admission/read/plan-mismatch/pool-quarantine counters zero, temporary
+fallbacks zero, encoder tickets31→0 and transformer736→0, transfer-owned
+events zero at final snapshots and all phase monitor errors null.
+Before denoise, encoder source process committed/registered bytes are zero.
+Current sampled driver GPU absolute peak7.716034GiB is distinct from
+baseline-relative delta6.6892GiB (baseline1.026855GiB). This is not WDDM shared
+memory accounting and is higher than the historical approximately6.97GiB peak.
+
+Do not accept performance parity from this run: warm timing is approximately9.27%
+higher, total approximately31.78% higher. The historical gate is a reference,
+not a contemporaneous matched control; the timing difference's cause is not
+established. No pixel-equality comparison or repeated benchmark was performed.
+Artifacts remain ignored under `ddo-examples/outputs/migration_image_gate/`;
+PNG SHA256 `877876a4a8e1143a59e51a737ef3eb7f05a27980a6a44d20fed80d2ab581cced`.
+No further CUDA run is authorized by this result.
+
 ## Video compact timestep / residual CPU checkpoint — 2026-10-07
 
 The sibling video host and editable local Diffusers fork now expose separate,

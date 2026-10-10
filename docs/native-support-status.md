@@ -11,6 +11,10 @@ It is not an LTX-only feature, automatic quantized admission, a general model cl
 or Linux FP8 validation. See [FP8 contract and boundaries](fp8-weight-only.md).
 LTX-specific compute/pipeline changes remain in the sibling host, not native
 residency policy. No selected default or binary is promoted by this documentation.
+Local FP8 implementation/documentation commits are now complete. The current
+[delivery review](release-readiness.md) identifies installed-package bootstrap,
+artifact selection, clean-install checks and publication review as outstanding;
+older immediate-delivery wording below is a historical checkpoint.
 
 ## Routes and evidence
 

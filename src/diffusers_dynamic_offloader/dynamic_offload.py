@@ -557,6 +557,7 @@ class DynamicOffloadConfig:
     vmm_module_pattern: str = r".*"
     # Experimental full-component ownership; never changes the default route.
     vmm_component_tensor_ownership: bool = False
+    vmm_float8_weight_only: bool = False
     vmm_execution_auxiliary_ownership: bool = False
     vmm_component_buffer_limit_mb: int = 1
     vmm_page_mb: int = 0
@@ -654,6 +655,7 @@ class DynamicOffloadSettings:
             "dynamic_offload_vmm_source_registered_gb": config.vmm_source_registered_gb,
             "dynamic_offload_vmm_module_pattern": config.vmm_module_pattern,
             "dynamic_offload_vmm_component_tensor_ownership": config.vmm_component_tensor_ownership,
+            "dynamic_offload_vmm_float8_weight_only": config.vmm_float8_weight_only,
             "dynamic_offload_vmm_execution_auxiliary_ownership": config.vmm_execution_auxiliary_ownership,
             "dynamic_offload_vmm_component_buffer_limit_mb": config.vmm_component_buffer_limit_mb,
             "dynamic_offload_vmm_page_mb": config.vmm_page_mb,
@@ -790,10 +792,17 @@ class DynamicOffloadLoadResult:
             raise ValueError("component must be a nonempty string")
         from ddo_vmm_allocator.component_arena_adapter import discover_component_layout
 
-        layout = discover_component_layout(
-            self.module, getattr(self.module, "_ddo_safetensor_slices", None),
-            buffer_limit_bytes=buffer_limit_bytes,
-        )
+        if getattr(self.module, "_ddo_float8_weight_only_loaded", False):
+            from ddo_vmm_allocator.quantized_arena_adapter import discover_float8_component_layout
+
+            layout, _ = discover_float8_component_layout(
+                self.module, getattr(self.module, "_ddo_safetensor_slices", None),
+                buffer_limit_bytes=buffer_limit_bytes)
+        else:
+            layout = discover_component_layout(
+                self.module, getattr(self.module, "_ddo_safetensor_slices", None),
+                buffer_limit_bytes=buffer_limit_bytes,
+            )
         return DynamicOffloadMetrics(
             route="vmm_component_preflight", configuration={"component": component},
             setup={**self.metrics_snapshot().as_dict()["setup"],
@@ -1092,6 +1101,12 @@ class DynamicOffloadHook(ModelHook):
             raise ValueError("DynamicOffloadConfig.resident_module_selection must be 'first', 'spread', or 'largest'")
 
     def initialize_hook(self, module: nn.Module) -> nn.Module:
+        if self.config.vmm_float8_weight_only:
+            from .float8_loading import validate_float8_native_config
+
+            validate_float8_native_config(self.config)
+            if not getattr(module, "_ddo_float8_weight_only_loaded", False):
+                raise ValueError("FP8 native runtime requires the explicit physical-source loader")
         self._pinned_weight_cache_namespace = (
             self.config.pinned_weight_cache_namespace.strip()
             or f"{module.__class__.__module__}.{module.__class__.__qualname__}"
@@ -1519,13 +1534,20 @@ class DynamicOffloadHook(ModelHook):
                 raise ValueError("component ownership requires native transport and full-component selection")
             if type(self.config.vmm_component_buffer_limit_mb) is not int or self.config.vmm_component_buffer_limit_mb < 0:
                 raise ValueError("component buffer limit must be a non-negative integer MiB")
-            from ddo_vmm_allocator.component_arena_adapter import discover_component_layout
+            if self.config.vmm_float8_weight_only:
+                from ddo_vmm_allocator.quantized_arena_adapter import discover_float8_component_layout
 
-            discover_component_layout(
-                module, getattr(module, "_ddo_safetensor_slices", None),
-                buffer_limit_bytes=self.config.vmm_component_buffer_limit_mb * 1024**2,
-            )
-        if detect_quantized_backend_modules(module):
+                discover_float8_component_layout(
+                    module, getattr(module, "_ddo_safetensor_slices", None),
+                    buffer_limit_bytes=self.config.vmm_component_buffer_limit_mb * 1024**2)
+            else:
+                from ddo_vmm_allocator.component_arena_adapter import discover_component_layout
+
+                discover_component_layout(
+                    module, getattr(module, "_ddo_safetensor_slices", None),
+                    buffer_limit_bytes=self.config.vmm_component_buffer_limit_mb * 1024**2,
+                )
+        if detect_quantized_backend_modules(module) and not self.config.vmm_float8_weight_only:
             raise ValueError("vmm_fast_runtime supports only standard dense nn.Linear weights, not quantized backends")
 
         cache_slot_mb = int(self.config.vmm_native_source_cache_slot_mb)
@@ -1573,20 +1595,27 @@ class DynamicOffloadHook(ModelHook):
         file_slice_summary = getattr(module, "_ddo_safetensor_slice_summary", {})
         self.state.add_setup("vmm_fast_native_resources", time.perf_counter() - resources_start)
         start = time.perf_counter()
+        ownership_kwargs = dict(
+            module_pattern=self.config.vmm_module_pattern,
+            component_tensor_ownership=self.config.vmm_component_tensor_ownership,
+            execution_auxiliary_ownership=self.config.vmm_execution_auxiliary_ownership,
+            execution_auxiliary_small_tensor_threshold_bytes=self.config.small_tensor_threshold_bytes,
+            component_buffer_limit_bytes=self.config.vmm_component_buffer_limit_mb * 1024**2)
+        if self.config.vmm_float8_weight_only:
+            from ddo_vmm_allocator.quantized_arena_adapter import attach_float8_component_parameters
+
+            attach_model_linear_modules = attach_float8_component_parameters
+            ownership_kwargs = dict(component_buffer_limit_bytes=self.config.vmm_component_buffer_limit_mb * 1024**2)
         report, store = attach_model_linear_modules(
             module,
             library,
-            module_pattern=self.config.vmm_module_pattern,
             page_size_bytes=int(self.config.vmm_page_mb) * 1024**2,
             resident_budget_bytes=self.vmm_resident_weight_budget_bytes,
             device_ordinal=self.execution_device.index or 0,
             staging_pool=self._vmm_staging_pool,
             file_slices=self._vmm_file_slices,
             host_cache_bytes=int(max(0.0, self.config.vmm_host_cache_gb) * 1024**3),
-            component_tensor_ownership=self.config.vmm_component_tensor_ownership,
-            execution_auxiliary_ownership=self.config.vmm_execution_auxiliary_ownership,
-            execution_auxiliary_small_tensor_threshold_bytes=self.config.small_tensor_threshold_bytes,
-            component_buffer_limit_bytes=self.config.vmm_component_buffer_limit_mb * 1024**2,
+            **ownership_kwargs,
             **native_transport_kwargs,
         )
         self._vmm_fast_store = store
@@ -1629,6 +1658,7 @@ class DynamicOffloadHook(ModelHook):
                 "vmm_fast_attached_tensors": report.attached_tensors,
                 "vmm_execution_auxiliary_ownership": self.config.vmm_execution_auxiliary_ownership,
                 "vmm_fast_payload_bytes": report.payload_bytes,
+                "vmm_float8_weight_only": self.config.vmm_float8_weight_only,
                 "vmm_fast_virtual_bytes": report.virtual_bytes,
                 "vmm_fast_page_bytes": report.page_bytes,
             }
@@ -2803,6 +2833,12 @@ def load_dynamic_offload_settings_from_env(
 
 def apply_dynamic_offload(module: nn.Module, config: DynamicOffloadConfig | None = None) -> DynamicOffloadHook:
     config = config or DynamicOffloadConfig()
+    if config.vmm_float8_weight_only:
+        from .float8_loading import validate_float8_native_config
+
+        validate_float8_native_config(config)
+        if not getattr(module, "_ddo_float8_weight_only_loaded", False):
+            raise ValueError("FP8 native runtime requires the explicit physical-source loader")
     registry = HookRegistry.check_if_exists_or_initialize(module)
     existing_hook = registry.get_hook(_DYNAMIC_OFFLOAD_HOOK)
     if existing_hook is not None:
@@ -3442,8 +3478,23 @@ def from_pretrained_with_dynamic_offload(
         config = replace(config, build_profile=build_profile)
     if (config.profile_name or config.build_profile) and not apply_dynamic:
         raise ValueError("Pass profile options to enable_offload after staged loading, or set apply_dynamic=True.")
-    with _temporary_safetensors_backend(config.load_safetensors_backend) as opened_safetensor_files:
-        module = from_pretrained(pretrained_model_name_or_path, **from_pretrained_kwargs)
+    if config.vmm_float8_weight_only:
+        from .float8_loading import load_float8_component_cpu, validate_float8_native_config
+
+        validate_float8_native_config(config)
+        allowed = {"subfolder", "torch_dtype", "low_cpu_mem_usage", "local_files_only"}
+        if set(from_pretrained_kwargs) - allowed:
+            raise ValueError("FP8 native loading only supports local component loading without device maps or key remapping")
+        if from_pretrained_kwargs.get("torch_dtype", torch.bfloat16) != torch.bfloat16:
+            raise ValueError("FP8 weight-only requires logical BF16")
+        checkpoint = Path(pretrained_model_name_or_path)
+        if from_pretrained_kwargs.get("subfolder"):
+            checkpoint /= from_pretrained_kwargs["subfolder"]
+        module = load_float8_component_cpu(checkpoint, model_loader)
+        opened_safetensor_files = []
+    else:
+        with _temporary_safetensors_backend(config.load_safetensors_backend) as opened_safetensor_files:
+            module = from_pretrained(pretrained_model_name_or_path, **from_pretrained_kwargs)
     # Preserve only file offsets for a local checkpoint.  Normal presets do
     # not consume this metadata; VMM can later refill its bounded pinned ring
     # directly from those file slices instead of copying materialized CPU
@@ -3454,7 +3505,8 @@ def from_pretrained_with_dynamic_offload(
         checkpoint_directory /= subfolder
     fallback_files = list(checkpoint_directory.glob("*.safetensors")) if checkpoint_directory.is_dir() else []
     source_files = list(opened_safetensor_files) or fallback_files
-    _attach_safetensor_file_slices(module, source_files, key_mapping=from_pretrained_kwargs.get("key_mapping"))
+    if not config.vmm_float8_weight_only:
+        _attach_safetensor_file_slices(module, source_files, key_mapping=from_pretrained_kwargs.get("key_mapping"))
     if not apply_dynamic:
         return DynamicOffloadLoadResult(module=module)
 

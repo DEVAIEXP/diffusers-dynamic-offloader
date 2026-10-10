@@ -173,7 +173,7 @@ Host artifacts; do not overwrite:
   do not infer an identical checkpoint from the model name.
 
 Executed command, metrics and artifact hashes are in the
-[Linux gate](native-linux-staged-gate.md) and [manifest](benchmark-reproduction.md).
+[Linux gate](native-linux-staged-gate.md) and [manifest](https://github.com/DEVAIEXP/ddo-examples/blob/main/docs/benchmark-reproduction.md).
 Do not automatically repeat the benchmark to validate this documentation.
 
 ## 7. Preserved libraries
@@ -245,7 +245,7 @@ Do not rerun migration scripts from `.internal/scripts/`: they contain Linux
 paths and old leases and are not generic continuation tools.
 
 The public report was reduced to essentials in
-[results](../experiments/dynamic_offload_results.md). Original detailed history
+[results](https://github.com/DEVAIEXP/ddo-examples/blob/main/experiments/dynamic_offload_results.md). Original detailed history
 is in `.internal/reports/dynamic_offload_results-implementation.md`.
 Internal review: `.internal/reports/delivery-review-20261004.md`, with a cleanup
 addendum; migration closure is in `closure.md`. `.internal`, builds, environments

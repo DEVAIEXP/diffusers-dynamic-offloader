@@ -129,8 +129,8 @@ hidden escaping weight views, general compiled forwards, multimodal inputs and
 poisoned-driver recovery are not validated. No WSL/macOS native VMM promise.
 Windows standby purge is optional and safely no-ops on Linux.
 
-[Final results](../experiments/dynamic_offload_results.md) and the
-[benchmark manifest](benchmark-reproduction.md) state what was measured and
+[Final results](https://github.com/DEVAIEXP/ddo-examples/blob/main/experiments/dynamic_offload_results.md) and the
+[benchmark manifest](https://github.com/DEVAIEXP/ddo-examples/blob/main/docs/benchmark-reproduction.md) state what was measured and
 what remains necessary for an independent Diffusers comparison.
 
 For user-driven validation on other models/environments, use the short

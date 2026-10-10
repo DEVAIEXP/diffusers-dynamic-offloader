@@ -4,7 +4,7 @@
 
 The original BF16 Windows/Linux checkpoint below remains valid for its preserved
 binaries and workloads. Subsequent video and FP8 evidence is recorded in the
-[benchmark sidecar](../experiments/dynamic_offload_results.md).
+[benchmark sidecar](https://github.com/DEVAIEXP/ddo-examples/blob/main/experiments/dynamic_offload_results.md).
 Experimental saved TorchAO FP8 transport is model-agnostic and has selected small
 CUDA and Windows real-model acceptance, including exact group/native latent parity.
 It is not an LTX-only feature, automatic quantized admission, a general model claim

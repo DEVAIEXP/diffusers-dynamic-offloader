@@ -1055,6 +1055,8 @@ class DynamicOffloadHook(ModelHook):
         self._force_full_pin_weights = False
         self._resident_module_names: set[str] = set()
         self._pinned_weight_cache_namespace = ""
+        self._sdnq_parameters_seen: set[int] = set()
+        self._sdnq_parameters_to_pin: set[int] = set()
         self.execution_device = torch.device(config.execution_device)
         self.offload_device = torch.device(config.offload_device)
         self.execution_mode = config.execution_mode.lower()
@@ -1974,6 +1976,8 @@ class DynamicOffloadHook(ModelHook):
             self.state.add_setup("select_resident_modules", time.perf_counter() - start, selected_bytes)
             self.state.planner_decisions["selected_resident_module_gb"] = round(selected_bytes / 1024**3, 4)
 
+        self._select_sdnq_parameters_to_pin(module, skip_patterns)
+
         for module_name, submodule in module.named_modules():
             if not module_name or (skip_patterns and any(pattern.search(module_name) for pattern in skip_patterns)):
                 continue
@@ -1994,22 +1998,96 @@ class DynamicOffloadHook(ModelHook):
             else:
                 self._move_small_local_tensors_to_device(submodule)
 
+    def _collect_sdnq_parameters(
+        self, module: nn.Module, skip_patterns: tuple[re.Pattern[str], ...]
+    ) -> list[tuple[str, nn.Parameter, int]]:
+        """Collect the same packed-parameter population for planning and pinning."""
+        candidates: list[tuple[str, nn.Parameter, int]] = []
+        seen: set[int] = set()
+        for name, layer in module.named_modules():
+            if not name or not self._is_sdnq_layer(layer):
+                continue
+            if (skip_patterns and any(pattern.search(name) for pattern in skip_patterns)) or (
+                name in self._resident_module_names or self._is_descendant_of_resident_module(name)
+            ):
+                continue
+            for parameter_name, parameter in layer.named_parameters(recurse=False):
+                if id(parameter) not in seen:
+                    seen.add(id(parameter))
+                    candidates.append((f"{name}.{parameter_name}", parameter, _tensor_size_bytes(parameter.data)))
+        return candidates
+
+    def _select_sdnq_parameters_to_pin(
+        self, module: nn.Module, skip_patterns: tuple[re.Pattern[str], ...]
+    ) -> None:
+        """Bound packed-parameter pinning without changing residency heuristics.
+
+        Include scales and other backend parameters, not dense weight shapes.
+        Existing pinned tensors remain owned by their loader and consume the
+        ceiling; DDO never unpins them to satisfy a smaller requested budget.
+        """
+        candidates = self._collect_sdnq_parameters(module, skip_patterns)
+        candidate_bytes = sum(size for _, _, size in candidates)
+        limits = [candidate_bytes]
+        if self.pin_weight_budget_bytes > 0:
+            limits.append(self.pin_weight_budget_bytes)
+        if self.pin_weight_budget_ratio > 0:
+            limits.append(int(candidate_bytes * self.pin_weight_budget_ratio))
+        if self.max_pin_weight_budget_bytes > 0:
+            limits.append(self.max_pin_weight_budget_bytes)
+        if self.available_system_ram_bytes > 0:
+            limits.append(max(0, self.available_system_ram_bytes - self.system_ram_headroom_bytes))
+        budget = min(limits)
+        if not self.config.pin_cpu_memory or self._skip_pin_weights or self._pin_memory_disabled:
+            budget = 0
+        existing_bytes = sum(
+            size for _, parameter, size in candidates
+            if parameter.device.type == "cpu" and parameter.data.is_pinned()
+        )
+        remaining = max(0, budget - existing_bytes)
+        ordered = candidates
+        if self.pin_weight_selection == "largest":
+            ordered = _largest_first_order(candidates)
+        elif self.pin_weight_selection == "spread":
+            ordered = _spread_order(candidates, budget)
+        self._sdnq_parameters_to_pin.clear()
+        self._sdnq_parameters_seen.clear()
+        for _, parameter, size in ordered:
+            if parameter.device.type == "cpu" and parameter.data.is_pinned():
+                continue
+            if budget > 0 and 0 < size <= remaining:
+                self._sdnq_parameters_to_pin.add(id(parameter))
+                remaining -= size
+        self.state.planner_decisions.update({
+            "sdnq_candidate_parameter_bytes": candidate_bytes,
+            "sdnq_pin_parameter_budget_bytes": budget,
+            "sdnq_existing_pinned_parameter_bytes": existing_bytes,
+            "sdnq_existing_pinned_over_budget_bytes": max(0, existing_bytes - budget),
+        })
+
     def _move_sdnq_parameters_to_offload_device(self, layer: nn.Module) -> None:
         for parameter_name, parameter in layer.named_parameters(recurse=False):
-            if parameter.device == self.offload_device:
+            if id(parameter) in self._sdnq_parameters_seen:
                 continue
-            start = time.perf_counter()
+            self._sdnq_parameters_seen.add(id(parameter))
             byte_count = _tensor_size_bytes(parameter.data)
-            parameter.data = parameter.data.to(self.offload_device)
-            self.state.add_setup(f"sdnq_{parameter_name}_to_offload", time.perf_counter() - start, byte_count)
-            if self.config.pin_cpu_memory and parameter.device.type == "cpu" and not parameter.data.is_pinned():
+            if parameter.device != self.offload_device:
+                start = time.perf_counter()
+                parameter.data = parameter.data.to(self.offload_device)
+                self.state.add_setup(f"sdnq_{parameter_name}_to_offload", time.perf_counter() - start, byte_count)
+            if (
+                id(parameter) in self._sdnq_parameters_to_pin
+                and self.offload_device.type == "cpu"
+                and parameter.device.type == "cpu"
+                and not self._pin_memory_disabled
+                and not parameter.data.is_pinned()
+            ):
                 try:
                     parameter.data = parameter.data.pin_memory()
                 except _PIN_MEMORY_ERRORS as exc:
                     if not self.config.allow_pin_memory_fallback:
                         raise
                     self._disable_pin_memory("pin_sdnq_parameters_failed", exc)
-                    break
             if parameter.device.type == "cpu":
                 if parameter.data.is_pinned():
                     self.state.sdnq_pinned_parameter_count += 1
@@ -2155,10 +2233,18 @@ class DynamicOffloadHook(ModelHook):
         if self.auto_budget_policy == _AUTO_BUDGET_DISABLED:
             return
 
-        candidate_weight_bytes = sum(
-            weight_bytes
-            for _, _, weight_bytes in self._collect_linear_modules_to_pin(module, skip_patterns, resident_patterns)
-        )
+        if self.execution_mode == "sdnq_runtime":
+            # Packed weights, scales and correction tensors are transferred by
+            # the SDNQ wrapper; dense fallback Linears are kept on the device.
+            # Dense shape eligibility must not define SDNQ pin/RAM admission.
+            candidate_weight_bytes = sum(
+                size for _, _, size in self._collect_sdnq_parameters(module, skip_patterns)
+            )
+        else:
+            candidate_weight_bytes = sum(
+                weight_bytes
+                for _, _, weight_bytes in self._collect_linear_modules_to_pin(module, skip_patterns, resident_patterns)
+            )
         candidate_module_bytes = 0
         if resident_module_patterns:
             candidate_module_bytes = sum(

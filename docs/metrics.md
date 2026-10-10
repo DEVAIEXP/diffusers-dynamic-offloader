@@ -1,5 +1,31 @@
 # Metrics reference
 
+## SDNQ CPU preparation
+
+The public `DynamicOffloadMetrics` report includes preparation accounting under
+`runtime.state.sdnq_parameter_pinning` and capacity decisions under
+`runtime.state.planner_decisions`. Runners render `format_profile()` or serialize
+`as_dict()`; they do not inspect hook attributes. These fields apply to DDO's
+`sdnq_runtime`, not official Diffusers leaf offload or native VMM. Historical
+already-CPU preparation skipped accounting, so historical zero counts do not
+prove that CPU source tensors were absent.
+
+| Field | Unit / collection | Meaning / diagnostic action |
+| --- | --- | --- |
+| `sdnq_parameter_pinning.pinned_count`, `unpinned_count` | unique Parameter objects / attachment | CPU parameters after preparation; shared object identities count once, storage aliases are not deduplicated. |
+| `sdnq_parameter_pinning.pinned_gb`, `unpinned_gb` | GiB / attachment | Packed tensor payload including scales/auxiliaries; despite the legacy `_gb` suffix these use 1024 cubed. Not GPU residency or a RAM peak. |
+| `sdnq_candidate_parameter_bytes` | bytes / post-resident selection | Packed parameters eligible for CPU offload, excluding skipped/resident modules; not the entire checkpoint. |
+| `sdnq_pin_parameter_budget_bytes` | bytes / pin selection | Resolved ceiling for new plus existing pins. Compare actual setup pins against this ceiling, not requested settings alone. |
+| `sdnq_existing_pinned_parameter_bytes` | bytes / before new pins | Loader-owned CPU pins consuming the ceiling. DDO does not unpin them automatically. |
+| `sdnq_existing_pinned_over_budget_bytes` | bytes / pin selection | Existing pins above the resolved ceiling; no new pins are admitted against that excess. |
+
+The last four fields live in `planner_decisions`. Automatic planning uses the
+same collector before resident selection, so its earlier `candidate_weight_gb`
+can exceed the later offloaded candidate population. Byte ceilings and known RAM
+admission remain separate from GPU workload residency profiling. Unsupported or
+unmeasured tensor-subclass physical storage must not be inferred from logical
+shape bytes. Setup pinning is not evidence of transfer overlap or speedup.
+
 ## Experimental component ownership (selected Windows/Linux workloads validated)
 
 `DynamicOffloadApplyResult.metrics_snapshot()` exposes `runtime.component_ownership`
@@ -631,7 +657,7 @@ of registration. Host pressure can still discard unleased ready storage, so
 zero rereads is conditional on coverage and available memory, not guaranteed
 for a partial buffer. Selected full-model staged Windows/Linux runs have now
 passed with explicit source/registration ceilings. See the
-[final benchmark](../experiments/dynamic_offload_results.md); that evidence is
+[final benchmark](https://github.com/DEVAIEXP/ddo-examples/blob/main/experiments/dynamic_offload_results.md); that evidence is
 not a promise for partial buffers or arbitrary models.
 
 ### Native model-source windows and GPU look-ahead

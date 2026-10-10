@@ -18,9 +18,18 @@ Windows `.[vmm-dev]`, Linux `.[vmm-dev-linux]`. Ordinary installs should not
 acquire native development tools. See [Linux setup](linux-environment.md) and
 the allocator README for native build recipes.
 
-The current bootstrap requires the source checkout/submodule layout even if the
-adapter is separately installed. Standalone wheel bootstrap and binary delivery
-are outstanding release work; see the [delivery review](release-readiness.md).
+Bootstrap discovers the conventional checkout build, then a platform binary
+inside the installed adapter: `ddo_vmm_allocator/native/win32/ddo_vmm.dll` or
+`ddo_vmm_allocator/native/linux/libddo_vmm.so`. A host need not specify a path
+when its installed distribution includes that binary. Current wheels do not
+yet include it; binary delivery remains [release work](release-readiness.md).
+Explicit `library_path` takes precedence over `DDO_VMM_LIBRARY_PATH`, which
+takes precedence over automatic discovery. These are development/diagnostic
+overrides, not normal end-user requirements. Missing/invalid binaries fail
+clearly; no runtime compilation/download, build-directory scan or silent switch
+to an experimental binary is performed. Discovery imports neither Torch nor
+the allocator package in the parent. The child receives the resolved library
+path so bootstrap and DDO use the same artifact.
 
 The runner must bootstrap before any CUDA-owning imports:
 

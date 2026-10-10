@@ -97,6 +97,16 @@ class DynamicOffloadMetrics:
                 f"{state.get('module_count', 0)} patched={state.get('patched_module_count', 0)} "
                 f"total_gb={state.get('total_gb', 0):.4f}"
             )
+            planner = state.get("planner_decisions", {})
+            if "sdnq_pin_parameter_budget_bytes" in planner:
+                pinning = state.get("sdnq_parameter_pinning", {})
+                lines.append(
+                    "  sdnq_cpu_parameters="
+                    f"pinned_gib={pinning.get('pinned_gb', 0):.4f} "
+                    f"unpinned_gib={pinning.get('unpinned_gb', 0):.4f} "
+                    f"pin_ceiling_gib={planner['sdnq_pin_parameter_budget_bytes'] / 1024**3:.4f} "
+                    "(setup accounting, not GPU residency)"
+                )
         vmm = self.runtime.get("vmm", {})
         if vmm:
             resident_bytes = vmm.get("fast_resident_bytes", vmm.get("arena_resident_bytes", 0))

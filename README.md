@@ -15,6 +15,11 @@ The library resolves the preset, platform behavior, component policy, RAM/VRAM b
 
 ## Install
 
+Experimental native [FP8 weight-only support](docs/fp8-weight-only.md) is
+model-agnostic but restricted to the documented saved TorchAO recipe. It preserves
+backend math and remains opt-in; selected model benchmarks do not establish
+arbitrary-model support. Model-specific optimizations stay in host projects.
+
 From a host project:
 
 ```powershell

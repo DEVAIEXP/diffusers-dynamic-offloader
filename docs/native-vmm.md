@@ -77,8 +77,10 @@ The host wrapper is CPU-tested; no new CUDA/performance run has been made for it
 Generic full-pipeline linear/compatibility examples do not prove simultaneous
 native encoder and transformer fit the configured ceilings. Native whole-component
 ownership is opt-in; supported immutable tensors, bounded buffers and shared
-aliases must pass preflight. Quantized/custom forwards remain on compatibility
-routes. Do not replace a backend-specific forward with dense Linear execution.
+aliases must pass preflight. Quantized/custom forwards normally remain on
+compatibility routes. The explicit, model-agnostic saved TorchAO recipe is the
+bounded experimental [FP8 exception](fp8-weight-only.md), not automatic support
+for all quantized tensors. Do not replace backend math with dense Linear execution.
 
 ## Public reporting
 

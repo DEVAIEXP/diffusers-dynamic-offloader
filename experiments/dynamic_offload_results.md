@@ -2095,3 +2095,789 @@ temporary fallbacks. 45 CPU launcher contracts passed before execution. No OOM,
 budget changes, candidate rerun, extra decode or default/legacy route changes.
 Retain compact timesteps as an optional selected-workload memory feature with
 observed performance benefit; no wider-model support claim.
+
+### Optional FP8 weight-only small native correctness gate
+
+On 2026-10-08, the explicitly approved eight-layer 512-wide Windows sequence
+passed BF16 control followed by TorchAO 0.18.0 FP8 weight-only, exit 0. Evidence:
+`E:/LTX-2/outputs/fp8_native_gate_05/{bf16_control,fp8}/report.json`.
+Each checkpoint was saved and reloaded as safetensors; existing backend/model
+math forward was preserved. Three repeated outputs matched each case's own
+CUDA reference exactly; this does not assert FP8 equals BF16. FP8 data/scales
+were verified exactly. Both used native resident and streamed units, recovered
+from intentional RuntimeError/KeyboardInterrupt, reused cached file bytes and
+finished with zero transfer events, batch events and tickets after batch close.
+Both completed meta retirement and store cleanup, without fault failures or
+temporary fallbacks. Preserved DLL and production defaults were unchanged.
+
+Physical parameter bytes were 4,202,496 BF16 and 2,121,728 FP8. Native residency
+was 6 MiB for both due to the diagnostic's page/slot geometry; cache was 6 MiB,
+staging 4 MiB, combined host ceiling 10 MiB, allocator cache 4 MiB. This is not
+an LTX performance/quality benchmark or proof of VRAM reduction. Real LTX
+weights remain BF16. Failed preparatory fixtures and corrected gate contracts
+are documented in `docs/fp8-weight-only-integration-plan.md`, not counted as
+passing runs. Reusable conversion tooling and explicit real-model integration
+remain pending.
+
+The subsequent selected public API gate passed both cases, exit 0, using saved
+CPU fixtures: `E:/LTX-2/outputs/fp8_public_gate_02/{bf16,fp8}_report.json`.
+This validates DDO loading, attachment, metrics and cleanup, not only direct
+adapter calls. Three repeated outputs matched each case's own CUDA reference;
+physical FP8 data/scales matched exactly. Native streaming, unchanged source
+reads, interruption recovery and meta/source-descriptor retirement passed.
+Fault failures, temporary fallbacks and cache admission denials were zero.
+Both native residency snapshots were 6 MiB, with declared 64 MiB host cache,
+4 MiB staging and 68 MiB combined host ceiling; DLL remained unchanged. This is
+correctness evidence, not LTX FP8 quality/performance evidence. The reusable
+converter and explicit loader/runner option are implemented; full LTX conversion
+remains pending, requiring bounded-memory preparation and a separate output
+drive. Earlier preparatory failures remain historical evidence, not passing gates.
+
+Bounded offline conversion preparation subsequently passed 129 CPU tests and
+six subtests in 16.50 s (`fp8_bounded_integration_cpu_01`). The tensor-at-a-time
+converter matched the existing converter's saved payload hashes and the public
+loader, without full CPU model loading. Original source files and untouched
+tensors were preserved; invalid index and source-change failures retained
+diagnostics. Header-only inspection found 4,186 BF16 source tensors, largest
+288 MiB. Real output is planned at
+`F:/models/ltx23-distilled-fp8-weight-only/transformer`; conversion and real-model
+FP8 quality/performance remain pending. This is not a CUDA benchmark result.
+
+On 2026-10-09 the approved bounded CPU conversion of the real transformer
+completed, exit 0. Output:
+`F:/models/ltx23-distilled-fp8-weight-only/transformer`. The source's 35.3695 GiB
+of tensor data became 17.7235 GiB across ten safetensors shards, approximately
+49.89% smaller (output includes headers). 1,660 linear weights were converted;
+all saved FP8 bytes, FP32 scales and untouched tensors reconstructed exactly.
+Source hashes matched between passes; original BF16 files were not modified.
+Observed process peak working set was approximately 15.11 GiB. Report:
+`conversion_report.json`, `passed`, exact reload true, CUDA initialized false.
+No real-model inference ran; quality, VRAM and speed improvements remain
+unmeasured. The accepted BF16 baseline and protected runtimes are unchanged.
+
+The first approved real FP8 inference gate (1280x704, 5 s, 24 fps, four steps,
+seed 43, audio conditioning) failed before transformer attachment/denoising:
+CPU immutable-source binding rejected a recycled temporary flatten-clone
+address between shards. Encoder/conditioning completed; no CUDA/OOM error was
+reported and no FP8 denoise time was measured. Artifacts:
+`E:/LTX-2/outputs/fp8_real_5s_4steps_gate_01.console.log` and gate metrics.
+After limiting temporary validation registries to each shard, focused CPU
+contracts passed 29 tests. Real CPU loading then passed with 4,186 logical
+tensors, 5,846 correctly bound physical sources and exact saved payload hashes;
+CUDA remained uninitialized. No DLL, runtime budgets or BF16 route changed.
+Corrected CUDA generation remains unvalidated pending another approved attempt.
+The consolidated corrected CPU integration suite passed 130 tests and six
+subtests in 17.39 s; this does not replace real-model CUDA acceptance.
+
+The approved unchanged retry `fp8_real_5s_4steps_gate_02` passed real checkpoint
+loading/source binding but failed component layout preflight before denoising:
+root-owned parameters overlap descendant execution units. Meta-only inspection
+found two BF16 root tables totaling 24 KiB. The failed-run elapsed was
+103.4579 s, load/prepare 32.5 s; this is not FP8 denoising performance.
+No CUDA/OOM error was reported. A bounded component-lifetime root-state
+extension is proposed, not implemented or accepted. No DLL, weight budget,
+overlap guard or protected runtime changed.
+
+The approved FP8-only bounded root-state extension is now CPU-accepted:
+138 tests and six subtests in 17.23 s (`fp8_root_final_cpu_01`). It reuses one
+existing native lifetime-pinned buffer and immutable source upload, subtracts
+its page-rounded capacity from the unchanged total ceiling, includes backing
+in residency metrics, and fences retirement/destruction. The dense root guard
+and native DLL are unchanged. Real CPU geometry passed with 24 KiB root state,
+76 execution units and a largest slot payload of 387,323,904 bytes. This is
+not CUDA generation/performance acceptance. A small lifecycle CUDA gate is
+required before another LTX attempt; neither ran in this implementation step.
+
+The subsequently approved small root-state CUDA gate passed BF16 and FP8,
+exit 0, approximately 6.09 s. Evidence:
+`E:/LTX-2/outputs/fp8_root_public_gate_01/{bf16,fp8}_report.json`.
+Each case matched its own reference exactly, recovered after RuntimeError and
+KeyboardInterrupt, and completed cleanup. FP8 root payload was 24 KiB, uploaded
+once into a 2 MiB native backing charged against its 8 MiB total fixture ceiling;
+arena ceiling remained 6 MiB. Observed total weight residency was 8 MiB including
+root backing. Faults/fallbacks/cache denials were zero and cached read bytes
+did not increase across repeats. This is lifecycle acceptance only; real LTX
+FP8 quality/performance and four-step generation remain unvalidated.
+
+The separately approved real FP8 retry `fp8_real_5s_4steps_gate_03` completed
+on 2026-10-09, exit 0: 1280x704, 5 s, 24 fps/121 frames, four steps, seed 43,
+image/prompt/audio conditioning, native BF16 encoder, no compilation or custom
+execution kernels, latent output. Transformer/encoder weight ceilings remained
+1.5/4 GiB; chunk sizes 1024, phase modulation, compact timesteps and in-place
+residuals enabled. Load/prepare: 33.0865 s; attach: 85.4993 s; denoise:
+109.2867 s (progress approximately 27.09 s/it); total: 259.2684 s, without decode.
+Sampled peak GPU: 5.4516 GiB baseline-relative / 6.4784 GiB absolute; peak RSS:
+27.2126 GiB. Fault failures, temporary tensors and cache admission denials: zero.
+Root state uploaded once within the unchanged ceiling; completion tickets
+retired to zero and process cleanup completed without a reported error.
+CPU-only saved-latent validation passed: finite video and audio tensors.
+Evidence: `E:/LTX-2/outputs/fp8_real_5s_4steps_gate_03/metrics/modular_run.json`.
+This is functional acceptance, not decoded quality, BF16 parity or evidence of
+a performance improvement. The compiled 10 s BF16 baseline is not a matched
+control; do not compare its per-step result directly with this gate.
+
+The separately approved saved-latent decode completed with exit 0 on 2026-10-09,
+without reloading transformer/encoder or rerunning denoising. Existing staged
+BF16 decoders used ordinary CUDA allocation, not the native allocator. Elapsed:
+33.7275 s (video 25.4463 s, audio VAE 0.5412 s, vocoder 1.2046 s).
+Output: `E:/LTX-2/outputs/fp8_real_5s_4steps_gate_03/fp8_decoded.mp4`.
+Independent ffprobe confirmed H.264, 1280x704, 24 fps, 121 frames/5.041667 s;
+AAC stereo 48000 Hz, 5.010000 s; file size 1,023,116 bytes. Audio was finite.
+Source latent SHA-256 remained
+`c5a36eab7c22c74d6d90c9e8f42b331f5fb311728b4a8f39bf10f87da15c1373`.
+Decode evidence is `fp8_decoded.decode.json` beside the MP4. Visual/audio quality
+is not reviewed; matched BF16 quality/performance comparison remains pending.
+
+### Approved five-second BF16 quality control (2026-10-09)
+
+`E:/LTX-2/outputs/bf16_5s_4steps_fp8_quality_control_01` completed with exit 0.
+Workload controls match the FP8 gate: 1280x704, 5 s/121 frames at 24 fps, four
+steps, seed 43, same prompt/image/audio, chunk sizes 1024, phase modulation,
+compact timesteps and in-place residuals, no compilation. Weight ceilings and
+preserved DLL are unchanged. BF16 uses the existing dense route, whereas FP8
+requires composite component ownership; these timings are an integration-level
+comparison, not an isolated dtype/kernel experiment. Cache warmth is uncontrolled.
+
+| Phase/observation | BF16 control | FP8 gate |
+| --- | ---: | ---: |
+| Transformer load/prepare (s) | 1.6204 | 33.0865 |
+| Transformer attach (s) | 6.5577 | 85.4993 |
+| Denoise, four steps (s) | 118.1183 | 109.2867 |
+| Total without decode (s) | 155.3928 | 259.2684 |
+| Sampled global GPU peak, absolute (GiB) | 4.9624 | 6.4784 |
+| Sampled process RSS peak (GiB) | 26.6593 | 27.2126 |
+
+BF16 fault failures, temporary tensors and cache admission denials were zero.
+The report records 107 commit-pressure entries and recoveries, not zero pressure.
+Completion collection retired two tickets to zero; cleanup completed without a
+reported error. CPU-only validation found finite video/audio latents with matching
+shapes. Relative latent RMSE, `RMS(FP8-BF16)/RMS(BF16)`, was 0.194170 for video
+and 0.003182 for audio. This measures final latent divergence, not perceptual
+quality or temporal stability; no visual conclusion follows from it alone.
+BF16 decode/user quality review remains pending and requires separate approval.
+
+The subsequently approved standalone BF16 decode completed with exit 0 in
+32.7062 s, without rerunning denoising. Existing staged decoders used ordinary
+CUDA allocation; transformer/encoder were not loaded. Output:
+`E:/LTX-2/outputs/bf16_5s_4steps_fp8_quality_control_01/bf16_decoded.mp4`.
+Independent ffprobe confirmed H.264, 1280x704, 24 fps, 121 frames/5.041667 s;
+AAC stereo 48000 Hz, 5.010000 s; file size 1,000,593 bytes. Audio was finite
+and source latents unchanged (SHA-256
+`840ca4569bf5cf38e399350ff0e983226ac664ac210d9dfa194ee5b5d38ea2ed`).
+Evidence: adjacent `bf16_decoded.decode.json`. Both BF16 and FP8 media are now
+available for user review; no visual/audio quality verdict has been recorded.
+
+The user subsequently reviewed both five-second/four-step videos and reported
+similar temporal artifacts, with no clear visual degradation attributable to
+FP8. This is an initial subjective acceptance for that pair only, not numerical
+parity or general-model/eight-step quality acceptance. No enhance LoRA was used.
+
+### Ten-second FP8 comparison stopped at BF16 control (2026-10-09)
+
+The approved sequence started with uncompiled BF16, 1280x704, 10 s/241 frames
+at 24 fps, eight steps, seed 43, image/prompt/audio, compact timesteps,
+in-place residuals, phase modulation and 1024 chunk sizes. Diagnostic timing
+was enabled; weight ceilings stayed 1.5/4 GiB and the protected DLL hash matched.
+`E:/LTX-2/outputs/bf16_10s_8steps_fp8_comparison_01` failed with an illegal
+CUDA memory access before the first completed-step callback. Exit 1, recorded
+elapsed 70.8338 s; no latent artifact or completed denoising timing exists.
+Cleanup/event recording also failed after the CUDA context entered error.
+The FP8 case was not started; do not report an A/B performance result.
+Evidence: `metrics/modular_run.json` and
+`metrics/denoise_snapshots/before_denoise.json` in the failed control directory.
+
+Read-only comparison against the accepted compiled ten-second BF16 case found
+more differences than compilation: execution auxiliary ownership, auxiliary
+CPU-source detachment, pre-transformer host-cache release and host-memory phase
+inspection were also disabled. The proposed control reused the five-second
+recipe, not all accepted ten-second lifecycle controls. These differences are
+established; their causal role in the illegal access is not established.
+Do not change DLL/budgets or rerun automatically. A revised comparison must
+preserve the accepted BF16 lifecycle controls and document the different FP8
+composite-ownership requirements; further CUDA execution needs new approval.
+
+The separately approved corrected BF16 control subsequently passed, exit 0:
+`E:/LTX-2/outputs/bf16_10s_8steps_fp8_comparison_02`. Same 10 s/241-frame,
+eight-step audio-conditioned workload and ceilings; compilation remains off.
+Execution auxiliary ownership, host-cache release, auxiliary source detachment
+and phase inspection were restored to the accepted BF16 settings. DLL unchanged.
+Load/prepare: 2.1817 s; attach: 8.0553 s; denoise wall time: 462.5770 s;
+CUDA phase: 462.48834375 s; first CUDA step: 58.65807422 s;
+mean CUDA steps 2-8: 57.68680134 s/it. Total without decode: 502.5720 s.
+Sampled GPU peak: 6.4530 GiB baseline-relative / 7.4798 GiB absolute;
+process RSS peak: 28.6438 GiB. Fault failures, temporary tensors, cache
+admission denials and cache pressure entries/recoveries were zero. No completion
+tickets remained. CPU-only verification found finite float32 packed video
+`(1, 27280, 128)` and audio `(1, 251, 128)` latents. Source storage observation
+after attach and after generation was zero CPU bytes, not a process-RAM claim.
+Evidence: completed `metrics/modular_run.json` and eight step snapshots.
+This accepts the corrected configuration, not a causal isolation of the prior
+illegal access. FP8 has not yet run at 10 s; the A/B result remains pending.
+
+### Completed ten-second BF16/FP8 comparison (2026-10-09)
+
+After separate approval, `E:/LTX-2/outputs/fp8_10s_8steps_comparison_01`
+completed with exit 0. Same generation controls as corrected BF16: 1280x704,
+10 s/241 frames, 24 fps, eight steps, seed 43, real prompt/image and source
+audio, 1024 FF/norm chunks, phase modulation, compact timesteps, in-place
+residuals, diagnostic timing and no compilation. Native weight ceilings remain
+1.5 GiB transformer / 4 GiB BF16 encoder; staging 1.5 GiB and source/cache
+ceilings 24.625 GiB. Protected DLL unchanged. Both cases release host cache
+and inspect memory phases. BF16 uses validated execution auxiliary ownership
+and source detachment; FP8 instead uses composite component ownership and
+bounded root state, without incompatible auxiliary detachment. This is a
+single integration-level comparison, not a statistically repeated or isolated
+weight-dtype/kernel experiment; cache warmth is uncontrolled.
+
+| Measurement | BF16 corrected control | FP8 weight-only |
+| --- | ---: | ---: |
+| Transformer load/prepare (s) | 2.1817 | 31.6734 |
+| Transformer attach (s) | 8.0553 | 83.5672 |
+| First CUDA step (s) | 58.6581 | 67.0129 |
+| Mean CUDA steps 2-8 (s/it) | 57.6868 | 67.9183 |
+| Denoise wall time (s) | 462.5770 | 542.5450 |
+| CUDA phase including dependencies (s) | 462.4883 | 542.4588 |
+| Total without decode (s) | 502.5720 | 687.5026 |
+| Sampled absolute GPU peak (GiB) | 7.4798 | 7.4578 |
+| Global process RSS peak (GiB) | 28.6438 | 25.5203 |
+| Denoise process RSS peak (GiB) | 28.6438 | 24.0728 |
+| Final source-cache committed/registered bytes | 26,440,892,416 | 19,193,135,104 |
+| Cumulative source-cache DMA bytes | 210,610,591,808 | 146,452,988,032 |
+
+The FP8 candidate has approximately 17.3% longer denoising, 17.7% longer
+steady-state step time and 36.8% longer total elapsed, despite approximately
+30.5% fewer cumulative source-cache DMA bytes. Global RSS is lower, but sampled
+GPU peaks are effectively alike. Source-cache counters are scoped native
+snapshots/cumulative traffic, not total RAM or shared WDDM occupancy. CUDA-event
+time and host progress intervals have different boundaries; use the CUDA-event
+values for first/steady-state comparisons. There is no measured speed advantage
+for this selected FP8 implementation on this workload; do not infer that all
+FP8 backends or architectures are slower or that DMA is the proven bottleneck.
+
+Both routes reported zero fault failures, temporary tensors, cache admission
+denials and cache pressure episodes. FP8 completion collection retired 132
+tickets to zero. CPU-only verification found finite float32 video
+`(1, 27280, 128)` and audio `(1, 251, 128)` latents, without CUDA initialization.
+Evidence: both case directories' `metrics/modular_run.json`, eight step snapshots
+and saved latent artifacts. No ten-second decode or quality review ran.
+Keep accepted BF16 as the performance reference; FP8 remains optional for
+checkpoint-size/host-memory savings. Further optimization requires evidence
+separating setup, dequantization/math and component scheduling costs, not an
+automatic budget increase, compilation opt-in or another benchmark sweep.
+
+### FP8 CPU ownership-index candidate (2026-10-09)
+
+The selected FP8 discovery previously traversed the entire component for each
+composite weight and each ordinary parameter/buffer. The candidate captures
+owner aliases and physical-storage identities once in a discovery-local index,
+then reuses those groups. It still refuses distinct owners sharing composite
+payload storage and preserves repeated-module names. No forward, native binary,
+residency ceiling, transport, or protected runtime behavior was changed.
+
+CPU validation: **34 passed in 7.39 s** across test_quantized_owners_cpu.py,
+test_quantized_arena_cpu.py, and test_quantized_sources_cpu.py, using the
+host .venv-vmm with TorchAO 0.18.0, CUDA_VISIBLE_DEVICES=-1, and pytest
+external plugin autoload disabled. A new assertion verifies one ownership-index
+traversal; tests cover wrapper/parameter/buffer storage aliases. The first DDO
+environment attempt skipped three modules because TorchAO was absent. The first
+host attempt stopped all 34 tests at their CPU guard because imports had
+initialized CUDA before fixture entry; it is not passing CPU evidence.
+
+No candidate CUDA/model performance measurement has run. Reduced attach work
+does not establish faster denoising; selected FP8/BF16 comparison results above
+remain unchanged. Compilation stays excluded pending a separate compatibility
+contract, not automatically enabled as a consequence of this CPU change.
+
+The separately approved existing public CUDA gate then passed, exit 0, using
+the prepared root-state fixture in
+.internal/test-artifacts/fp8-owner-index-preflight-20261009 and reports in
+.internal/test-artifacts/fp8-owner-index-cuda-20261009. Both the unchanged BF16
+control and FP8 candidate reported exact repeated outputs, completed cleanup,
+and recovery from deliberate RuntimeError and KeyboardInterrupt. FP8 physical
+payload verification passed, including the bounded 24 KiB BF16 root state.
+The protected DLL SHA256 remained
+EC5AB4700EE5D171CC06D8E9EC99C549F8D6CC3DFBE7FEB2683B93ADD0E829E6.
+Limits: BF16 weight 6 MiB, FP8 weight 8 MiB (existing root-state fixture charge),
+host cache 64 MiB, staging 4 MiB, allocator cache 4 MiB. This validates the
+selected small integration contract, not LTX performance, quality, or general
+model support. No video benchmark ran after the ownership-index change.
+
+### FP8 compile capture CPU contract (2026-10-09)
+
+Two CPU fullgraph/static Dynamo+AOT eager cases passed: compiled backend math
+uses updated qdata/scale storage after physical .data replacement and updated
+wrappers after one owner publication. Changed scale intentionally changes the
+reference output, detecting stale-weight capture. Repeated compiled results
+equal current backend eager output exactly; the original Linear forward class
+remains unchanged, and final retirement invalidates both payloads to meta.
+The corrected consolidated ownership/source/arena/compile suite reports
+**36 passed in 8.54 s**, with CUDA hidden and no CUDA initialization. An initial
+fixture attempted a forbidden second publication and was corrected without
+relaxing the production ownership state machine.
+
+This is not CUDA Inductor, fused-kernel, native-hook compilation, or performance
+acceptance. The existing public small CUDA probe now has an explicit opt-in
+compile-fp8-linear candidate: only FP8 Linear compute forwards are compiled
+before native attach, fullgraph/static Inductor, CUDA graphs disabled, precision
+cast emulation enabled. Block payload verification and interruption checks stay
+outside compiled compute; the BF16 control and all budgets remain unchanged.
+Native retirement must precede removal of compiled forwards. The host runner's
+FP8 compilation exclusion remains in place until a separate gate is approved
+and passes. No compiled CUDA candidate has run yet.
+
+The separately approved small CUDA Inductor candidate subsequently ran with
+the same prepared fixture and unchanged binary/ceilings, evidence in
+.internal/test-artifacts/fp8-compile-cuda-20261009. BF16 eager control passed
+exact repeated outputs, interruption recovery and cleanup. FP8 compiled eight
+Linear forwards, but stopped at the first exact-output check: 1,165/2,048
+elements differed (56.9%), maximum absolute difference 0.00048828125, maximum
+relative difference 5.0. The relative maximum alone does not establish a large
+signal error because near-zero values can magnify ratios; it does not waive
+the agreed exact gate. FP8 cleanup completed without a cleanup error, and the
+DLL SHA256 remained unchanged. No FP8 compiled interruption/reuse acceptance
+or model benchmark followed the failed first numerical check.
+
+Compilation success is not numerical acceptance. Preserve the host FP8
+compilation exclusion and existing uncompiled route; do not automatically
+relax tolerances. TorchAO's selected weight-only path dequantizes the weight,
+performs matmul and then a separate bias addition. Compiled fusion/rounding
+boundaries are a diagnostic hypothesis, not a proven cause of this mismatch.
+
+Read-only inspection of the failed gate's generated Inductor code subsequently
+confirmed separate FP8-to-FP32 scale multiplication and BF16 weight storage,
+followed by extern_kernels.addmm for the compute+bias portion. In contrast,
+TorchAO eager uses matmul followed by a separate bias addition. Thus the
+compiled graph did change the eager BF16 rounding boundary. This identifies
+a concrete graph difference; only a passing corrected gate can establish that
+it explains the observed numerical mismatch.
+
+The small opt-in candidate now disables Inductor pattern_matcher and
+epilogue_fusion, keeping fullgraph/static compilation, precision-cast emulation
+and CUDA graphs disabled. Options are included in the report. This conservative
+diagnostic preserves the separate matmul/bias boundary rather than changing
+TorchAO math or relaxing tolerances. It does not enable compilation in the host
+runner and has not run on CUDA yet. BF16 control, binary and ceilings unchanged.
+
+The separately approved corrected small CUDA gate passed with exit 0. Evidence:
+.internal/test-artifacts/fp8-compile-rounding-cuda-20261009. BF16 stayed eager;
+FP8 compiled eight Linear compute forwards with pattern_matcher=false,
+epilogue_fusion=false, emulate_precision_casts=true and triton.cudagraphs=false.
+Both cases passed exact repeated-output equality, deliberate RuntimeError and
+KeyboardInterrupt recovery, and cleanup; FP8 physical-payload verification
+passed. The DLL hash and fixture ceilings remain those recorded above.
+
+Disabling these fusion settings resolves the observed mismatch in this selected
+fixture without relaxing tolerances. Because two fusion settings changed
+together, the gate does not isolate their individual effects. The previous
+generated addmm remains the concrete diagnosed graph difference. Acceptance is
+limited to this small CUDA/public native integration contract, not LTX regional
+compilation, speed, media quality, or arbitrary model support. The production
+runner still excludes FP8 compilation; no video benchmark followed this gate.
+
+### Selected 10-second no-conditioning model comparison (2026-10-09)
+
+The explicitly approved BF16 control completed: 1280x704, 24 fps, 241 frames,
+seed 43, eight steps, no source-audio conditioning, latent output. Generated
+audio remains enabled. Total excluding decode was 502.3321 s; denoise wall was
+462.1879 s and CUDA steady steps 2-8 averaged 57.708845 s/it. Transformer load
+was 2.3029 s and attach was 8.9207 s. Sampled denoise absolute GPU usage peaked
+at 7.1186 GiB (baseline-relative delta 6.0918 GiB), RSS at 28.5847 GiB.
+CPU inspection confirmed finite video latents (1, 27280, 128) and audio latents
+(1, 251, 128). Evidence: sibling host outputs/bf16_10s_noaudio_comparison.
+
+The next approved FP8 compiled candidate failed before completing its first
+step with FailOnRecompileLimitHit, fullgraph=True. Total until failure was
+79.4792 s, transformer load 32.6908 s and attach 13.3864 s; 1,660 Linear
+wrappers were configured. These are setup/failure measurements, not FP8
+denoise speed or quality acceptance. Evidence: sibling host
+outputs/fp8_10s_noaudio_compiled_comparison. No automatic retry or compiler
+limit increase followed. The successful small eight-Linear contract did not
+cover real-model geometry diversity.
+
+CPU diagnosis reproduced the limit on the ninth distinct Linear geometry,
+whereas twelve equal geometries passed. Dynamo's shared external wrapper
+reported a bias-size guard mismatch. Cloning the library forward code alone
+still shared that external wrapper and failed; it is not the correction.
+The experimental helper now compiles the standard functional Linear entry
+with a separate code/cache per weight geometry, passes current weight/bias
+views at invocation, and retains TorchAO dispatch and the accepted rounding
+options. Compiler limits, native allocator, BF16 and uncompiled routes remain
+unchanged. This correction requires separate CUDA acceptance; CPU evidence
+alone is not a model performance result.
+
+Corrected CPU ownership/source/arena/compile contracts: 39 passed in 8.65 s,
+CUDA hidden. Twelve distinct geometries each produced a graph and exact current
+backend output, including changed scale storage after capture. Global compiler
+limits remained unchanged. The first consolidated attempt passed 16 tests but
+23 fixture setups failed on access to the default pytest temporary directory;
+the corrected run used a new project-local temporary directory and disabled
+pytest cache writes. The CUDA probe now invokes the same compilation helper
+as the host, rather than a separate bound-forward implementation. No corrected
+CUDA run or model benchmark has executed yet.
+
+The separately approved corrected-helper CUDA gate subsequently passed, exit 0.
+Evidence: .internal/test-artifacts/fp8-geometry-cuda-20261009. BF16 remained
+eager; FP8 used eight Linear dispatches sharing one weight-geometry cache.
+Both reported exact repeated outputs, RuntimeError/KeyboardInterrupt recovery
+and completed cleanup. FP8 physical payload verification passed, including
+the bounded root-state fixture. The protected DLL SHA256 remained
+EC5AB4700EE5D171CC06D8E9EC99C549F8D6CC3DFBE7FEB2683B93ADD0E829E6.
+Weight ceilings remained 6 MiB BF16 / 8 MiB FP8, host cache 64 MiB, staging
+4 MiB and allocator cache 4 MiB. Compilation options stayed unchanged.
+
+Scope: CUDA numerical/ownership acceptance for the selected small fixture,
+not real-model speed or CUDA geometry-diversity acceptance. Twelve geometries
+were exercised by the CPU contract, not by this one-geometry CUDA fixture.
+No corrected full-model benchmark has run. Emitted TorchAO enum-registration,
+serialization-import and stable-cache-hash warnings did not fail this gate;
+this does not establish durable cross-process compiler-cache reuse.
+
+### Corrected FP8 compilation: selected full-model execution (2026-10-09)
+
+The separately approved ten-second/eight-step candidate completed, exit 0:
+sibling host outputs/fp8_10s_noaudio_geometry_comparison. Workload remains
+1280x704, 24 fps/241 frames, seed 43, no source-audio conditioning, generated
+audio active, latent output without decode. The same protected DLL and native
+ceilings were retained. The 1,660 standard FP8 Linears used 19 weight-geometry
+caches; denoise_completed and callback_retired were both true. No compiler
+limit increase or fallback to eager execution was applied by the helper.
+
+| Selected no-source-audio case | CUDA steady steps 2-8, s/it | Denoise CUDA, s | Total without decode, s |
+| --- | ---: | ---: | ---: |
+| BF16 control | 57.708845 | 462.089156 | 502.3321 |
+| FP8 geometry-isolated Linear compile | 63.442852 | 516.996156 | 596.6240 |
+
+FP8 CUDA step times: 72.875188, 63.910988, 64.192656, 64.001320,
+63.927133, 63.920270, 64.115055, 60.032543 s. The first interval includes
+lazy compilation; it is not an isolated compiler-duration measurement.
+FP8 is 9.94% slower in steady-state and 18.77% slower in one-shot total than
+the selected BF16 control. BF16 retains auxiliary ownership/source detachment;
+FP8 uses composite/root ownership. This compares supported routes, not dtype
+alone with identical ownership behavior.
+
+The older audio-conditioned uncompiled FP8 result was 67.918261 s/it and
+687.5026 s total. The new steady-state is 6.59% shorter, but audio conditioning
+and ownership-index setup differ between runs; do not attribute that entire
+difference to compilation. A matched no-source-audio uncompiled FP8 benchmark
+has not run. BF16 remains the selected performance reference; the candidate
+does not meet a speed-improvement acceptance criterion against BF16.
+
+Reported FP8 global sampled GPU peak is 6.293381 GiB baseline-relative, not
+absolute driver usage; global RSS peak is 25.480087 GiB. Transformer source DMA
+was 146,452,988,032 bytes. No cache-pressure entries, failed observations,
+temporary fallbacks or driver allocation-operation failures were reported.
+Source tickets collected from 132 to zero, native timeline events were released,
+and compiled callbacks retired after native retirement. CPU inspection confirmed
+finite float32 video latents (1, 27280, 128) and audio latents (1, 251, 128),
+with CUDA uninitialized during inspection. These are selected execution/cleanup
+checks, not decoded visual quality or exact full-model eager parity.
+
+The raw report retains its static validation description stating CUDA acceptance
+is pending; preserve this recorded field and use completed status, CUDA timing,
+compile completion and the separately recorded gates as actual execution evidence.
+No automatic additional benchmark, residency adjustment or default change follows.
+
+### Independent local host transformer: selected BF16 migration gate (2026-10-09)
+
+The separately approved sibling-host migration check completed with exit 0:
+`outputs/local_transformer_bf16_regression/metrics/modular_run.json` in the
+LTX-2 host. The report records implementation
+`diffusers_modules.local.transformer_ltx2_video`, loaded through the trusted
+custom-block component specification. DDO and the protected native DLL were
+unchanged (SHA256 EC5AB4700EE5D171CC06D8E9EC99C549F8D6CC3DFBE7FEB2683B93ADD0E829E6).
+
+Matched requested conditions: BF16, 1280x704, 10 s at 24 fps/241 frames,
+seed 43, eight steps, real prompt/image, no source-audio conditioning but
+generated audio active, latent output without decode. Transformer residency
+remained 1.5 GiB, encoder residency 4 GiB, staging 1.5 GiB and native source
+cache/registration 24.625 GiB. Phase modulation, compact timesteps, in-place
+residuals, rotary reuse, 1024-token chunks and auxiliary ownership were retained.
+No compilation, custom compute kernel or quantization was enabled.
+
+| Selected BF16 implementation | CUDA steady steps 2-8, s/it | Denoise CUDA, s | Total without decode, s |
+| --- | ---: | ---: | ---: |
+| Previous fork-backed control | 57.708845 | 462.089156 | 502.3321 |
+| Independent local transformer | 59.715444 | 477.993750 | 518.7514 |
+
+Steady-state was 3.48% longer and total was 3.27% longer, within the explicitly
+approved 5% investigation threshold. This single sequential comparison does
+not establish the cause of the timing difference or an improvement; retain the
+previous control as the performance reference. Sampled baseline-relative GPU
+peak was 6.390427 GiB versus 6.091766 GiB (about 0.30 GiB higher); the new run's
+denoise baseline-adjusted absolute estimate was 7.4173 GiB. Global sampled RSS
+peak was 28.587563 GiB. These are sampled observations, not allocation censuses.
+
+CPU inspection with CUDA uninitialized confirmed exact equality of both saved
+float32 tensors against the preserved control: video (1, 27280, 128), audio
+(1, 251, 128), maximum and mean absolute difference zero, all finite.
+Transformer source tickets were zero at final collection; native timeline
+pending/failures/dropped were zero and event_cleanup was released. No temporary
+fallback, fault/admission/source-read failure or source-pressure episode was
+reported. Allocation diagnostics completed without failure. The selected BF16
+migration gate passed; it does not validate FP8, optional kernel/compile variants,
+decoded visual quality, the image route, or arbitrary models. No additional CUDA
+run or budget adjustment is automatically authorized by this result.
+
+### Local FP8 chunk-reuse candidate: CPU only (2026-10-09)
+
+The sibling host implements opt-in per-FeedForward converted-weight reuse,
+without changing the native allocator, accepted BF16 route or existing FP8
+default. Retained BF16 temporaries are explicitly capped and event-owned; no
+full-model BF16 cache is added. Native projection boundaries remain installed.
+The selected CPU fixture demonstrated two conversions instead of 54 over 27
+token chunks, with exact backend outputs and no retained converted outputs.
+Consolidated final CPU acceptance: 92 tests and 11 subtests, 12.89 s. The local
+saved-checkpoint preflight also passed exact outputs, interruption recovery
+and cleanup with 128 KiB retained-weight peak and CUDA uninitialized
+(.internal/test-artifacts/fp8-chunk-preflight-20261009/report.json).
+
+This is not CUDA ownership, capacity or performance acceptance. Compiled compute
+was stubbed in the CPU configuration contract; event lifecycle contracts used
+test events. The preflight native budgets are requested controls, not executed
+native observations. A small compiled/native CUDA fixture is prepared in the
+host but has not been executed or approved. No generation benchmark, budget
+increase or speed-improvement claim follows from these CPU results.
+
+### FP8 chunk-reuse CUDA gate: setup failure (2026-10-09)
+
+The subsequently approved `outputs/fp8_chunk_reuse_cuda_gate_01` attempt stopped
+before candidate model execution: checkpoint conversion ran after native allocator
+bootstrap and correctly refused with `Run conversion in a fresh CPU-only process`.
+The partial checkpoint directory is preserved. No report was generated because
+preparation preceded the harness exception handler. This is a harness setup
+failure, not CUDA acceptance or evidence of a compute regression.
+
+The corrected harness requires a saved fixture from a passed CPU-only preflight
+for CUDA execution, records its file hashes, and includes preparation failures
+in report handling. The converter safety guard and native runtime are unchanged.
+A corrected CUDA attempt requires renewed approval; no video benchmark follows
+automatically.
+
+Corrected fixture-reuse CPU validation passed with CUDA uninitialized, exact
+outputs, interruption recovery, complete cleanup and a 128 KiB retained-weight
+peak. File hashes are recorded in
+`.internal/test-artifacts/fp8-chunk-fixture-reuse-cpu-20261009/report.json`.
+This does not validate compiled compute or native CUDA ownership.
+
+### Local FP8 chunk reuse: selected small native gate passed (2026-10-09)
+
+The separately approved corrected host gate completed with exit 0. Evidence:
+`E:/LTX-2/outputs/fp8_chunk_reuse_cuda_gate_02/report.json`. It reused the passed
+CPU fixture without conversion after native bootstrap. The protected DLL hash
+remained EC5AB4700EE5D171CC06D8E9EC99C549F8D6CC3DFBE7FEB2683B93ADD0E829E6.
+
+Eight compiled graphs were observed. Repeated outputs matched the backend
+reference exactly; deliberate RuntimeError and KeyboardInterrupt recovery passed.
+Across normal, interrupted and recovery calls: 22 FF scopes, 44 conversions and
+120 reuse hits. Retained-weight peak was 131072 bytes (the explicit 128 KiB cap),
+with zero pending/quarantined bytes after removal. Two event-specific waits took
+0.0001157 host seconds; this is not GPU timing. Cleanup completed and parameters
+returned to meta. The gate asserted zero native fault failures, temporary
+fallbacks and cache admission denials, with residency within the 6 MiB ceiling.
+Requested staging/source/cache limits remained 4 MiB/64 MiB/4 MiB respectively.
+
+This accepts only the small compiled/native ownership contract, not LTX quality,
+real-model memory headroom or performance. No image/linear/NVMe route, allocator
+implementation, default or full-model BF16 cache was changed. A real-model
+comparison remains separately approval-gated; no speedup is claimed.
+
+### Local FP8 FF chunk reuse: selected 10-second comparison (2026-10-09)
+
+The approved sibling-host comparison completed with exit 0. Evidence:
+`E:/LTX-2/outputs/fp8_10s_noaudio_chunk_reuse/metrics/modular_run.json`.
+Conditions matched the saved compiled FP8 control: 1280x704, 10 s at 24 fps
+(241 frames), seed 43, eight steps, real prompt/image, no source-audio conditioning,
+generated audio active and latent-only output. Native transformer/encoder
+residency remained 1.5/4 GiB, staging 1.5 GiB, source cache/registration
+24.625 GiB and the protected DLL was unchanged. FF/normalization chunks were
+1024 tokens; phase modulation, compact timesteps, in-place residuals and rotary
+reuse were retained. The candidate additionally used explicit 256 MiB scoped
+converted-weight retention and the independent local transformer. The older
+control used the fork-backed transformer, so this is not an isolated same-build
+toggle comparison, although saved outputs are exact.
+
+| Selected FP8 route | CUDA steady steps 2-8, s/it | Denoise CUDA, s | Total without decode, s | Sampled baseline-relative GPU peak, GiB |
+| --- | ---: | ---: | ---: | ---: |
+| Preserved compiled Linear control | 63.442852 | 516.996156 | 596.6240 | 6.293381 |
+| Local FF converted-weight reuse | 62.768249 | 510.155531 | 588.9593 | 5.920681 |
+
+Observed reductions were 1.06% steady and 1.28% total (7.66 s total), with
+0.372700 GiB lower sampled GPU delta. This single comparison does not establish
+a reproducible speedup. Candidate sampled baseline was 1.026855 GiB; global RSS
+peak was 25.477177 GiB. GPU observations are sampled baseline-relative deltas,
+not allocation censuses. The BF16 references remain faster in steady state.
+
+CPU-only inspection confirmed exact equality against the preserved FP8 output:
+float32 video latents (1, 27280, 128), audio latents (1, 251, 128), maximum/mean
+absolute difference zero, finite tensors and matching saved metadata. CUDA stayed
+uninitialized during this inspection; decoded visual quality was not tested.
+
+Actual reuse metrics: 192 configured projections, 768 FF scopes, 1536 conversions,
+19968 reuse hits, peak retained weights exactly 268435456 bytes. Pending and
+quarantined bytes were zero after removal; denoise completed and callbacks retired.
+There were 384 event-specific waits totaling 467.962575 host seconds. These waits
+overlap execution of queued GPU work and are already included in wall time; do
+not sum them with denoise time or interpret them as removable extra overhead.
+The single-FF-sized cap imposes frequent completion waits rather than retaining
+a full-model BF16 cache. No default, allocator or protected runtime was changed.
+Further capacity changes or benchmarks require separate approval.
+
+Native fault failures, temporary fallbacks, cache admission denials and pressure
+entries were zero; final source tickets were zero. Native timeline completed
+with zero pending/failures/dropped entries and allocation diagnostics completed
+without failure. These are selected-run observations, not arbitrary-model support.
+
+### Scoped FP8 operator diagnostic: compute attribution (2026-10-09)
+
+The separately approved diagnostic completed with exit 0, keeping the same
+10-second workload, 256 MiB retained-weight ceiling and native budgets, but using
+three denoise steps and two profiler captures of `transformer_blocks.0`.
+Evidence: `E:/LTX-2/outputs/fp8_chunk_reuse_operator_diagnostic/metrics/modular_run.json`
+and `operator_traces/operators_invocation_02.json` in that output directory.
+Operator diagnostics report complete, two samples and benchmark_eligible=false.
+The first capture includes compilation; use the third-invocation capture for
+the following attribution, not the instrumented pipeline timing as a benchmark.
+
+The third capture contained 1222 CUDA activity events, including 1179 kernels.
+Sum of kernel durations was 1.286211 s; this is a sampled kernel-duration sum,
+not an exclusive pipeline-wall-time decomposition or a driver-paging census.
+Attention operator device duration was 0.641213 s (six calls), with the two
+largest attention kernels totaling 0.636344 s. Matrix multiplication operator
+device duration was 0.484956 s (86 calls). These CPU-operator device aggregates
+refer to underlying kernels: never add operator and kernel values together.
+
+GPU child annotations placed video self-attention at 0.789409 s and video FF
+at 0.254316 s, both inclusive of their projections/other child kernels.
+The identified fused conversion kernel family (`triton_poi_fused__to_copy_mul_t_0`)
+totaled 0.002862 s over 34 calls; this name-based identification is not a census
+of every possible quantization-related operation. The two compiled add families
+totaled 0.016762 s over 86 calls. Aggregate attention and matmul costs dominate
+the sampled block, explaining why FF conversion reuse gave only a small gain.
+This is not evidence that an attention-backend switch would help or that the
+same costs explain a difference against an unmatched external implementation.
+
+The audio FF CPU range included a 1.223307 s cudaEventSynchronize call; its GPU
+annotation was only 0.001324 s. Waiting in that range retires queued earlier GPU
+work under the retained-weight cap, not 1.22 s of audio FF computation or extra
+time to add to the kernels. Reported reuse totals were 288 scopes, 576 conversions,
+7488 hits, 144 event waits and zero pending/quarantined bytes after retirement.
+Native faults, temporary fallbacks, source-cache admission denials, pressure
+entries and final source tickets were zero. Timeline completed without pending,
+failed or dropped entries; allocation diagnostics completed without failure.
+No additional benchmark, budget/backend change or default promotion follows.
+
+### Five-second FP8 group-offload control: unsupported pinning (2026-10-09)
+
+The separately approved A/B sequence stopped in its first case, before the first
+denoise step completed. Evidence:
+`E:/LTX-2/outputs/fp8_5s_group_control/metrics/modular_run.json` (status failed,
+exit 1). The standard Diffusers loader successfully loaded the ten-shard FP8
+checkpoint and the explicit recipe guard passed. Encoder/connectors/VAEs completed
+on official group routes, then transformer leaf-level group offloading installed.
+No native allocator, FP8 compute compilation or scoped weight reuse was requested.
+
+The first transformer projection triggered group offload's
+`_pinned_memory_tensors`: it calls `tensor.pin_memory()` for its streamed CPU
+parameter dictionary. TorchAO 0.18 Float8Tensor dispatch refused
+`aten.pin_memory.default` with NotImplementedError. This is an incompatibility
+of the selected streamed group/TorchAO route, not OOM, failed FP8 reconstruction,
+model-forward failure or native DDO evidence. Source inspection confirms the
+selected group implementation avoids that pinning branch when use_stream=false;
+that alternative has not been executed or accepted for this workload.
+
+Partial total was 45.0354 s, sampled global GPU delta 2.251953 GiB and RSS
+25.983688 GiB; these are failed-run/setup observations, not denoise benchmarks or
+capacity limits. There are no matched throughput numbers or saved video latents.
+The native second case was not started, honoring stop-on-first-failure approval.
+No Diffusers/TorchAO patch, stream-setting change or retry was performed. The
+working native FP8 route remains unchanged; any amended comparison requires
+renewed approval and explicit labeling of the offload stream difference.
+
+### FP8 five-second streamless group control — failed (2026-10-09)
+
+The separately approved amendment kept the same checkpoint, 1280x704, 5 s at
+24 fps, eight steps, seed 43 and local forward options. Only transformer official
+leaf-group `use_stream` changed to false; auxiliary events confirm true. Evidence:
+`E:/LTX-2/outputs/fp8_5s_group_no_stream_control/metrics/modular_run.json`.
+
+The first projection failed before completing step one: standard Float8Tensor
+CPU-to-CUDA `.to()` reached TorchAO alias correction and PyTorch rejected assigning
+CPU storage to a CUDA tensor. This bypassed pinning but did not establish a usable
+control. No OOM was reported. Partial total 31.8042 s, GPU delta peak 2.251953 GiB,
+RSS peak 25.983658 GiB are setup/failure observations, not throughput results.
+No saved latents/parity or matched speed numbers are available. The native second
+case was not run, respecting stop-on-first-failure approval. Existing native,
+BF16/image and allocator defaults were not changed; no backend dispatch or
+dependency patch was introduced. Both failures apply to the selected installed
+stack, not all official group/TorchAO versions or platforms.
+
+### Isolated FP8 CUDA transfer diagnostic — passed (2026-10-09)
+
+`E:/LTX-2/outputs/fp8_transfer_probe_cuda_01.json`: ordinary CUDA, Torch
+2.12.1+cu132 / TorchAO 0.18.0, one freshly quantized 16x16 Linear, no LTX or DDO.
+Dense control and four parameter/data default/copy=True transfers passed; FP8
+bytes/scales were exact, outputs finite, synchronization successful. Peak PyTorch
+allocation 8,524,800 bytes is a tiny diagnostic, not generation capacity evidence.
+The runner failure was not reproduced: fresh quantization and transfer invocation
+do not cover the saved-checkpoint/official-hook lifecycle. Do not claim copy=True
+fixes the failed group control or that generic CUDA transfer is broken. No
+benchmark retry, dispatch patch or accepted-runtime change followed this result.
+
+### Saved FP8 official-hook diagnostic — passed (2026-10-09)
+
+`E:/LTX-2/outputs/fp8_saved_group_cuda_01/report.json`: one saved/reloaded 16x16
+Diffusers Linear, standard loader and official streamless leaf hooks. Direct
+group-style transfer and two forwards passed with exact CUDA-reference outputs
+and restored CPU FP8 bytes/scales. Peak PyTorch allocation was 8,525,312 bytes.
+No DDO runtime, dependency patch or full-model retry. The LTX failure remains
+unreproduced; host `torch.inference_mode()` was not covered by this initial probe.
+This is a diagnostic limitation, not proof the failed comparison now works.
+
+### FP8 hook inference-context reproduction — failed (2026-10-09)
+
+`E:/LTX-2/outputs/fp8_saved_group_inference_cuda_01/report.json` reuses exactly
+the passing saved-checkpoint fixture hashes. Direct transfer outside
+inference_mode passed; the first official streamless hook forward inside
+torch.inference_mode reproduced the full runner's CPU/CUDA storage-alias error
+in TorchAO `aten.to.dtype_layout` / PyTorch `_functionalize_unsafe_set`.
+The selected hook contract therefore has an isolated execution-context trigger,
+not an established native allocator, LTX-forward or capacity defect. The streamed
+pin_memory failure remains separate. No runtime changes or full-model retry
+followed this probe. A group-control-only no_grad context is a proposed workaround,
+not yet a validated generation baseline or fix for streamed offload.
+
+### FP8 five-second official group/native A/B — completed (2026-10-09)
+
+Matched saved FP8 checkpoint/local transformer: 1280x704, 5 s at 24 fps,
+121 frames, eight steps, seed 43, real prompt/image, no source audio but generated
+audio active, latent-only output. Same 1024-token FF/normalization chunks,
+phase/compact modulation, residual/RoPE reuse; no FP8 compilation or chunk weight
+reuse. Evidence: `E:/LTX-2/outputs/fp8_5s_group_no_grad_control/metrics/modular_run.json`
+and `E:/LTX-2/outputs/fp8_5s_native_control/metrics/modular_run.json`.
+
+| Measurement | Official leaf group, no stream/no_grad | DDO native, inference_mode |
+| --- | ---: | ---: |
+| Transformer load/prepare + attach (s) | 15.7939 + 0.2060 | 34.3141 + 12.3416 |
+| Denoise phase (s) | 411.2244 | 235.2354 |
+| Total tracked execution, latent output (s) | 443.4385 | 316.2860 |
+| Sampled global GPU delta peak (GiB) | 2.283203 | 5.523609 |
+| Sampled absolute driver GPU peak (GiB) | 3.3101 | 6.5505 |
+| Sampled global process RSS peak (GiB) | 27.634579 | 25.981510 |
+
+Native denoise time fell 42.7963% (1.7481x speedup); total fell 28.6742%, saving
+127.1525 s despite greater setup cost. Single selected A/B, not a claim against
+working streamed FP8 group offload or repeated-run statistics. The control uses
+no_grad to avoid the reproduced alias defect; native retains inference_mode.
+Auxiliary components use official streamed hooks in both, with native global
+allocator installation an intended difference. No per-step CUDA timer: phase/8
+is not steady-state. Total excludes VAE decode/MP4 encoding.
+
+Saved Float32 video `[1,14080,128]` and audio `[1,126,128]` latents and metadata
+were exactly equal in CPU comparison, finite, max/mean absolute error and relative
+RMS zero. Native fault failures, temporary fallbacks, source-cache admission
+denials/pressure entries, source-read failures and quarantine bytes were zero;
+132 source tickets collected to zero. GPU deltas use the 1.026855 GiB baseline,
+not a weight-residency measurement. Native kept the selected DLL hash unchanged,
+1.5 GiB weight/staging and 24.625 GiB source/registration ceilings. This is selected
+FP8 compatibility/performance evidence, not generic recipe support or BF16 quality
+equivalence. No further benchmark or default change was made.

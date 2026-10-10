@@ -1,5 +1,17 @@
 # Native VMM support checkpoint (2026-10-03)
 
+## Current addendum (2026-10-10)
+
+The original BF16 Windows/Linux checkpoint below remains valid for its preserved
+binaries and workloads. Subsequent video and FP8 evidence is recorded in the
+[benchmark sidecar](../experiments/dynamic_offload_results.md).
+Experimental saved TorchAO FP8 transport is model-agnostic and has selected small
+CUDA and Windows real-model acceptance, including exact group/native latent parity.
+It is not an LTX-only feature, automatic quantized admission, a general model claim
+or Linux FP8 validation. See [FP8 contract and boundaries](fp8-weight-only.md).
+LTX-specific compute/pipeline changes remain in the sibling host, not native
+residency policy. No selected default or binary is promoted by this documentation.
+
 ## Routes and evidence
 
 `linear/auto` still uses the established linear preset; `vmm/auto` selects the

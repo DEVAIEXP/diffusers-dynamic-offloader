@@ -1028,3 +1028,30 @@ records remain intact. Abrupt termination can leave an unpublished `.tmp` file.
 The journal scope drops its result reference on exit, avoiding retention of an
 unloaded model. Final metrics, latent validation and cleanup gates remain
 separate requirements.
+
+## Experimental FP8 component-lifetime root state
+
+These additive fields apply only when explicit native FP8 ownership includes
+bounded plain parameters at the component root. They are not component buffers
+or streamed unit parameters. Missing fields on other/historical routes are
+unavailable, not evidence of zero memory use.
+
+| Field | Unit / collection | Interpretation and diagnostic action |
+| --- | --- | --- |
+| `component_lifetime_parameter_groups` | count / capacity preflight or component ownership report | Root identity-unique parameter groups. Cross-scope aliases are refused. |
+| `component_lifetime_parameter_bytes` | bytes / capacity preflight or component ownership report | Exact root payload, excluding page padding. Root payload plus buffers must fit the explicit component limit. |
+| `component_lifetime_native_capacity_bytes` | bytes / component ownership publication | Native single-buffer capacity, including page rounding; not sampled total GPU usage. |
+| `component_lifetime_budget_charge_bytes` | bytes / component ownership attachment | Capacity reserved from the caller's existing total weight ceiling. Must match native buffer capacity. |
+| `declared_total_weight_ceiling_bytes` | bytes / component ownership attachment | Unchanged caller ceiling; it is not measured residency. |
+| `arena_weight_ceiling_bytes` | bytes / component ownership attachment | Declared ceiling minus lifetime backing charge. Small remaining values can refuse streaming admission. |
+| `component_lifetime_uploads` | count / component ownership publication | One successful setup upload; no root transfer per denoising step. |
+| `fast_component_lifetime_capacity_bytes` | bytes / native runtime snapshot | Capacity of the currently retained lifetime backing. |
+| `fast_component_lifetime_resident_bytes` | bytes / native runtime snapshot | Actual mapped physical residency of that native backing. |
+
+Runtime fields live under `runtime.vmm`; ownership fields live in the public
+component ownership report, and capacity fields in component preflight.
+`fast_total_weight_resident_bytes` includes model arena, streamed execution
+slots and component-lifetime backing. `fast_file_backed_bindings` and
+`fast_file_backed_bytes` include the root immutable sources. These measurements
+are not absolute driver GPU usage or process RSS. CPU contract acceptance does
+not establish native CUDA admission, generation quality or performance.

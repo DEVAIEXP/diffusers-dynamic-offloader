@@ -148,6 +148,54 @@ describe units, collection points, interpretation and diagnostic actions.
 
 ## Remaining delivery work
 
+Native Linux follow-up (2026-10-12): the cgroup-root correction passed the real
+CPU contract, isolated build/linkage, approved small trim/source-cache CUDA gate
+and one targeted LTX image generation with official Diffusers 0.41.0. PNG parity
+with the preserved Linux control passed. See
+[candidate evidence](native-linux-cgroup-review-gate.md) for the hash and scope.
+The host now locks CPU TorchAudio only on Linux/WSL, retaining CUDA Torch and
+Windows selection. Accepted old binaries remain preserved, without default
+promotion. This does not validate a fresh-install matrix or complete native
+wheel/source-build installation delivery.
+
+### Unified native installation roadmap (2026-10-12)
+
+The user requested one public installation flow, not separate runtime code or
+runner recipes for each Linux distribution. Keep one allocator source/API and
+bootstrap contract. Platform and ABI-specific binaries are build artifacts, not
+different implementations.
+
+- Deliver compatible native wheels for supported platforms, with explicit Linux
+  minimum glibc/C++ runtime requirements and verified binary manifests. Ordinary
+  wheel installation must not require a compiler or a user-supplied library path.
+- Provide a documented, explicit source-build path for environments without a
+  compatible wheel. Review toolkit/compiler requirements and preserve accepted
+  artifacts. Do not compile at import or inference startup.
+- Consolidate example-host setup guidance: separate Windows/Linux/WSL virtual
+  environments, system FFmpeg shared libraries, optional development/quantization
+  extras, and the Linux/WSL TorchAudio CPU override. Make the audio selection
+  reproducible rather than relying permanently on a post-sync manual replacement.
+- Verify wheel discovery, ABI compatibility and the supported source-build path
+  before marking native installation delivery complete. Python editable package
+  assembly alone does not compile or install the native allocator.
+
+WSL's selected finite validation sequence is now closed; see
+[WSL evidence](native-wsl-idle-trim-gate.md). The corrected Ubuntu 22.04 build
+passed three small source/cache CUDA contracts and selected staged BF16 LTX
+image, conditioned video, and Qwen image/leaf-VAE generations. Registration
+capacity is constrained in this tested environment; model runs used 384 MiB
+staging and a separate 512 MiB source-registration ceiling. This does not
+establish arbitrary-model WSL support, full-cache registration performance,
+or automatic tuning. Unified native installation delivery remains pending.
+
+Historical preparation boundary: the preserved
+Linux idle-trim binary has the expected hash but cannot load with this WSL
+distribution's glibc/C++ runtime. Build a separate WSL candidate from the same
+source; never overwrite accepted Linux or Windows binaries or upgrade system
+glibc to accommodate the old artifact. A successful build is not WSL CUDA or
+model acceptance. Continue one user-executed command at a time, with explicit
+approval before CUDA gates.
+
 User-approved scope update: Windows development acceptance closes on the
 selected performance and critical robustness evidence above. Do not add an
 open-ended longevity/model/environment matrix or chase the remaining small

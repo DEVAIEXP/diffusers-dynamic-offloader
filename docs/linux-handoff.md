@@ -4,6 +4,112 @@ Read this first in a new Linux chat. This document carries project state without
 requiring the Windows conversation history. It is a handoff, not a declaration
 of Linux runtime support.
 
+## Current continuation: selected Linux closure (2026-10-12)
+
+Native Linux execution update: the cgroup-root CPU contract passed and the
+separate candidate compiled with resolved linkage/required exports. See
+[cgroup review gate](native-linux-cgroup-review-gate.md) for source identity,
+hash and preserved binaries. Steps 1–2 below are complete for this candidate;
+environment transition, approved candidate CUDA evidence and reviewed commits
+remain pending. No CUDA execution, dependency replacement or promotion occurred.
+
+Subsequent execution: official Diffusers 0.41.0 replaced only the host editable
+fork; imports/package consistency and 152 CPU tests plus 10 subtests passed.
+The separately approved candidate trim probe and three CUDA cache contracts
+then passed (3 tests in 1.16 s, no skips); see the cgroup review gate for the
+exact hash/counters. No model generation or promotion occurred. Remaining:
+targeted model acceptance for the changed environment, platform audio lock
+reproducibility and the authorized local-commit checkpoint. Do not repeat the
+closed model matrix automatically.
+
+The subsequently approved single LTX image generation also passed on the new
+hash with official Diffusers 0.41.0: identical PNG to the Linux control, complete
+8-step timing, no reported native/monitor failures, transformer tickets collected
+to zero. Targeted environment/model acceptance is now closed; do not rerun video
+or Qwen automatically. See the cgroup review gate and host dated benchmark log.
+Platform audio reproducibility and reviewed local commits remain; no promotion
+or publication occurred.
+
+Audio reproducibility update: the host now locks CPU TorchAudio specifically for
+Linux/WSL, retaining Windows selection and CUDA Torch/media indices. Lock check
+and existing Linux sync dry-run passed without proposing Torch/Diffusers/audio
+changes. No actual sync ran. Remaining closure is review/authorization of local
+commits and source pinning; preserve `processo.txt`, ignored artifacts and
+accepted binaries. No further CUDA/model test is automatically required.
+
+Read this addendum before the historical checklists below. The finite WSL BF16
+sequence is closed: small source/cache contracts, LTX image, conditioned
+five-second video and Qwen with leaf VAE passed. See
+[WSL technical evidence](native-wsl-idle-trim-gate.md) and sibling examples
+`docs/wsl-host-environment.md` / `experiments/dynamic_offload_results.md`.
+WSL acceptance is not native-Linux acceptance or matched cross-platform speed.
+
+The native Linux workload gates already accepted remain closed and tied to
+their original binaries/environments. Do not repeat the complete matrix.
+The original finite checklist is preserved below. Its CPU/build/environment/
+CUDA/targeted-generation steps are now complete within their recorded scope.
+Do not rerun them from this historical proposal; the remaining checkpoint step
+is local review/commit, followed separately by installation-delivery roadmap work.
+
+1. **CPU regression for the WSL-discovered fix (completed).** The native header
+   `ddo-vmm-allocator/native/src/linux_host_memory.h` now preserves canonical
+   cgroup mount-root identity for empty relative paths. This fixes WSL root
+   admission without disabling host/cgroup/process limits. Run the updated
+   `native/tests/linux_host_test.cpp` on actual native Linux; its added cases
+   cover root membership and exact subtree mount roots. Review the source diff
+   first. Preserve overcommit policy and all OS limits.
+2. **Separate Linux candidate build (completed).** Inspect actual compiler/toolkit and the
+   accepted build feature configuration. Compile current sources into a new
+   explicitly named directory, never over the approved `build-linux` or
+   `build-linux-idle-trim-20261011` artifacts. The existing build helper uses
+   fixed output paths, so review direct CMake commands before running it.
+   Record source revision/dirty state, options, ABI/link checks and SHA256.
+   The tested WSL `.so` is not the Linux delivery binary.
+3. **Reproducible host environment (completed for the reviewed host lock).** Inspect `.venv-linux` imports and freeze
+   using its direct interpreter before changing dependencies. Its accepted
+   local-fork/audio overrides are historical. Current host lock selects official
+   Diffusers 0.41.0; Linux/WSL audio selection still requires the reviewed
+   TorchAudio CPU-wheel override. A fresh sync can undo it. Do not silently sync,
+   replace the fork, or transfer Windows acceptance to changed Linux packages.
+4. **Small approved candidate CUDA gate (completed, without promotion).** After CPU/build
+   success, propose a finite idle-pool trim plus the three selected small native
+   source/cache contracts on the new hash. Show exact commands, fixed limits
+   and acceptance criteria; wait for confirmation and stop on failure. Do not
+   inherit the old binary's CUDA evidence. A dependency transition that changes
+   the tested model environment needs a separately approved targeted generation
+   before claiming model compatibility, not an automatic image/video/Qwen matrix.
+5. **Review local checkpoint.** Inspect all dirty checkouts and user changes.
+   Commit allocator first, update DDO's submodule pin second, then commit host
+   documentation/lock changes separately when authorized. No push, history
+   rewrite or publication is implied. Unified native wheel discovery/source-build
+   installation remains roadmap work, not completed automatic installation.
+
+CPU-only command from the DDO root, after creating an isolated output directory
+and checking the local compiler:
+
+```bash
+mkdir -p ddo-vmm-allocator/build-linux-cgroup-review-20261012
+g++ -std=c++20 -O2 -I ddo-vmm-allocator/native/src \
+  ddo-vmm-allocator/native/tests/linux_host_test.cpp \
+  -o ddo-vmm-allocator/build-linux-cgroup-review-20261012/linux_host_test
+ddo-vmm-allocator/build-linux-cgroup-review-20261012/linux_host_test
+```
+
+This command tests CPU contracts only; it is not CUDA authorization. Ensure the
+output directory is new for this review and does not replace a preserved binary.
+No WSL registration ceiling should automatically become a native-Linux default.
+
+### Historical finite-gate resume prompt (completed)
+
+> Read DDO/allocator AGENTS.md, docs/linux-handoff.md (2026-10-12 addendum),
+> docs/native-wsl-idle-trim-gate.md and the sibling examples WSL/environment and
+> benchmark records. Preserve approved Windows/native-Linux artifacts and dirty
+> files. Finish only native Linux CPU regression of cgroup-root identity, an
+> isolated candidate build, environment reproducibility review and an approved
+> small CUDA candidate gate if promoting it. Model testing is targeted only if
+> the environment transition requires it. Do not repeat the closed benchmark
+> matrix, silently sync dependencies, change OS limits or publish anything.
+
 ## Current continuation addendum (2026-10-11)
 
 Windows subsequently moved the primary host and optional DDO development

@@ -157,6 +157,7 @@ def test_explicit_group_and_dynamic_enable_arguments_win():
         group_offload=True,
         use_stream=True,
         execution_device="cpu",
+        running_on_wsl=False,
         use_environment=False,
         apply_hook=False,
     )
@@ -170,3 +171,21 @@ def test_explicit_group_and_dynamic_enable_arguments_win():
         apply_hook=False,
     )
     assert resident.route == "none"
+
+
+def test_explicit_group_streams_remain_disabled_by_wsl_safety_policy():
+    result = enable_offload(
+        nn.Conv2d(2, 2, 1),
+        component="vae",
+        group_offload=True,
+        use_stream=True,
+        record_stream=True,
+        execution_device="cpu",
+        running_on_wsl=True,
+        use_environment=False,
+        apply_hook=False,
+    )
+    assert result.route == "diffusers_group_offload"
+    assert result.settings.disable_pin_on_wsl is True
+    assert result.event_payload["use_stream"] is False
+    assert result.event_payload["record_stream"] is False

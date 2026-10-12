@@ -440,11 +440,10 @@ nvtx = [
 
 [[package]]
 name = "diffusers"
-version = "0.40.0.dev0"
-source = { git = "https://github.com/DEVAIEXP/diffusers.git?rev=e71ebc5858961e2a37d6a7b161d00ae0063c3ab7#e71ebc5858961e2a37d6a7b161d00ae0063c3ab7" }
+version = "0.41.0"
+source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "filelock" },
-    { name = "httpx" },
     { name = "huggingface-hub" },
     { name = "importlib-metadata" },
     { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
@@ -454,6 +453,10 @@ dependencies = [
     { name = "regex" },
     { name = "requests" },
     { name = "safetensors" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/a8/bc/34a91d366fe8e546637d702403e4d8cd5dbdf705a15fb3725d34a7ab3416/diffusers-0.41.0.tar.gz", hash = "sha256:69dcced7230b6bc0b70b5c6cfdff1aa62da487ab52ae74b642e46b1b9bfacc47", size = 5026281, upload-time = "2026-10-06T06:24:14.884Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/fe/c4/5bf8afd1ff3a8d99da7a18b1067ae0b4e2a037c38f3851890a989c511fd3/diffusers-0.41.0-py3-none-any.whl", hash = "sha256:ea8918b7dfd92ce793b6db689a551b8cd25d52c6c0fcd3ade0706a5fd2a25990", size = 6063887, upload-time = "2026-10-06T06:24:12.455Z" },
 ]
 
 [[package]]
@@ -521,8 +524,8 @@ requires-dist = [
     { name = "cuda-core", marker = "extra == 'vmm-dev-linux'", specifier = ">=1.2.0" },
     { name = "cuda-toolkit", extras = ["nvcc", "cccl"], marker = "python_full_version == '3.12.*' and sys_platform == 'linux' and extra == 'vmm-dev-linux'", specifier = "==13.2.1" },
     { name = "diffusers" },
-    { name = "diffusers", marker = "extra == 'vmm-dev'", git = "https://github.com/DEVAIEXP/diffusers.git?rev=e71ebc5858961e2a37d6a7b161d00ae0063c3ab7" },
-    { name = "diffusers", marker = "extra == 'vmm-dev-linux'", git = "https://github.com/DEVAIEXP/diffusers.git?rev=e71ebc5858961e2a37d6a7b161d00ae0063c3ab7" },
+    { name = "diffusers", marker = "extra == 'vmm-dev'", specifier = "==0.41.0" },
+    { name = "diffusers", marker = "extra == 'vmm-dev-linux'", specifier = "==0.41.0" },
     { name = "diffusers-mm", marker = "extra == 'vmm-dev'", git = "https://github.com/asomoza/diffusers-mm.git?rev=ec5a40f1b8279e86f2b8c7a1872018f213d441f6" },
     { name = "einops", marker = "extra == 'vmm-dev'", specifier = "==0.8.2" },
     { name = "einops", marker = "extra == 'vmm-dev-linux'", specifier = "==0.8.2" },
@@ -660,7 +663,7 @@ wheels = [
 
 [[package]]
 name = "huggingface-hub"
-version = "1.31.0"
+version = "1.33.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "click" },
@@ -670,12 +673,13 @@ dependencies = [
     { name = "httpx" },
     { name = "packaging" },
     { name = "pyyaml" },
+    { name = "tomli", marker = "python_full_version < '3.11'" },
     { name = "tqdm" },
     { name = "typing-extensions" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/9b/f0/61159db90b5cd275d55516fe27920828e7d3be4053fdbdb27c3f70e5f1ef/huggingface_hub-1.31.0.tar.gz", hash = "sha256:f8e9e710a210613fa5d0f26bba6da05ef4aef9fba5a0f23f508f5ac4d08b6f90", size = 968039, upload-time = "2026-09-10T10:27:22.724Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/25/2a/484d112c0d8fc5f665d7b65137ac9cdb2953c982391598c3597968a12ee7/huggingface_hub-1.33.0.tar.gz", hash = "sha256:367be21a201db9523eddf8aeac7048f2602c1b308691c97640d5e72ed188007e", size = 1043548, upload-time = "2026-09-24T09:49:29.971Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/c3/7f/3f886a625043b77312b80da2f2bf00b5ecbf5a73061af1aa0259cd258c9d/huggingface_hub-1.31.0-py3-none-any.whl", hash = "sha256:9dbb6a503cbe2494ea666695207e7262d410659e09134059deb83e5480864667", size = 798313, upload-time = "2026-09-10T10:27:20.798Z" },
+    { url = "https://files.pythonhosted.org/packages/fc/16/963096d224b80909432dc16561a615fd33d2d13beef3ce4c63fa25e40867/huggingface_hub-1.33.0-py3-none-any.whl", hash = "sha256:04e434b06e100eddbce9a6e817d72693a7884b10a79bd67ab48080d5c07eb899", size = 846435, upload-time = "2026-09-24T09:49:28.059Z" },
 ]
 
 [[package]]

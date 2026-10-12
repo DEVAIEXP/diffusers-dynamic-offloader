@@ -71,6 +71,54 @@ def test_generic_layout_includes_norms_and_shared_native_range_once(tmp_path):
     assert layout.buffer_bytes == 4
 
 
+@pytest.mark.parametrize("dimensions", [1, 2, 3])
+def test_component_convolutions_preserve_decode_method_and_retire_owners(tmp_path, monkeypatch, dimensions):
+    """CPU publication contract, not CUDA convolution or memory acceptance."""
+    convolution = getattr(torch.nn, f"Conv{dimensions}d")
+
+    class DecoderComponent(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.projection = convolution(2, 2, 1)
+            self.blocks = torch.nn.ModuleList([
+                torch.nn.Sequential(convolution(2, 2, 3, padding=1), torch.nn.GroupNorm(1, 2))
+            ])
+
+        def forward(self, value):
+            raise AssertionError("decode must not call the component's forward")
+
+        def decode(self, value):
+            value = self.projection(value)
+            for block in self.blocks:
+                value = block(value)
+            return value
+
+    root = DecoderComponent().eval()
+    sample = torch.randn((1, 2) + (4,) * dimensions)
+    expected = root.decode(sample).detach()
+    original_forward = type(root.projection).forward
+    source = weakref.ref(root.projection.weight)
+    path = tmp_path / "convolutions.safetensors"
+    save_file({name: value.detach() for name, value in root.named_parameters()}, str(path))
+    _attach_safetensor_file_slices(root, [path])
+    layout = discover_component_layout(root, root._ddo_safetensor_slices, buffer_limit_bytes=0)
+    assert [name for name, _, _ in layout.units] == ["projection", "blocks.0"]
+    assert len(layout.parameters) == 6
+    adapter, installed = fake_adapter(layout, monkeypatch)
+    with patch("torch.cuda.init", side_effect=AssertionError("CUDA")):
+        report = adapter.attach_component(layout)
+        torch.testing.assert_close(root.decode(sample), expected, rtol=0, atol=0)
+    gc.collect()
+    assert source() is None
+    assert type(root.projection).forward is original_forward
+    assert report.attached_tensors == 6
+    assert len(installed) == 2
+    assert all(not isinstance(binding.source, torch.Tensor) for unit in installed for binding in unit.tensors)
+    adapter.close()
+    assert all(parameter.device.type == "meta" for parameter in root.parameters())
+    root._ddo_safetensor_slices.close()
+
+
 def test_publication_connects_one_binding_to_multiple_units_without_cpu_loader_retention(tmp_path, monkeypatch):
     root, layout = prepared(tmp_path)
     expected = root(torch.tensor([0, 4])).detach()

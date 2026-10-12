@@ -25,6 +25,24 @@ Configuration is resolved in this order:
 
 Component-specific environment variables can override a route for one component without changing the rest of the pipeline.
 
+### VAE component policy
+
+`enable_offload(vae, component="vae", preset="auto")` now selects official
+Diffusers leaf offload without a stream. `one_shot_fast`, `low_ram_safe` and
+resolved `vmm_fast` settings use the same VAE policy. This is component routing,
+not a change to the transformer runtime, residency budgets or allocator.
+`warm_process`, `wsl_compat` and `nvme_baseline` keep the historical staged-host
+resident VAE; `off` remains unmanaged. See [component strategies](component-strategies.md)
+for overrides, lifecycle boundaries and acceptance limitations.
+
+An explicit `route` wins over a component policy. Explicit component policies
+win over component environment values and built-in component defaults.
+An explicit `DynamicOffloadConfig`, runtime overrides, or group/dynamic enable
+arguments bypass the new preset route fallback; they are not silently replaced
+with leaf. `use_environment=False` disables environment route overrides as well
+as environment config loading. The low-level `enable_dynamic_offload` API does
+not select component routes.
+
 ## DynamicOffloadSettings
 
 `DynamicOffloadSettings` is the high-level resolved settings object. Most users do not need to instantiate it directly.

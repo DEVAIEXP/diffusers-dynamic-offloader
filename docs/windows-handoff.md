@@ -1,5 +1,22 @@
 # Resume on Windows after Linux closure
 
+## Current continuation: 2026-10-11
+
+The primary host is now sibling `ddo-examples`, not the historical LTX host.
+Read its [current Windows handoff](../../ddo-examples/docs/windows-handoff.md)
+before using the older instructions below. The new host Linux environment,
+isolated idle-trim .so/probe, LTX image/video VAE pairs and Qwen 512-square
+leaf/linear/VMM comparison passed their selected gates. No further Linux
+benchmark is authorized or needed automatically, and no commits/push occurred
+in this session. Reproducible environment overrides, reviewed local commits,
+matched Windows Qwen gaps, Windows Qwen SDNQ and independent WSL work remain.
+Technical evidence is in [the idle-trim gate](native-linux-idle-trim-gate.md);
+pipeline tables belong to the examples host. Preserve accepted binaries and
+the historical October 4 evidence below; its revision/environment/coverage
+statements describe that earlier checkpoint, not the current full state.
+
+## Historical continuation: 2026-10-04
+
 Updated 2026-10-04. This document provides continuation context for Codex on
 Windows. The Linux stage and local naming migration are complete within the
 validated scope; publication and general support are not complete.

@@ -398,6 +398,21 @@ _DYNAMIC_OFFLOAD_PRESET_VALUES: dict[str, dict[str, str]] = {
 
 DDO_PRESETS = _DYNAMIC_OFFLOAD_PRESET_VALUES
 
+# Component routing is independent of transformer residency/planner defaults.
+_VAE_LEAF_POLICY = {
+    "ROUTE": "diffusers_group_offload", "OFFLOAD_TYPE": "leaf_level",
+    "OFFLOAD_STREAM": "0", "OFFLOAD_LOW_CPU_MEM_USAGE": "0",
+}
+_PRESET_COMPONENT_POLICIES = {
+    "one_shot_fast": {"vae": _VAE_LEAF_POLICY},
+    "low_ram_safe": {"vae": _VAE_LEAF_POLICY},
+    "vmm_fast": {"vae": _VAE_LEAF_POLICY},
+    # Preserve the historical staged-host resident VAE for unvalidated presets.
+    "warm_process": {"vae": {"ROUTE": "none"}},
+    "wsl_compat": {"vae": {"ROUTE": "none"}},
+    "nvme_baseline": {"vae": {"ROUTE": "none"}},
+}
+
 
 def get_dynamic_offload_presets() -> dict[str, dict[str, str]]:
     return {preset_name: dict(values) for preset_name, values in DDO_PRESETS.items()}
@@ -545,6 +560,7 @@ class DynamicOffloadConfig:
     small_tensor_threshold_bytes: int = 16 * 1024
     execution_mode: str = "plan"
     linear_runtime_strategy: str = "functional"
+    linear_convolution_offload: bool = False
     vmm_resident_weight_budget_gb: float = 0.0
     vmm_staging_buffer_gb: float = 0.625
     vmm_windows_file_read_chunk_mb: int = 2
@@ -605,6 +621,15 @@ class DynamicOffloadConfig:
     load_safetensors_backend: str = ""
     verbose: bool = False
     show_profile: bool = True
+
+    def __post_init__(self):
+        if self.linear_convolution_offload:
+            if self.execution_mode != "linear_runtime":
+                raise ValueError("Convolution offload is only available in linear_runtime")
+            targets = self.target_module_classes + tuple(
+                kind for kind in (nn.Conv1d, nn.Conv2d, nn.Conv3d) if kind not in self.target_module_classes
+            )
+            object.__setattr__(self, "target_module_classes", targets)
 
 
 @dataclass(frozen=True)
@@ -1178,6 +1203,8 @@ class DynamicOffloadHook(ModelHook):
         return module
 
     def detach_hook(self, module: nn.Module) -> nn.Module:
+        if getattr(self, "_linear_convolution_active", 0):
+            raise RuntimeError("Cannot detach during an active offloaded convolution")
         self._clear_vmm_execution_groups()
         self._restore_patches()
         self._close_vmm_store(module)
@@ -1289,6 +1316,11 @@ class DynamicOffloadHook(ModelHook):
         return value
 
     def _prepare_linear_runtime(self, module: nn.Module) -> None:
+        if self.config.linear_convolution_offload:
+            from .linear_convolution import validate_convolutions
+
+            validate_convolutions(module, self.config)
+            self.state.planner_decisions["linear_convolution_offload"] = True
         skip_patterns = tuple(re.compile(pattern) for pattern in self.config.skip_modules_pattern)
         resident_patterns = tuple(re.compile(pattern) for pattern in self.config.always_resident_modules_pattern)
         if self.state.resolved_resident_module_patterns:
@@ -1367,6 +1399,11 @@ class DynamicOffloadHook(ModelHook):
                     modules_to_pin,
                 )
                 self._patch_linear(submodule)
+            elif self.config.linear_convolution_offload and isinstance(submodule, (nn.Conv1d, nn.Conv2d, nn.Conv3d)):
+                self._move_linear_to_runtime_devices(module_name, submodule, modules_to_pin)
+                from .linear_convolution import patch_convolution
+
+                patch_convolution(self, submodule)
             elif isinstance(submodule, nn.Embedding):
                 self._move_embedding_to_runtime_devices(
                     module_name,
@@ -2129,7 +2166,10 @@ class DynamicOffloadHook(ModelHook):
     ) -> list[tuple[str, nn.Module, int]]:
         candidates: list[tuple[str, nn.Module, int]] = []
         for module_name, submodule in module.named_modules():
-            if module_name == "" or not isinstance(submodule, (nn.Linear, nn.Embedding)):
+            targets = (nn.Linear, nn.Embedding)
+            if self.config.linear_convolution_offload:
+                targets += (nn.Conv1d, nn.Conv2d, nn.Conv3d)
+            if module_name == "" or not isinstance(submodule, targets):
                 continue
             if isinstance(submodule, nn.Linear) and not self._can_patch_linear(submodule):
                 continue
@@ -2973,6 +3013,8 @@ def _component_preset_value(
     name: str,
     default: str = "",
     environ: Mapping[str, str] | None = None,
+    *,
+    allow_preset_policy: bool = True,
 ) -> str:
     policy_item = _policy_value(_component_policy(settings, component), name)
     if policy_item is not None:
@@ -2983,6 +3025,9 @@ def _component_preset_value(
         value = settings.preset_value(candidate, "", environ)
         if value != "":
             return value
+    if allow_preset_policy:
+        preset_policy = _PRESET_COMPONENT_POLICIES.get(settings.effective_preset, {}).get(component.lower(), {})
+        return str(preset_policy.get(name, default))
     return default
 
 
@@ -3071,6 +3116,8 @@ def enable_offload(
     **config_overrides: Any,
 ) -> DynamicOffloadApplyResult:
     """Enable the offload route requested by DDO settings for one component."""
+    if not use_environment:
+        environ = {}
     if settings is None:
         settings = load_dynamic_offload_settings_from_env(
             execution_device=execution_device,
@@ -3080,7 +3127,10 @@ def enable_offload(
             default_preset=preset,
         )
 
-    route_value = route or _component_preset_value(settings, component, "ROUTE", "auto", environ)
+    explicit_runtime = config is not None or bool(config_overrides) or group_offload is not None or dynamic_offload is not None
+    route_value = route or _component_preset_value(
+        settings, component, "ROUTE", "auto", environ, allow_preset_policy=not explicit_runtime
+    )
     route_value = route_value.strip().lower()
     if route_value in {"diffusers", "diffusers_group", "group", "group_offload"}:
         route_value = "diffusers_group_offload"
@@ -3101,6 +3151,20 @@ def enable_offload(
         else (_parse_bool_value(dynamic_setting) if dynamic_setting != "" else settings.enabled)
     )
     quantized_backend_payload = detect_quantized_backend_modules(module)
+
+    if route_value == "linear_convolution":
+        if quantized_backend_payload:
+            raise ValueError("Convolution offload requires dense, non-quantized parameters")
+        config = config or DynamicOffloadConfig(
+            execution_device=execution_device,
+            offload_device=offload_device,
+            execution_mode="linear_runtime",
+            linear_convolution_offload=True,
+            pin_cpu_memory=True,
+        )
+        if not config.linear_convolution_offload:
+            raise ValueError("linear_convolution route requires linear_convolution_offload=True in an explicit config")
+        route_value = "dynamic_offload"
 
     if route_value == "auto":
         if group_enabled or (quantized_backend_payload and dynamic_enabled):
@@ -3188,7 +3252,7 @@ def enable_offload(
     if route_value != "none":
         raise ValueError(
             f"Invalid offload route {route_value!r}. "
-            "Valid values: auto, dynamic_offload, diffusers_group_offload, none."
+            "Valid values: auto, dynamic_offload, linear_convolution, diffusers_group_offload, none."
         )
 
     event_payload: dict[str, Any] = {}

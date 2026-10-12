@@ -35,7 +35,7 @@ vmm-dev = [
     "transformers==5.15.1",
     "einops==0.8.2",
     "peft==0.20.0",
-    "diffusers @ git+https://github.com/DEVAIEXP/diffusers.git@e71ebc5858961e2a37d6a7b161d00ae0063c3ab7",
+    "diffusers==0.41.0",
     "diffusers-mm @ git+https://github.com/asomoza/diffusers-mm.git@ec5a40f1b8279e86f2b8c7a1872018f213d441f6",
 ]
 vmm-dev-linux = [
@@ -51,7 +51,7 @@ vmm-dev-linux = [
     "einops==0.8.2",
     "peft==0.20.0",
     "safetensors==0.8.0",
-    "diffusers @ git+https://github.com/DEVAIEXP/diffusers.git@e71ebc5858961e2a37d6a7b161d00ae0063c3ab7",
+    "diffusers==0.41.0",
 ]
 
 [build-system]

@@ -2,6 +2,19 @@
 
 ## Current addendum (2026-10-10)
 
+Subsequent native Linux evidence on 2026-10-11: an isolated idle-trim candidate
+compiled and passed its approved small CUDA ownership probe, while the prior
+accepted `.so` remained unchanged. The primary host then passed the selected
+LTX image/five-second video resident/leaf VAE pairs and the separately approved
+Qwen Image 2.1 base BF16 512x512/20-step leaf/linear/VMM trio. Delivered output
+hashes match within each selected workload comparison, with no reported native
+or monitor failures. The native Qwen route owns the transformer only; its encoder
+uses explicit Diffusers compatibility and its VAE is resident. No model-specific
+DDO change, budget tuning or automatic idle trim was added. Technical candidate
+identity is in native-linux-idle-trim-gate.md; pipeline evidence belongs to the
+sibling host's docs/benchmarks/ pages and dated results. This does not validate
+quantization, all presets, 1024 Qwen Linux, WSL, arbitrary models or driver loss.
+
 The original BF16 Windows/Linux checkpoint below remains valid for its preserved
 binaries and workloads. Subsequent video and FP8 evidence is recorded in the
 [benchmark sidecar](https://github.com/DEVAIEXP/ddo-examples/blob/main/experiments/dynamic_offload_results.md).

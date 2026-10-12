@@ -4,6 +4,52 @@ Read this first in a new Linux chat. This document carries project state without
 requiring the Windows conversation history. It is a handoff, not a declaration
 of Linux runtime support.
 
+## Current continuation addendum (2026-10-11)
+
+Windows subsequently moved the primary host and optional DDO development
+profiles to official PyPI `diffusers==0.41.0`. Selected BF16 LTX image/video
+and Qwen 512-square generations passed with preserved output hashes. Separate
+INT4 SDNQ DDO/streamed-leaf image pairs also passed for LTX image and Qwen;
+these use normal PyTorch allocation, not native VMM. See the host's
+`docs/official-diffusers.md` and current benchmark evidence. These package and
+quantized gates do not inherit Linux/WSL acceptance. Preserve the previously
+accepted Linux fork/audio overrides and binaries until a reviewed environment
+transition; inspect with the direct platform interpreter or `uv run --no-sync`.
+No new C++ source or binary change was introduced by the SDNQ image closure.
+
+The primary runner host is now the sibling `ddo-examples` repository, not the
+historical LTX hosts. Read its `docs/platform-validation-handoff.md` for the
+finite post-Windows VAE and platform closure, current import/environment checks
+and the prompt to resume. Native Linux and WSL are separate validation targets;
+WSL has no native VMM support promise. The historical records below remain tied
+to their preserved workloads and binaries; do not rerun their old port checklist
+or use their setup as the current host environment without inspection.
+
+The selected Windows LTX image/five-second-video resident versus no-stream leaf
+VAE pairs now pass with identical saved outputs; resident host defaults remain
+unchanged. Current VAE routing, linear convolution and LTX decode/reporting work
+is Python-only. Earlier native idle-cache trim work does modify C++ pool/allocator
+sources, so inspect the existing Linux `.so` and optional exports before assuming
+it includes that feature. Preserve the accepted binary/hash and use an agreed
+separate candidate build path if rebuilding. The existing build helper fixes its
+output directories; a dry-run is not permission to overwrite `build-linux`.
+
+Current DDO, allocator, host and independent custom-block changes include local
+uncommitted/ignored files. Record their state before transferring or freezing a
+version; do not infer that remote repositories contain them. This addendum
+authorizes no CUDA run, kernel policy change, automatic full benchmark matrix,
+commit, push or binary promotion. CPU-first preparation and reviewed finite CUDA
+commands require their existing approval boundaries.
+
+Subsequent 2026-10-11 Linux continuation is now recorded in
+`docs/native-linux-idle-trim-gate.md`: isolated candidate compilation and small
+CUDA trim gate passed, followed by the user-approved primary-host BF16 image
+and five-second video resident/leaf pairs. The prior accepted `.so` is unchanged.
+Pipeline output parity is within each Linux pair; detailed timings/memory belong
+to the sibling host's `docs/benchmark-matrix.md` and dated evidence log. Do not
+automatically repeat those closed gates. WSL, environment reproducibility and the
+review/local-commit checkpoint remain separate pending work.
+
 Linux environment preparation on 2026-10-04 is now recorded in
 [Linux environment](linux-environment.md). Its optional `vmm-dev-linux` profile
 and explicit `UV_PROJECT_ENVIRONMENT=.venv-linux` commands supersede manual
@@ -188,7 +234,7 @@ Update support/benchmark evidence, commit the allocator locally first and then
 pin its new revision in DDO. No push, history rewriting, compatibility removal,
 publication or Windows DLL promotion is authorized by this handoff.
 
-## Prompt to resume in Linux
+## Historical port resume prompt (superseded by the 2026-10-11 host handoff)
 
 > Continue the DDO Linux port. Read AGENTS.md, allocator AGENTS.md,
 > docs/linux-handoff.md and docs/native-linux-port-plan.md first. Preserve the

@@ -234,6 +234,10 @@ Runner-specific variables should use a separate prefix such as `DDO_RUNNER_*`; D
 
 ## Results
 
+Strategies can differ per component: a fast denoiser route may use more peak
+memory, while final VAE decode can prioritize capacity with leaf offload.
+See [component defaults and trade-offs](docs/component-strategies.md).
+
 The [public benchmark summary](https://github.com/DEVAIEXP/ddo-examples/blob/main/experiments/dynamic_offload_results.md) reports
 pipeline measurements, reproduction conditions and limitations in the
 `ddo-examples` host repository. Historical records retain their original

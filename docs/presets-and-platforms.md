@@ -34,6 +34,12 @@ Typical policy shape:
 
 ## Platform Notes
 
+The VAE now defaults to no-stream leaf for `one_shot_fast`/`auto`,
+`low_ram_safe` and resolved `vmm_fast` settings. Other selected presets preserve
+historical resident staged-host behavior. Explicit per-component configs/routes
+remain authoritative. See [component strategies](component-strategies.md) for
+the exact table, convolution opt-in and acceptance scope.
+
 Windows:
 
 - `auto` / `one_shot_fast` is the main fast path from the current Windows BF16 benchmark results.

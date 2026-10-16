@@ -1,103 +1,83 @@
-# Repository Guidance
-
-This repository is focused on `diffusers-dynamic-offloader` (DDO), a generic Diffusers-style dynamic offload manager for low-VRAM inference.
-
-## Documentation Language
-
-- Write all new or updated repository documentation in English, including README files, AGENTS.md, documentation pages, handoffs, plans, benchmark commentary, and explanatory examples or docstrings.
-- Preserve verbatim quotations, raw logs, benchmark prompts, and required license or attribution text in their original form; write surrounding explanations in English. Do not change recorded evidence merely to translate it.
-- This requirement applies to repository documentation, not to conversations with the user, which may remain in the user's preferred language.
-
-## Project Direction
-
-- Keep the implementation model-agnostic. It must not depend on LTX-specific class names or component types.
-- Prefer Diffusers conventions and architecture. Code should be easy to upstream or adapt into Diffusers internals later.
-- Keep runtime logic self-contained in the offload manager. Host runners should mainly parse/pass parameters and orchestrate components.
-- Preserve the existing PyTorch-backed DDO runtime paths. Native VMM work is explicitly scoped to the experimental `vmm_fast_runtime` route; the legacy `vmm_runtime` is the protected NVMe baseline. Neither may destabilize the existing `linear_runtime` presets.
-- Keep Windows standby purge exposed by DDO as a Windows-only lifecycle helper. It should be safe/no-op outside Windows and must not become a generic Linux requirement.
-
-## Runtime Architecture
-
-- `linear_runtime` is the stable DDO runtime used by `one_shot_fast`, `low_ram_safe`, `wsl_compat`, and `warm_process`. It uses normal PyTorch CUDA allocation and must remain intact while native VMM work evolves.
-- `diffusers_offload_compat`, `diffusers_leaf_offload_compat`, and `off` remain compatibility/control presets that route through plan-mode behavior rather than `linear_runtime`.
-- `vmm_fast_runtime` is the target native C++ VMM route in `ddo-vmm-allocator`: one model-address arena with native range faulting, signatures, unpinning, fallback, and accounting. `vmm_runtime` is the protected legacy NVMe baseline. Consolidate new VMM work into `vmm_fast_runtime`, never into runner-only paths.
-- The native VMM target flow must install the C++ PyTorch allocator in a fresh child process before CUDA is initialized, then load the model under that allocator. The allocator owns virtual address reservation, physical residency, mapping/unmapping, pressure response, budget guards, and transfer accounting.
-- `ddo-vmm-allocator` is a pinned Git submodule. DDO consumes its public API; C++/CUDA and native adapters belong in the submodule, not in host runners.
-- Avoid adding Python-side residency heuristics that try to pin a prefix, preserve a suffix, or otherwise simulate allocator pressure from hook order. Such experiments may be kept only as explicitly marked diagnostics, not as the target VMM path.
-- Do not remove or rewrite the working non-VMM runtime while implementing VMM. Add VMM capacity profiles separately after the transformer route is validated.
-
-## Experiment Tracking
-
-- Pipeline benchmark results belong to the sibling `ddo-examples` repository,
-  in `experiments/dynamic_offload_results.md`; reproduction guidance lives in
-  its `docs/benchmarks.md`. Old DDO benchmark paths are redirects, not copies.
-  Keep generic runtime/allocator contracts and technical gates in DDO.
-- The implementation history formerly in that sidecar is preserved locally in `.internal/reports/dynamic_offload_results-implementation.md`; `.internal/` is ignored and not cloned/published. Keep it backed up separately. Public benchmark conditions now live in `ddo-examples/docs/benchmark-reproduction.md`; do not use older linear/compatibility results as matched evidence for the final native encoder workload.
-- Public native integration guidance is `docs/native-vmm.md`. Existing `docs/native-*` plans/gates and handoff checklists are engineering records, not all current user instructions. Preserve their acceptance evidence and historical labels during the later publication review; do not silently rewrite raw results or licensing/attribution.
-- `experiments/ltx2_image_experiments.md` is local-only historical LTX scratch material and should stay ignored/untracked in this repository.
-- Historical results may stay in experiment docs, but stale recommendations must be marked as historical or corrected.
-- Use DDO environment names in new docs and commands:
-  - `DDO_*` for library settings.
-  - `DDO_RUNNER_*` for host/example runner settings.
-- Keep external-reference notes and unredacted historical investigation material out of deliverable docs. Before publication, audit active files and private history for prohibited provenance references and validate the cleaned result again.
-
-## Current Preset Meaning
-
-- `auto` resolves to `one_shot_fast` on Windows, Linux, and WSL.
-- `one_shot_fast` is the default benchmark path: RAM-aware balanced planner, auto resident-module budget from model size and CUDA VRAM headroom, and pinned CPU weights only when enough usable system RAM is available.
-- `low_ram_safe` is an explicit low-VRAM fallback. It reduces accelerator pressure but can make denoise copy-bound and very slow.
-- `wsl_compat` is an explicit WSL/driver fallback for cases where pinned-memory or stream behavior is unstable.
-- `warm_process` is for process-lifetime cache/server-like comparisons.
-- `diffusers_offload_compat` uses official Diffusers block-level group offload as a compatibility baseline, not the current performance baseline.
-- `diffusers_leaf_offload_compat` keeps the official Diffusers leaf-level group offload path available for quantized backends, native-Linux comparisons, and smaller/different models.
-
-## VMM Route Contract
-
-- A host runner uses `--ddo-backend` and `--ddo-preset`; it must not require users to construct `DDO_BACKEND` or native allocator settings by hand.
-- `linear/auto` preserves the existing `one_shot_fast` resolution. `vmm/auto` selects `vmm_fast`; `vmm/nvme_baseline` selects the protected VMM fallback.
-- `vmm_fast` starts through `ddo_vmm_bootstrap.ensure_vmm_fast_process()` as the first executable action, before CUDA is initialized. Direct initialization is diagnostic-only.
-- DDO owns generic VMM setup, weight-source lifecycle, hooks, cleanup, fallback, profiling, and telemetry. A host only parses arguments, loads Diffusers components, and orchestrates pipeline phases.
-- VMM profiles are capacity observations per component, not Python-side residency budgets. Validate the transformer first, then reuse the mechanism for text encoders.
-- Runners consume `DynamicOffloadMetrics`; they must not read hook state, planner internals, or VMM statistic attributes directly.
-
-## VMM Development and Gates
-
-- Current user-approved closure is lean: accept the selected Windows performance and critical ownership/capacity/cancellation gates, without an open-ended long-run or model/platform test matrix. Extend tests when a critical implementation change or a reported defect requires it; do not automatically repeat the full benchmark.
-- Next platform block is native Linux `.so` portability, not a claim that changing the library suffix enables the existing Windows-only source/cache transport. Preserve the accepted Windows build/route; Linux execution remains experimental until the user tests it. WSL is not a substitute for native Linux validation.
-- For a new Linux session, read `docs/linux-handoff.md` first. Use a separate `.venv-linux` and `build-linux`; the isolated native CPU recipe never authorizes CUDA execution. Complete native transport with a real Linux compiler before proposing the small CUDA gate.
-- Linux source/ring/storage/cache/batches now compile; CPU and the approved allocator probe/seven small CUDA contracts passed, recorded in `docs/native-linux-transport-gate.md`. The corrected candidate additionally passed three cache contracts and one staged native encoder/transformer real-model generation, recorded in `docs/native-linux-staged-gate.md`. Preserve conservative cgroup-v2/commit/process admission and separate storage/registration; selected workload acceptance is not general model support or permission to alter kernel policy.
-- Linux admission must read the actual overcommit mode: enforce remaining CommitLimit only in mode2; modes0/1 retain finite MemAvailable/cgroup/process bounds. Missing/invalid mode refuses growth. Original CUDA evidence stays tied to its preserved binary; corrected-binary evidence has its own hash in the staged gate. Do not automatically rerun or extend the accepted sequence.
-
-- `.[vmm-dev]` is the Windows CUDA development profile. It is optional; ordinary DDO installs must not acquire CUDA development dependencies.
-- Windows is the initial supported VMM platform. Linux validation follows a successful Windows route. Do not promise WSL or macOS VMM support.
-- Before any CUDA test, benchmark, benchmark-parameter change, compatibility removal, or history cleanup, show the command, hypothesis, and approval criterion and wait for user confirmation.
-- Prefer consolidated, explicitly approved validation sequences over fragmented micro-runs. Approval may cover a capacity gate followed by named benchmark cases; stop at the first failed gate or memory anomaly, and do not extend the approved parameters or scope.
-- Each incremental VMM block must compile, pass its unit/CUDA contracts, and retain the NVMe baseline before the next block. Do not recalibrate residency budgets during the persistent-source through fallback blocks.
-- Record deliverable pipeline benchmark results in `ddo-examples/experiments/dynamic_offload_results.md`, not in this repository.
-- Follow `docs/native-source-cache-plan.md` for the native persistent-source work.
-  The registered source cache owns native bytes, not loader CPU tensors. Host
-  cache capacity is separate from GPU residency; no Python cache-admission policy.
-  The persistent host buffer also separates committed storage from CUDA
-  registration: unregistering must not discard bytes or trigger file rereads.
-  Never increase either ceiling automatically or treat a compiled change as
-  a passing CUDA/performance gate.
-- Persistent-source execution uses native reusable slots and immutable native
-  source batches. Slot recycling must wait for the last compute/upload event;
-  partial submission failures retain ownership until completion is proven.
-  Keep per-window request/copy/reap scheduling out of the normal Python route.
-
-## Working Rules
-
-- Native validated checkpoints and limitations are summarized in `docs/native-support-status.md`. Preserve the selected staged performance and small robustness gates; do not generalize them to arbitrary models, driver-loss recovery or automatic component opt-in.
-- Host memory reports must distinguish baseline-relative GPU deltas from sampled absolute driver usage, and requested controls from executed component routes. Missing historical fields are unavailable, not zero; do not rewrite old benchmark artifacts.
-
-- Do not add LTX runners or custom blocks back into this repository unless they are explicitly turned into small, generic examples.
-- Keep model-specific Modular Diffusers runners in the sibling `ddo-examples` host repository, organized under `scripts/<model>/`. Its independent custom-block clones are ignored under `modular_diffusers/custom_blocks/`. Install DDO there as a dependency; historical LTX image/video host repositories remain optional references, not required execution roots.
-- Use `apply_patch` for manual edits when the sandbox permits it.
-- Before changing experiment conclusions, check the latest pasted benchmark numbers and avoid resurrecting older assumptions.
-
-- Keep README examples short and link longer usage patterns from `docs/`.
-- Keep VAE routing inside `enable_offload`: auto/one_shot_fast, low_ram_safe and resolved vmm_fast settings select no-stream leaf; warm_process, wsl_compat and nvme_baseline preserve resident staged-host behavior. Explicit configs/routes remain authoritative. Dense linear convolution offload is opt-in, normal-allocator-only; native VMM VAE still requires explicit source/capacity setup. Follow `docs/component-strategies.md`; routing does not authorize automatic native cache trim or another CUDA benchmark.
-- Document both full-pipeline and phase-staged usage. Full-pipeline examples are for minimal integration; phase-staged examples are for memory-sensitive runs and benchmark comparisons.
-- Quantized backends should preserve backend-specific forward logic and usually route through Diffusers group-offload compatibility presets.
-- The explicit saved TorchAO FP8 weight-only native contract is model-agnostic, not LTX-specific. Keep physical payload loading/ownership/transport in DDO and the allocator, backend math in TorchAO/Diffusers, and model-specific timestep/residual/RoPE/chunk-conversion optimizations in the host. Optional compute compilation is separate from FP8 compatibility, never a required or automatic route. Selected model acceptance must not be presented as arbitrary-model or arbitrary-recipe support.
+# DDO repository guidance
+## Purpose and ownership
+DDO is a generic Diffusers-style offload manager, not a model pipeline repository.
+Read docs/README.md, docs/developer/architecture.md, support.md, validation.md and
+releases.md for current contracts. Public docs must work without archived handoffs.
+Model runners/benchmarks belong to sibling ddo-examples; custom blocks belong to
+their independent model repositories. Native C++/CUDA and adapters belong to the
+pinned ddo-vmm-allocator submodule. Read its AGENTS.md before native changes.
+## Language and evidence
+Write all new/updated documentation, comments and explanatory docstrings in English.
+Conversation may use the user's language. Preserve verbatim logs, prompts, quotes
+and required license/attribution text; never alter evidence to translate or sanitize it.
+Use docs/user for current integration, docs/developer for contributor contracts,
+and ignored .internal/documentation for handoffs/plans/intermediate investigations.
+README must index public docs. Never link public instructions to required ignored files.
+Keep a separate backup of local internal records; .gitignore is not a backup and
+does not remove previously tracked content from Git history. No implicit history rewrite.
+## Protected runtime routes
+- linear_runtime is the stable PyTorch-backed route for one_shot_fast,
+  low_ram_safe, wsl_compat and warm_process. Preserve behavior and dependencies.
+- vmm_runtime is the protected NVMe baseline, not the target for new native work.
+- vmm_fast_runtime is the experimental native arena/source/pressure route.
+- diffusers_offload_compat, diffusers_leaf_offload_compat and off preserve
+  compatibility/plan-mode behavior and backend-specific forwards.
+linear/auto preserves one_shot_fast; vmm/auto selects vmm_fast;
+vmm/nvme_baseline selects the protected fallback. Do not infer a new route from
+class names or add model-specific policies. Ordinary installs remain lightweight.
+## Native contracts
+Bootstrap must run as the runner's first executable action, relaunch the same
+command in a fresh child and install the allocator before CUDA-owning imports.
+DDO owns settings, loading/source association, hooks, cleanup, fallback and reports.
+Hosts parse --ddo-backend/--ddo-preset and orchestrate phases; they must not build
+allocator policy from internal environment variables or hook order.
+Native C++ owns stable virtual addresses, physical residency, signatures, eviction,
+fixed budgets, reusable slots, event fences and transfer accounting. No Python
+prefix/suffix pinning heuristics or parallel source cache in runners.
+Retain source descriptors/native bytes, not loader CPU tensors. Storage, CUDA
+registration and GPU ceilings are separate. Unregister must preserve content.
+Slot/page/ticket reuse requires last upload/consumer completion; partial failures
+retain ownership. Never force-free after unproven/poisoned CUDA completion.
+Linux admission preserves actual overcommit mode, MemAvailable, cgroup v2 and
+process limits. Enforce CommitLimit in mode2, finite physical bounds in modes0/1;
+unknown observations refuse growth. WSL and native Linux are separate targets.
+## Components, quantization and reporting
+Keep VAE routing in enable_offload: resolved auto/one_shot_fast/low_ram_safe/
+vmm_fast select no-stream leaf; warm_process/wsl_compat/nvme_baseline preserve
+resident staged-host behavior. Explicit routes/configuration remain authoritative.
+Normal-allocator dense convolution is opt-in. Native VAE requires explicit
+source/capacity setup; routing does not authorize cache trim or cuBLAS clearing.
+Saved TorchAO FP8 weight-only payload loading/transport is model-agnostic;
+backend math remains TorchAO/Diffusers. Compilation is optional and separate.
+Preserve SDNQ/backend forwards and compatibility routes; no universal quantization
+recipe acceptance. Timestep/residual/RoPE model math stays outside DDO.
+Hosts consume DynamicOffloadMetrics, as_dict and format_profile, not state/
+planner_decisions/native internal attributes. Profiles observe component capacity,
+not Python residency calibration. GPU deltas and absolute driver peaks are distinct.
+Windows standby purge remains Windows-only and safe/no-op elsewhere.
+## Documentation, tests and packages
+Pipeline results are owned by ddo-examples, with scope/reproduction by model.
+Current native selected acceptance is summarized publicly in developer validation;
+full original gates/handoffs are local archives, not authorization to rerun.
+Use separate platform environments and new candidate build paths. Never overwrite
+accepted build-linux/Windows artifacts. Optional vmm-dev/vmm-dev-linux profiles
+are maintainer tools, not ordinary requirements.
+Wheels must identify artifact hash, API/ABI, build features and compatibility.
+No import-time/inference build or download. Source tests do not grant clean-wheel
+acceptance. Commit allocator first, update the DDO gitlink second, host separately
+only when authorized; ignored model clones require their own commits.
+## Execution, validation and release authority
+Read this file and relevant public docs before acting. Inspect git status and preserve
+user changes. Use apply_patch for manual edits; scope searches/edits to the task.
+Before CUDA, benchmarks, benchmark parameter changes, compatibility removal or
+history cleanup, show exact command, hypothesis, fixed limits and criteria and
+wait for user approval. CPU tests/builds do not authorize GPU execution.
+Stop at the first failure/anomaly. No silent retries, budget growth, driver resets,
+OS memory-policy changes, binary promotion or full Cartesian test matrix.
+Never claim general support from selected acceptance. Treat missing fields as
+unavailable, not zero; preserve raw result identity and rejected experiments.
+Experimental prereleases precede stable release. Tags, push, Hub/registry upload,
+CI publication and Git-history rewrites require explicit permission.
+Do not remove required licenses/attribution or suggest that hiding names establishes
+independent implementation/license compatibility. Do not commit user scratch files,
+weights, environments, build products, outputs or internal records.

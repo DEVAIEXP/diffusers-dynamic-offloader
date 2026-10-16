@@ -1,4 +1,4 @@
-"""Isolated native-wheel discovery smoke test; never load DLLs or execute CUDA."""
+"""Isolated native-wheel discovery smoke test; never load libraries or execute CUDA."""
 
 from __future__ import annotations
 
@@ -13,8 +13,9 @@ import ddo_vmm_bootstrap as bootstrap
 
 
 def main():
-    if sys.platform != "win32":
-        raise RuntimeError("This selected delivery smoke test requires Windows")
+    platform_tag = {"win32": "win_amd64", "linux": "linux_x86_64"}.get(sys.platform)
+    if platform_tag is None:
+        raise RuntimeError("This delivery smoke test requires Windows or Linux")
     if bootstrap._default_allocator_root() is not None:
         raise RuntimeError("Smoke test must use an installed DDO wheel, not its source checkout")
     package = bootstrap._installed_allocator_root()
@@ -25,7 +26,7 @@ def main():
         raise RuntimeError("Installed adapter has no platform native binary")
     manifest = json.loads((library.parent / "artifact.json").read_text(encoding="utf-8"))
     digest = hashlib.sha256(library.read_bytes()).hexdigest()
-    if manifest["sha256"] != digest or manifest["platform"] != "win_amd64":
+    if manifest["sha256"] != digest or manifest["platform"] != platform_tag:
         raise RuntimeError("Packaged artifact manifest does not match")
     with tempfile.TemporaryDirectory(prefix="ddo-wheel-smoke-") as directory:
         runner = Path(directory) / "runner.py"
@@ -50,7 +51,7 @@ def main():
         "status": "passed",
         "scope": "installed-wheel metadata/hash/discovery and mocked child launch only",
         "library": str(library), "sha256": digest,
-        "cuda_executed": False, "dll_loaded": False,
+        "cuda_executed": False, "dll_loaded": False, "native_loaded": False,
     }, indent=2))
 
 

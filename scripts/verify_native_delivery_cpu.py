@@ -28,12 +28,19 @@ def verify(path, native_sha256=None, source_root=None):
         tag = wheel.read(next(name for name in names if name.endswith(".dist-info/WHEEL"))).decode()
         binaries = [name for name in names if name.endswith((".dll", ".so", ".pyd"))]
         if native_sha256:
-            binary = "ddo_vmm_allocator/native/win32/ddo_vmm.dll"
-            if binaries != [binary] or "Tag: py3-none-win_amd64" not in tag or "Root-Is-Purelib: false" not in tag:
+            platforms = {
+                "ddo_vmm_allocator/native/win32/ddo_vmm.dll": ("win32", "win_amd64"),
+                "ddo_vmm_allocator/native/linux/libddo_vmm.so": ("linux", "linux_x86_64"),
+            }
+            if len(binaries) != 1 or binaries[0] not in platforms:
+                raise RuntimeError("Native wheel must contain exactly one supported platform binary")
+            binary = binaries[0]
+            directory, platform_tag = platforms[binary]
+            if f"Tag: py3-none-{platform_tag}" not in tag or "Root-Is-Purelib: false" not in tag:
                 raise RuntimeError("Native wheel has incorrect binary contents or platform tag")
             digest = hashlib.sha256(wheel.read(binary)).hexdigest()
-            manifest = json.loads(wheel.read("ddo_vmm_allocator/native/win32/artifact.json"))
-            if digest != native_sha256.lower() or manifest["sha256"] != digest:
+            manifest = json.loads(wheel.read(f"ddo_vmm_allocator/native/{directory}/artifact.json"))
+            if digest != native_sha256.lower() or manifest["sha256"] != digest or manifest["platform"] != platform_tag:
                 raise RuntimeError("Native artifact hash mismatch")
         elif binaries or "Tag: py3-none-any" not in tag:
             raise RuntimeError("Ordinary wheel unexpectedly includes native binaries")

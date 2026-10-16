@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import math
 from dataclasses import dataclass
 from typing import Any
 
@@ -46,9 +47,16 @@ class DynamicOffloadBackend:
 
     def build_config_from_args(self, args: argparse.Namespace) -> DynamicOffloadConfig:
         """Build the route configuration from the standard runner arguments."""
+        staging = args.ddo_vmm_staging_buffer_gb
+        total = getattr(args, "ddo_vmm_total_staging_gb", None)
+        if total is not None:
+            if not math.isfinite(total) or total <= 0:
+                raise ValueError("--ddo-vmm-total-staging-gb must be finite and positive")
+            # Protected NVMe config is per slot; native config is total capacity.
+            staging = total / 2 if self.execution_mode == "vmm_runtime" else total
         return self.build_config(
             vmm_resident_weight_budget_gb=args.ddo_vmm_resident_weight_budget_gb,
-            vmm_staging_buffer_gb=args.ddo_vmm_staging_buffer_gb,
+            vmm_staging_buffer_gb=staging,
             vmm_native_transport=getattr(args, "ddo_vmm_native_transport", False),
             vmm_native_source_cache_slot_mb=getattr(args, "ddo_vmm_native_source_cache_slot_mb", 0),
             vmm_native_source_cache_slots=getattr(args, "ddo_vmm_native_source_cache_slots", 0),
@@ -90,6 +98,23 @@ def resolve_dynamic_offload_backend(
     )
 
 
+def add_dynamic_offload_lifecycle_arguments(
+    parser: argparse.ArgumentParser,
+    phases: tuple[str, ...] = ("before_run", "after_text_encoder", "before_transformer", "after_run"),
+) -> argparse.ArgumentParser:
+    """Expose tri-state Windows lifecycle controls without mutating the environment."""
+    for phase in phases:
+        if phase not in ("before_run", "after_text_encoder", "before_transformer", "after_run"):
+            raise ValueError(f"Unsupported standby lifecycle phase: {phase}")
+        parser.add_argument(
+            "--purge-" + phase.replace("_", "-"),
+            action=argparse.BooleanOptionalAction,
+            default=None,
+            help="Windows standby purge: explicit CLI overrides environment/preset; omitted inherits them.",
+        )
+    return parser
+
+
 def add_dynamic_offload_arguments(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
     """Add the standard DDO route arguments to a host runner parser."""
     parser.add_argument("--ddo-backend", choices=_BACKENDS, default="linear", help="DDO backend (default: linear).")
@@ -101,10 +126,14 @@ def add_dynamic_offload_arguments(parser: argparse.ArgumentParser) -> argparse.A
         help="Native VMM active-residency capacity in GiB (default: 4).",
     )
     parser.add_argument(
+        "--ddo-vmm-total-staging-gb", type=float, default=None,
+        help="Total reusable host-staging capacity in GiB for either VMM route; omitted preserves legacy defaults.",
+    )
+    parser.add_argument(
         "--ddo-vmm-staging-buffer-gb",
         type=float,
         default=0.625,
-        help="VMM total reusable host-staging capacity in GiB, not per slot (default: 0.625).",
+        help="Legacy route-specific staging value; prefer --ddo-vmm-total-staging-gb for total capacity.",
     )
     parser.add_argument(
         "--ddo-vmm-native-transport", action="store_true",

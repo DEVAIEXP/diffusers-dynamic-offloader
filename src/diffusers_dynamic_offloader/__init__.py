@@ -1,4 +1,7 @@
-from .backend import DynamicOffloadBackend, add_dynamic_offload_arguments, resolve_dynamic_offload_backend
+from .backend import (
+    DynamicOffloadBackend, add_dynamic_offload_arguments,
+    add_dynamic_offload_lifecycle_arguments, resolve_dynamic_offload_backend,
+)
 from .dynamic_offload import (
     DDO_PRESETS,
     DiffusersGroupOffloadResult,
@@ -71,6 +74,7 @@ __all__ = [
     "DynamicOffloadExecutionTimer",
     "DynamicOffloadBackend",
     "add_dynamic_offload_arguments",
+    "add_dynamic_offload_lifecycle_arguments",
     "resolve_dynamic_offload_backend",
     "apply_dynamic_offload",
     "detect_quantized_backend_modules",

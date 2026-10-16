@@ -113,12 +113,22 @@ def preflight(root, paths, root_state=False):
     print(json.dumps(result, indent=2))
 
 
-def run_case(root, path, quantized, root_state=False, compile_fp8_linear=False):
+def validate_native_hash(observed, expected):
+    """Require an explicit artifact identity, preserving the historical default."""
+    if len(expected) != 64 or any(char not in "0123456789abcdef" for char in expected.lower()):
+        raise ValueError("Expected native SHA256 must be 64 hexadecimal characters")
+    if observed.upper() != expected.upper():
+        raise ValueError("Native binary does not match the expected SHA256")
+
+
+def run_case(root, path, quantized, root_state=False, compile_fp8_linear=False,
+             expected_native_sha256="EC5AB4700EE5D171CC06D8E9EC99C549F8D6CC3DFBE7FEB2683B93ADD0E829E6"):
     library_path = Path(os.environ["DDO_VMM_LIBRARY_PATH"]).resolve(strict=True)
     binary_hash = hashlib.sha256(library_path.read_bytes()).hexdigest().upper()
-    assert binary_hash == "EC5AB4700EE5D171CC06D8E9EC99C549F8D6CC3DFBE7FEB2683B93ADD0E829E6"
+    validate_native_hash(binary_hash, expected_native_sha256)
     report = {"status": "running", "case": "fp8" if quantized else "bf16_control",
               "scope": "public_api_small_cuda_not_ltx", "dll_sha256": binary_hash,
+              "native_sha256": binary_hash, "native_platform": sys.platform,
               "root_state_requested": root_state,
               "weight_ceiling_bytes": weight_ceiling(root_state), "host_cache_bytes": 64 * 1024**2,
               "host_staging_bytes": HOST_STAGING_BYTES, "allocator_cache_mib": 4,
@@ -242,6 +252,9 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--cpu-preflight", action="store_true")
+    parser.add_argument("--expected-native-sha256",
+                        default="EC5AB4700EE5D171CC06D8E9EC99C549F8D6CC3DFBE7FEB2683B93ADD0E829E6",
+                        help="Approved artifact SHA256; default preserves the historical Windows gate.")
     parser.add_argument("--compile-fp8-linear", action="store_true",
                         help="Opt-in small CUDA Inductor candidate; BF16 control stays eager")
     parser.add_argument("--root-state", action="store_true",
@@ -271,7 +284,7 @@ def main():
                 raise ValueError("Prepared checkpoint component is missing")
         for quantized, path in zip((False, True), paths):
             run_case(root, path, quantized, args.root_state and quantized,
-                     args.compile_fp8_linear and quantized)
+                     args.compile_fp8_linear and quantized, args.expected_native_sha256)
 
 
 if __name__ == "__main__":

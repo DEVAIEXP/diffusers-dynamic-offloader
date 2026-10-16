@@ -225,6 +225,7 @@ def maybe_purge_windows_standby_cache(
     print_message: bool = True,
     ignore_errors: bool = True,
     environ: Mapping[str, str] | None = None,
+    enabled: bool | None = None,
 ) -> dict[str, Any]:
     """Purge Windows standby cache when preset/env enables it for a lifecycle phase.
 
@@ -232,6 +233,8 @@ def maybe_purge_windows_standby_cache(
     `maybe_purge_windows_standby_cache("before_run", preset="auto")`. It is a
     no-op outside Windows, so runners can call the same lifecycle hook on every
     platform while DDO decides whether a purge is useful.
+    ``enabled=None`` inherits environment/preset policy; an explicit boolean
+    overrides it without modifying process-global environment variables.
     """
     resolved_settings = settings
     resolved_phase = phase
@@ -253,7 +256,7 @@ def maybe_purge_windows_standby_cache(
         )
 
     key = "DDO_PURGE_WINDOWS_STANDBY_" + resolved_phase.strip().upper()
-    enabled = resolved_settings.preset_bool(key, default, environ)
+    enabled = resolved_settings.preset_bool(key, default, environ) if enabled is None else enabled
     if not enabled:
         return {"purged": False, "reason": "disabled", "phase": resolved_phase}
     if os.name != "nt":

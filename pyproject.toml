@@ -36,7 +36,6 @@ vmm-dev = [
     "einops==0.8.2",
     "peft==0.20.0",
     "diffusers==0.41.0",
-    "diffusers-mm @ git+https://github.com/asomoza/diffusers-mm.git@ec5a40f1b8279e86f2b8c7a1872018f213d441f6",
 ]
 vmm-dev-linux = [
     "pytest",
@@ -54,12 +53,18 @@ vmm-dev-linux = [
     "diffusers==0.41.0",
 ]
 
+[dependency-groups]
+# Checkout-only tools are not included in published Requires-Dist metadata.
+vmm-harness = [
+    "diffusers-mm @ git+https://github.com/asomoza/diffusers-mm.git@ec5a40f1b8279e86f2b8c7a1872018f213d441f6",
+]
+
 [build-system]
 requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
-py-modules = ["ddo_vmm_bootstrap"]
+py-modules = ["ddo_vmm_bootstrap", "ddo_native_check"]
 
 [tool.setuptools.packages.find]
 where = ["src"]

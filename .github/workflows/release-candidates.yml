@@ -1,0 +1,80 @@
+name: Build experimental candidates (manual, no publication)
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Explicit prerelease version (for example 0.1.0rc3)
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-candidates-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  candidates:
+    # Dedicated trusted builder; never run on pull requests or a personal GPU host.
+    runs-on: [self-hosted, Windows, X64, ddo-release]
+    timeout-minutes: 90
+    strategy:
+      fail-fast: true
+      max-parallel: 1
+      matrix:
+        target: [windows-amd64-cu132, docker-linux-x86_64]
+    env:
+      CANDIDATE_VERSION: ${{ inputs.version }}
+      CANDIDATE_TARGET: ${{ matrix.target }}
+      CUDA_VISIBLE_DEVICES: '-1'
+      PYTHONDONTWRITEBYTECODE: '1'
+      UV_LINK_MODE: copy
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          submodules: recursive
+          persist-credentials: false
+          clean: true
+      - name: Prepare isolated locked tools
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:CANDIDATE_VERSION -notmatch '^\d+\.\d+\.\d+rc\d+$') { throw 'Explicit rc version required' }
+          $env:UV_PROJECT_ENVIRONMENT = Join-Path $env:RUNNER_TEMP "ddo-tools-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT-$env:CANDIDATE_TARGET"
+          uv sync --locked --project tools/release --python 3.12 --link-mode copy
+          if ($LASTEXITCODE -ne 0) { throw 'Tool installation failed' }
+          "RELEASE_PYTHON=$env:UV_PROJECT_ENVIRONMENT/Scripts/python.exe" >> $env:GITHUB_ENV
+          "CANDIDATE_OUTPUT=$env:GITHUB_WORKSPACE/.internal/ci/$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT/$env:CANDIDATE_TARGET" >> $env:GITHUB_ENV
+      - name: CPU orchestration contracts
+        run: |
+          & $env:RELEASE_PYTHON -B -m pytest -q -x -p no:cacheprovider `
+            --basetemp "$env:RUNNER_TEMP/ddo-tests-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT-$env:CANDIDATE_TARGET" `
+            tests/test_release_builder_cpu.py tests/test_release_docker_cpu.py tests/test_release_workflow_cpu.py
+          if ($LASTEXITCODE -ne 0) { throw 'CPU contracts failed' }
+      - name: Build Windows candidate
+        if: matrix.target == 'windows-amd64-cu132'
+        run: |
+          if (-not (Test-Path -LiteralPath $env:DDO_RELEASE_DUMPBIN)) { throw 'Runner must define DDO_RELEASE_DUMPBIN' }
+          if (-not (Test-Path -LiteralPath "$env:DDO_RELEASE_CUDA132/bin/nvcc.exe")) { throw 'Runner must define DDO_RELEASE_CUDA132' }
+          & $env:RELEASE_PYTHON -B scripts/build_release.py `
+            --version $env:CANDIDATE_VERSION --cuda-toolkit $env:DDO_RELEASE_CUDA132 `
+            --dumpbin $env:DDO_RELEASE_DUMPBIN --output $env:CANDIDATE_OUTPUT --jobs 2
+          if ($LASTEXITCODE -ne 0) { throw 'Windows candidate failed' }
+      - name: Build Linux ABI-baseline candidate in Docker
+        if: matrix.target == 'docker-linux-x86_64'
+        run: |
+          & $env:RELEASE_PYTHON -B scripts/build_release_docker.py `
+            --version $env:CANDIDATE_VERSION --output $env:CANDIDATE_OUTPUT --jobs 2
+          if ($LASTEXITCODE -ne 0) { throw 'Docker candidate failed' }
+      - name: Retain candidate distribution only
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: candidate-${{ inputs.version }}-${{ matrix.target }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ env.CANDIDATE_OUTPUT }}/dist/*
+          if-no-files-found: error
+          retention-days: 14
+          include-hidden-files: true

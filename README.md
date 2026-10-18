@@ -12,8 +12,8 @@ or [Modular Diffusers](docs/user/modular-pipeline.md) integration.
 
 Normal linear use requires no native allocator or compiler. Native VMM is optional:
 it uses a matching packaged DLL/.so and bootstrap before CUDA initialization.
-The installation guide describes local candidate wheels; it does not assume
-they are available on a package index.
+Experimental version `0.1.0rc2` is available on PyPI. The installation guide
+uses published packages, without requiring a source clone or local wheel files.
 
 ```python
 from diffusers_dynamic_offloader import enable_offload

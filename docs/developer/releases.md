@@ -12,6 +12,25 @@ SHA256. Install and validate the actual wheel pair, then distribute those
 same bytes without rebuilding. NVIDIA driver libraries remain external.
 There is no import-time or inference-time build/download.
 
+## Published prerelease
+
+Version `0.1.0rc2` is published on PyPI for
+[DDO](https://pypi.org/project/diffusers-dynamic-offloader/0.1.0rc2/) and the
+[allocator](https://pypi.org/project/ddo-vmm-allocator/0.1.0rc2/).
+The three published wheels match the validated TestPyPI files byte for byte.
+
+| Wheel | SHA256 |
+| --- | --- |
+| `diffusers_dynamic_offloader-0.1.0rc2-py3-none-any.whl` | `f6d7d743a6c8dcc492e390bbc688a43f64b880243465ac38b71ca1013b8435b7` |
+| `ddo_vmm_allocator-0.1.0rc2-py3-none-win_amd64.whl` | `5cc5b2594d20b97150f92cebc83f285a8574990ecf235eb80b773f5fb241754a` |
+| `ddo_vmm_allocator-0.1.0rc2-py3-none-manylinux_2_35_x86_64.whl` | `9e5f2bb735dbe05b4c105e292c45f1e64302f7b82664da1dd0b87a7f4893fc98` |
+
+The Linux wheel was audited/repaired for `manylinux_2_35_x86_64`, without
+bundling the NVIDIA driver or changing the native library bytes. The builders
+below produce initial candidates; their Linux outputs still require that audit
+before index publication. Published files are immutable: corrections require
+a new release, not replacing an existing version's artifacts.
+
 ## One-command native Linux candidate generation
 
 From the DDO root, with uv, CMake, a C++20 compiler, readelf, nm and a reviewed
@@ -138,16 +157,15 @@ to TestPyPI or PyPI:
    `vmm-harness` dependency group, not a published extra. Maintainers who need it
    can install it explicitly with `uv pip install --group vmm-harness` from this
    checkout and their selected environment.
-2. Run metadata validation on the newly assembled wheels. Earlier local rc2 DDO
-   wheels include the Git requirement and must not be uploaded as-is. Preserve
-   them as local validation artifacts; new metadata means a new wheel hash.
+2. Run metadata validation on the newly assembled wheels. Changed metadata
+   means a changed wheel hash and requires validation of the resulting file.
    Use `twine==7.0.0` with `packaging==26.3` for the current candidates and run
    `python -m twine check --strict <wheel-files>`. The allocator uses Core
-   Metadata 2.5; Twine 6.2.0 in the earlier release-tool environment rejected
-   that version. Metadata validation does not upload packages or test CUDA.
+   Metadata 2.5; use tools that support that version. Metadata validation does
+   not upload packages or test CUDA.
 3. Audit Linux wheels against an appropriate manylinux policy before assigning
-   that tag. The current `linux_x86_64` candidate is for local installation, not
-   ready for index publication. An Ubuntu ABI baseline alone does not establish
+   that tag. A builder's `linux_x86_64` output needs this audit before index
+   publication. An Ubuntu ABI baseline alone does not establish
    manylinux compliance. Resolve external CUDA-driver linkage without bundling
    the system driver; do not merely rename the wheel or suppress audit failures.
 4. Keep the native library bytes and their hashes when possible. Record any

@@ -9,6 +9,7 @@
 
 ## Development tools
 
+- [Source installation and local wheels](installation.md)
 - [Native builds](builds.md)
 - [Package delivery](releases.md)
 - [Manual validation](manual-validation.md)

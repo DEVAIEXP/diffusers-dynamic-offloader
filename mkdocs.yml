@@ -37,6 +37,7 @@ nav:
       - FP8 conversion: docs/user/fp8-weight-only-conversion.md
   - Developer guides:
       - Overview: docs/developer/README.md
+      - Development installation: docs/developer/installation.md
       - Architecture: docs/developer/architecture.md
       - Support: docs/developer/support.md
       - Test hardware: docs/developer/hardware.md

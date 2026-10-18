@@ -893,6 +893,7 @@ no automatic ceiling increase is performed.
 | `copied_bytes`, `copied_storage_groups` | bytes/count | Deduplicated source-backed CPU payload cloned once. Not shard size, released RAM or recovered commit. |
 | `copied_tensor_owners`, `copied_named_references` | counts | Distinct registered tensor objects and named references, respectively; exact compatible aliases share the replacement storage. |
 | `unbound_cpu_storage_groups` | count | CPU spans without source provenance, left untouched. Does not enumerate arbitrary escaped tensor references. |
+| `protected_native_cpu_bindings` | count / pre-execution snapshot | Retained native CPU payload intervals checked for overlap. Complete adapter metadata and matching native count are required when nonzero; these payloads are not copied or released. |
 | `source_shard_count`, `source_shard_samples` | count/up to 16 paths | Provenance of selected residual views; mapping release still requires separate evidence. |
 | `host_before`, `host_after` | bytes / adjacent CPU samples | Same best-effort sampler as the host-cache helper. Samples are not atomic; missing fields are unavailable, not zero. Compare private/available commit without assuming a decrease. |
 | `gpu_placement_changed`, `commit_recovery_proven` | booleans | Both false: no GPU placement is changed and the ownership operation alone does not prove OS commit recovery. |

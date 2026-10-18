@@ -59,9 +59,13 @@ trim or Windows standby purge. See [metrics](../user/metrics.md).
 separate diagnostic opt-in, disabled by default. It detaches small residual
 CPU loader views before the first native forward; it is not a host-cache flush.
 
-It requires an attached `vmm_fast_runtime` component, no started execution and
-zero native CPU source bindings. Whole-component ownership is outside this
-helper's scope. The default copy ceiling is 16 MiB. Registered parameter
+It requires an attached `vmm_fast_runtime` component and no started execution.
+If native CPU sources exist, the adapter must report every retained payload
+interval, matching the native binding count. Selected residual views must not
+overlap those intervals; unavailable or incomplete observations are refused.
+Older adapters without this observation still support the zero-CPU-source case.
+Whole-component ownership is outside this helper's scope. The default copy
+ceiling is 16 MiB. Registered parameter
 identity, exact aliases, values, device and dtype are preserved; unsupported
 or partial aliases are refused.
 

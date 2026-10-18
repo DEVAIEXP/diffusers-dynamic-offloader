@@ -161,3 +161,74 @@ def test_registry_rebind_is_atomic_when_new_shape_invalid():
     with pytest.raises(ValueError, match="conflicts"):
         registry.rebind_many([(old, torch.ones(99))])
     assert registry.lookup(old) == original
+
+
+def mixed_cpu_result(model, source):
+    result = result_for(model)
+    result.hook._vmm_fast_store.runtime_stats = lambda: {
+        "cpu_source_bindings": 1, "faults": 0, "execution_plan_passes": 0}
+    result.hook._vmm_fast_adapter = SimpleNamespace(cpu_source_intervals=lambda: {
+        "schema_version": 1, "binding_count": 1,
+        "intervals": [(source.data_ptr(), source.numel() * source.element_size())]})
+    return result
+
+
+def test_disjoint_native_cpu_source_preserves_pointer_and_values():
+    model = torch.nn.Linear(2, 3)
+    source = torch.arange(20, dtype=torch.bfloat16)
+    result = mixed_cpu_result(model, source)
+    pointer, expected = source.data_ptr(), source.clone()
+    report = result.detach_auxiliary_cpu_sources(enabled=True)
+    assert report.setup["auxiliary_source_detachment"]["protected_native_cpu_bindings"] == 1
+    assert source.data_ptr() == pointer
+    torch.testing.assert_close(source, expected, rtol=0, atol=0)
+
+
+@pytest.mark.parametrize("partial", [False, True])
+def test_native_cpu_source_overlap_refused_before_copy(partial):
+    model = torch.nn.Linear(2, 3)
+    source = model.weight.detach().flatten()
+    if partial:
+        source = source[1:]
+    result = mixed_cpu_result(model, source)
+    pointer = model.weight.data_ptr()
+    with patch.object(torch.Tensor, "clone", side_effect=AssertionError("copy forbidden")):
+        with pytest.raises(ValueError, match="overlaps a retained"):
+            result.detach_auxiliary_cpu_sources(enabled=True)
+    assert model.weight.data_ptr() == pointer
+    assert not hasattr(result.hook, "_auxiliary_source_detachment_report")
+
+
+@pytest.mark.parametrize("observation", [
+    {}, {"schema_version": 1, "binding_count": 2, "intervals": [(1, 4)]},
+    {"schema_version": 1, "binding_count": 1, "intervals": []},
+    {"schema_version": 1, "binding_count": 1, "intervals": [(0, 4)]},
+    {"schema_version": 1, "binding_count": 1, "intervals": [(1, -4)]},
+    {"schema_version": True, "binding_count": 1, "intervals": [(1, 4)]},
+    {"schema_version": 1, "binding_count": True, "intervals": [(1, 4)]},
+])
+def test_unknown_native_source_metadata_refused_before_copy(observation):
+    model = torch.nn.Linear(2, 3)
+    result = mixed_cpu_result(model, torch.ones(2))
+    result.hook._vmm_fast_adapter.cpu_source_intervals = lambda: observation
+    with patch.object(torch.Tensor, "clone", side_effect=AssertionError("copy forbidden")):
+        with pytest.raises(ValueError):
+            result.detach_auxiliary_cpu_sources(enabled=True)
+
+
+def test_real_adapter_observation_integrates_without_moving_native_source():
+    allocator = pytest.importorskip("ddo_vmm_allocator.model_arena_adapter")
+    source = torch.arange(12, dtype=torch.bfloat16)
+    adapter = allocator.ModelArenaModuleAdapter(SimpleNamespace())
+    adapter._bindings = [SimpleNamespace(tensors=[SimpleNamespace(
+        file_slice=None, source=source, nbytes=24)])]
+    model = torch.nn.Linear(2, 3)
+    result = mixed_cpu_result(model, source)
+    result.hook._vmm_fast_adapter = adapter
+    old_source, expected = source.data_ptr(), source.clone()
+    old_residual = model.weight.data_ptr()
+    report = result.detach_auxiliary_cpu_sources(enabled=True)
+    assert report.setup["auxiliary_source_detachment"]["protected_native_cpu_bindings"] == 1
+    assert model.weight.data_ptr() != old_residual
+    assert source.data_ptr() == old_source
+    torch.testing.assert_close(source, expected, rtol=0, atol=0)

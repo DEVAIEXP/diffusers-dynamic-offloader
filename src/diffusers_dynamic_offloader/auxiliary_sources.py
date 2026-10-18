@@ -10,7 +10,7 @@ from .host_cache import _host_snapshot
 from .vmm_weight_store import SafetensorSliceRegistry
 
 
-def _detach_cpu_sources(module, registry, max_copy_bytes):
+def _detach_cpu_sources(module, registry, max_copy_bytes, protected_intervals=()):
     """Transactional CPU-only worker; native readiness is checked by the caller."""
     if not isinstance(registry, SafetensorSliceRegistry):
         raise ValueError("Residual source detachment requires DDO source provenance")
@@ -33,6 +33,10 @@ def _detach_cpu_sources(module, registry, max_copy_bytes):
                     raise ValueError("Conflicting residual source aliases")
                 group["descriptor"] = descriptor
     selected = {key: group for key, group in groups.items() if group["descriptor"] is not None}
+    for start, size in selected:
+        if any(start < protected_start + protected_size and protected_start < start + size
+               for protected_start, protected_size in protected_intervals):
+            raise ValueError("Residual CPU tensor overlaps a retained native CPU source")
     # Partial overlaps/strides need a more general storage-preserving transform.
     # Refuse instead of silently severing alias semantics or copying shard gaps.
     intervals = sorted(groups)
@@ -84,6 +88,33 @@ def _detach_cpu_sources(module, registry, max_copy_bytes):
             "gpu_placement_changed": False, "commit_recovery_proven": False}
 
 
+def _protected_native_cpu_intervals(hook, stats):
+    """Fail closed unless every retained native CPU binding is observed."""
+    count = stats.get("cpu_source_bindings")
+    if type(count) is not int or count < 0:
+        raise ValueError("Residual source detachment requires known CPU native bindings and no started execution")
+    if count == 0:
+        return ()
+    adapter = getattr(hook, "_vmm_fast_adapter", None)
+    observe = getattr(adapter, "cpu_source_intervals", None)
+    if not callable(observe):
+        raise ValueError("Residual source detachment requires observable CPU native bindings and no started execution")
+    observation = observe()
+    if (not isinstance(observation, dict) or type(observation.get("schema_version")) is not int
+            or observation["schema_version"] != 1
+            or type(observation.get("binding_count")) is not int
+            or observation["binding_count"] != count):
+        raise ValueError("Retained native CPU source observation does not match binding count")
+    intervals = observation.get("intervals")
+    if not isinstance(intervals, (tuple, list)) or len(intervals) != count:
+        raise ValueError("Retained native CPU source intervals are incomplete")
+    for interval in intervals:
+        if (not isinstance(interval, (tuple, list)) or len(interval) != 2
+                or any(type(value) is not int or value <= 0 for value in interval)):
+            raise ValueError("Retained native CPU source interval is invalid")
+    return intervals
+
+
 def detach_auxiliary_cpu_sources(result, *, enabled=False, max_copy_bytes=16 * 1024**2):
     """Detach bounded CPU loader views once before the first native forward.
 
@@ -107,13 +138,15 @@ def detach_auxiliary_cpu_sources(result, *, enabled=False, max_copy_bytes=16 * 1
         if store is None:
             raise ValueError("Native source ownership is unavailable")
         stats = store.runtime_stats()
-        required = ("cpu_source_bindings", "faults", "execution_plan_passes")
+        required = ("faults", "execution_plan_passes")
         if any(stats.get(key) != 0 for key in required):
-            raise ValueError("Residual source detachment requires zero CPU native bindings and no started execution")
+            raise ValueError("Residual source detachment requires no started execution")
         if hook.config.vmm_component_tensor_ownership:
             raise ValueError("Whole-component ownership is outside residual CPU detachment scope")
+        protected = _protected_native_cpu_intervals(hook, stats)
         host_before = _host_snapshot()
-        observation = _detach_cpu_sources(result.module, hook._vmm_file_slices, max_copy_bytes)
+        observation = _detach_cpu_sources(result.module, hook._vmm_file_slices, max_copy_bytes, protected)
+        observation["protected_native_cpu_bindings"] = len(protected)
         observation["host_before"] = host_before
         observation["host_after"] = _host_snapshot()
         observation["status"] = "detached" if observation["copied_bytes"] else "no_source_backed_cpu_tensors"

@@ -57,6 +57,33 @@ an explicit source/capacity opt-in, not an automatic class-based conversion.
 
 ## Phase boundaries and reporting
 
+### Residual checkpoint-backed CPU tensors
+
+After attaching an exclusively owned, evaluation-mode `vmm_fast_runtime`
+component, small residual CPU parameters or buffers can still retain large
+checkpoint mappings. Before its first forward, explicitly detach these sources:
+
+```python
+report = transformer_result.detach_auxiliary_cpu_sources(
+    enabled=True, max_copy_bytes=16 * 1024**2,
+)
+print(report.format_profile())
+```
+
+This existing opt-in operation copies only registered source-backed CPU groups
+within the explicit bound. It preserves values, dtype, object identity, exact
+registered aliases and source descriptors. It refuses unknown retained native
+CPU ownership, overlapping native sources, partial aliases, unsupported layouts,
+training mode or already started native execution. Do not bypass a refusal.
+Escaped external tensor references can retain the original mapping; exclusive
+ownership is required. This does not change GPU residency or cache capacities.
+
+On Windows, releasing checkpoint ownership can reduce private commit without a
+similar reduction in resident physical RAM. Measure both separately; the metrics
+field `commit_recovery_proven` remains conservative and does not establish an
+observed Windows delta. Loading can still have a transient peak before this
+operation. The option is not an automatic preset change or CUDA recovery policy.
+
 After denoise, detach the transformer, drop all pipeline/state references, and
 perform the completed phase cleanup before loading the VAE. In an installed
 native allocator, ordinary `torch.cuda.empty_cache()` does not prove its idle

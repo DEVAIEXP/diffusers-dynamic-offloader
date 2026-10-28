@@ -1,6 +1,8 @@
 """CPU contracts for the explicitly selected residual-loader ownership boundary."""
 import json
+import gc
 from pathlib import Path
+import weakref
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -78,6 +80,37 @@ def test_limit_refuses_before_copy_or_mutation():
         with pytest.raises(ValueError, match="above the explicit"):
             result.detach_auxiliary_cpu_sources(enabled=True, max_copy_bytes=1)
     assert model.weight.data_ptr() == old
+
+
+def test_small_residual_aliases_release_large_mapped_storage(tmp_path):
+    payload = tmp_path / "mapped.bin"
+    mapped_bytes = 8 * 1024**2
+    with payload.open("wb") as output:
+        output.truncate(mapped_bytes)
+    mapped = torch.from_file(str(payload), shared=False, size=mapped_bytes // 4)
+    mapped[:12] = torch.arange(12, dtype=torch.float32)
+    model = torch.nn.Module()
+    model.register_parameter("residual", torch.nn.Parameter(mapped[:12]))
+    model.register_buffer("alias", model.residual.detach())
+    expected = model.residual.detach().clone()
+    original_storage = mapped.untyped_storage()
+    original_owner = weakref.ref(original_storage)
+    assert model.residual.untyped_storage().nbytes() == mapped_bytes
+    result = result_for(model)
+    del mapped, original_storage
+
+    report = result.detach_auxiliary_cpu_sources(enabled=True, max_copy_bytes=16 * 1024**2)
+    gc.collect()
+
+    assert original_owner() is None
+    assert model.residual.untyped_storage().nbytes() == 48
+    assert model.residual.data_ptr() == model.alias.data_ptr()
+    torch.testing.assert_close(model.residual, expected, rtol=0, atol=0)
+    observation = report.setup["auxiliary_source_detachment"]
+    assert observation["copied_bytes"] == 48
+    assert observation["copied_storage_groups"] == 1
+    assert observation["copied_named_references"] == 2
+    assert observation["commit_recovery_proven"] is False
 
 
 def test_partial_overlap_refused_before_mutation():

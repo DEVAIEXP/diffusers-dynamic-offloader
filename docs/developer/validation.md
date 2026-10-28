@@ -59,6 +59,22 @@ universal preset.
 Full model comparisons and their exact reproduction conditions are maintained
 in [DDO examples](https://github.com/DEVAIEXP/ddo-examples), not duplicated here.
 
+### Residual CPU source ownership
+
+The explicit `detach_auxiliary_cpu_sources` contract has CPU coverage for byte
+preservation, aliases, source provenance, pre-copy budget refusal, transactional
+rollback and protection of retained native CPU payloads. A mapped-storage
+regression checks that tiny registered residual aliases release their large
+original storage owner after detachment, without treating storage extent as a
+measurement of recovered RAM or private commit.
+
+Selected Windows two-step model validation also checked complete finite,
+bitwise-identical video/audio latents and safe closure after bounded detachment.
+Its commit observations and limits are recorded in the
+[model measurement details](https://github.com/DEVAIEXP/ddo-examples/blob/main/docs/benchmarks/ltx23-video-details.md#residual-cpu-source-detachment).
+This does not establish full inference/decode, other platforms/models, wheel
+acceptance, automatic enablement or a speed improvement.
+
 ## Acceptance rules
 
 Use [manual validation](manual-validation.md) to record routes, versions, native

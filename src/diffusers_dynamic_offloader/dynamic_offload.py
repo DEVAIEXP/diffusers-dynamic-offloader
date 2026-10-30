@@ -5,6 +5,7 @@ import json
 import math
 import os
 import re
+import sys
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -581,6 +582,7 @@ class DynamicOffloadConfig:
     vmm_component_buffer_limit_mb: int = 1
     vmm_page_mb: int = 0
     vmm_dxgi_local_headroom_gb: float = 0.0
+    vmm_execution_backing_reclaim: bool = False
     vmm_dxgi_shared_headroom_gb: float = 0.0
     vmm_dxgi_system_headroom_gb: float = 0.0
     # Optional persistent cache of existing CPU source pages registered with
@@ -688,6 +690,7 @@ class DynamicOffloadSettings:
             "dynamic_offload_vmm_component_buffer_limit_mb": config.vmm_component_buffer_limit_mb,
             "dynamic_offload_vmm_page_mb": config.vmm_page_mb,
             "dynamic_offload_vmm_dxgi_local_headroom_gb": config.vmm_dxgi_local_headroom_gb,
+            "dynamic_offload_vmm_execution_backing_reclaim": config.vmm_execution_backing_reclaim,
             "dynamic_offload_vmm_dxgi_shared_headroom_gb": config.vmm_dxgi_shared_headroom_gb,
             "dynamic_offload_vmm_dxgi_system_headroom_gb": config.vmm_dxgi_system_headroom_gb,
             "dynamic_offload_vmm_host_cache_gb": config.vmm_host_cache_gb,
@@ -1088,6 +1091,11 @@ class DynamicOffloadHook(ModelHook):
         self.execution_device = torch.device(config.execution_device)
         self.offload_device = torch.device(config.offload_device)
         self.execution_mode = config.execution_mode.lower()
+        if config.vmm_execution_backing_reclaim:
+            if self.execution_mode != "vmm_fast_runtime":
+                raise ValueError("execution backing reclaim requires vmm_fast_runtime")
+            if sys.platform != "win32":
+                raise ValueError("automatic execution backing reclaim requires Windows DXGI")
         self.linear_runtime_strategy = config.linear_runtime_strategy.lower()
         self.vmm_resident_weight_budget_bytes = int(
             max(0.0, float(config.vmm_resident_weight_budget_gb)) * 1024**3
@@ -1553,6 +1561,8 @@ class DynamicOffloadHook(ModelHook):
         fallbacks to the allocator submodule.  DDO only supplies immutable
         checkpoint descriptors, bounded staging, and lifecycle ownership.
         """
+        if self.config.vmm_execution_backing_reclaim and sys.platform != "win32":
+            raise ValueError("automatic execution backing reclaim requires Windows DXGI")
         resources_start = time.perf_counter()
         if self.execution_device.type != "cuda" or self.offload_device.type != "cpu":
             raise ValueError("vmm_fast_runtime requires execution_device='cuda:*' and offload_device='cpu'")
@@ -1662,6 +1672,19 @@ class DynamicOffloadHook(ModelHook):
         )
         self._vmm_fast_store = store
         self._vmm_fast_adapter = report.adapter
+        if self.config.vmm_execution_backing_reclaim:
+            try:
+                buffer = getattr(store, "execution_buffer", None)
+                pool = getattr(buffer, "pool", None)
+                if pool is None:
+                    raise ValueError("execution backing reclaim requires native execution slots")
+                pool.configure_reclaim(enabled=True, margin_bytes=256 * 1024**2)
+            except BaseException as error:
+                try:
+                    self._close_vmm_store(module)
+                except BaseException as cleanup_error:
+                    error.add_note(f"Execution backing setup cleanup failed: {cleanup_error!r}")
+                raise
         self._vmm_runtime_active = True
         self.state.add_setup("vmm_fast_attach_native_model_arena", time.perf_counter() - start, report.payload_bytes)
         self.state.patched_module_count += report.attached_modules
@@ -2911,6 +2934,7 @@ def load_dynamic_offload_settings_from_env(
         vmm_module_pattern=preset_env("DDO_VMM_MODULE_PATTERN", r".*"),
         vmm_page_mb=int(preset_env("DDO_VMM_PAGE_MB", "0")),
         vmm_dxgi_local_headroom_gb=float(preset_env("DDO_VMM_DXGI_LOCAL_HEADROOM_GB", "0")),
+        vmm_execution_backing_reclaim=preset_env("DDO_VMM_EXECUTION_BACKING_RECLAIM", "0").strip().lower() in {"1", "true", "yes", "on"},
         vmm_dxgi_shared_headroom_gb=float(preset_env("DDO_VMM_DXGI_SHARED_HEADROOM_GB", "0")),
         vmm_dxgi_system_headroom_gb=float(preset_env("DDO_VMM_DXGI_SYSTEM_HEADROOM_GB", "0")),
         vmm_host_cache_gb=float(preset_env("DDO_VMM_HOST_CACHE_GB", "0")),

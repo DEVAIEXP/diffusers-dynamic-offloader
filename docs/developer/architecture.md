@@ -28,7 +28,7 @@ flowchart TB
 
     subgraph allocator["ddo-vmm-allocator: same native DLL / .so"]
         regions["9. VMM regions: stable addresses and physical backing"]
-        arena["10. Model arena: residency, sources, slots and event fences"]
+        arena["10. Model arena: residency, sources, slot backing and event fences"]
     end
 
     nvme --> regions
@@ -101,6 +101,33 @@ routes; the enclosing frames group execution routes and native-library ownership
     through `DynamicOffloadMetrics`, `as_dict()` and `format_profile()`. Profiles
     describe capacity; they do not tune GPU residency in Python. Hosts consume
     this public interface, not internal hook or planner fields.
+
+## Optional execution-slot backing cycle
+
+This cycle expands the native execution slots in box 10. Explicit release and
+recreation share native code on Windows and Linux. The automatic DXGI trigger is
+Windows-only, opt-in and disabled by default; Linux does not use that trigger.
+
+```mermaid
+flowchart TB
+    explicit["Explicit native reclaim request"] --> eligible
+    pressure["Optional Windows DXGI trigger: insufficient local budget headroom"] --> eligible
+    eligible{"Idle, unleased slot with proven completion?"}
+    eligible -- "No" --> keep["Refuse reclaim; retain backing and ownership"]
+    eligible -- "Yes" --> release["Release physical backing; preserve virtual address"]
+    release --> acquire["Next slot acquisition: recreate backing at the same address"]
+    acquire --> upload["Reload weights from retained sources before consumption"]
+    upload --> consume["Run consumer; record completion fence"]
+    consume -. "After completion and lease release, eligible for a later request" .-> eligible
+```
+
+Recreation and upload remain subject to native admission and fixed capacities.
+A completion, unmap or release failure retains unsafe ownership and refuses
+reuse/close; it does not take the normal recreation path shown above. The cycle
+does not evict or compress activations, move them explicitly into WDDM memory,
+or guarantee physical local-VRAM placement. Automatic Windows reclaim may release
+at most one eligible slot per allocation request; shared code does not imply the
+same pressure policy on every platform. See [native configuration and scope](../user/native-vmm.md#optional-execution-slot-backing-reclaim).
 
 See the complementary [runner-level architecture](https://github.com/DEVAIEXP/ddo-examples/blob/main/docs/developer/architecture.md)
 for Modular Diffusers phase orchestration and output reporting.

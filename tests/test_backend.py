@@ -5,6 +5,20 @@ import pytest
 from diffusers_dynamic_offloader import add_dynamic_offload_arguments, resolve_dynamic_offload_backend
 
 
+@pytest.mark.parametrize("value, expected", [(None, False), ("0", False), ("1", True)])
+def test_runner_config_honors_reclaim_environment(monkeypatch, value, expected):
+    monkeypatch.delenv("DDO_VMM_EXECUTION_BACKING_RECLAIM", raising=False)
+    if value is not None:
+        monkeypatch.setenv("DDO_VMM_EXECUTION_BACKING_RECLAIM", value)
+    parser = add_dynamic_offload_arguments(argparse.ArgumentParser())
+    args = parser.parse_args(["--ddo-backend", "vmm"])
+    route = resolve_dynamic_offload_backend("vmm", "auto")
+    assert route.build_config_from_args(args).vmm_execution_backing_reclaim is expected
+    assert route.build_config(vmm_execution_backing_reclaim=False).vmm_execution_backing_reclaim is False
+    for backend, preset in [("linear", "auto"), ("vmm", "nvme_baseline")]:
+        assert not resolve_dynamic_offload_backend(backend, preset).build_config_from_args(args).vmm_execution_backing_reclaim
+
+
 def test_linear_auto_preserves_the_existing_default():
     route = resolve_dynamic_offload_backend()
 

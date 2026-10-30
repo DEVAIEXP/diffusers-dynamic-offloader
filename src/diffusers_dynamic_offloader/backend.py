@@ -7,7 +7,11 @@ import math
 from dataclasses import dataclass
 from typing import Any
 
-from .dynamic_offload import DynamicOffloadConfig, resolve_dynamic_offload_preset
+from .dynamic_offload import (
+    DynamicOffloadConfig,
+    dynamic_offload_preset_env_value,
+    resolve_dynamic_offload_preset,
+)
 
 _BACKENDS = ("linear", "vmm")
 _VMM_PRESETS = ("auto", "nvme_baseline")
@@ -55,6 +59,15 @@ class DynamicOffloadBackend:
             # Protected NVMe config is per slot; native config is total capacity.
             staging = total / 2 if self.execution_mode == "vmm_runtime" else total
         return self.build_config(
+            # Hosts using explicit configs bypass the settings environment loader.
+            # Resolve this opt-in here, within DDO, only for the native fast route.
+            vmm_execution_backing_reclaim=(
+                self.execution_mode == "vmm_fast_runtime"
+                and dynamic_offload_preset_env_value(
+                    "DDO_VMM_EXECUTION_BACKING_RECLAIM", "0",
+                    effective_preset=self.effective_preset,
+                ).strip().lower() in {"1", "true", "yes", "on"}
+            ),
             vmm_resident_weight_budget_gb=args.ddo_vmm_resident_weight_budget_gb,
             vmm_staging_buffer_gb=staging,
             vmm_native_transport=getattr(args, "ddo_vmm_native_transport", False),

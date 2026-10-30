@@ -1,4 +1,7 @@
 site_name: Diffusers Dynamic Offloader
+site_url: https://devaiexp.github.io/diffusers-dynamic-offloader/
+repo_url: https://github.com/DEVAIEXP/diffusers-dynamic-offloader
+edit_uri: ''
 site_description: DDO integration and developer documentation
 docs_dir: docs
 site_dir: .internal/docs-preview/site

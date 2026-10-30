@@ -17,6 +17,12 @@ DDO presets are route policies, not model-specific hacks. The same preset can ap
 
 ## Component Policy
 
+The table above and default component policy below describe the linear/compat
+family. Explicit `--ddo-backend vmm --ddo-preset auto` selects `vmm_fast`;
+`vmm/nvme_baseline` selects the protected legacy VMM route. Selected native
+encoder/transformer staged workloads passed on Windows and native Linux, but
+whole-component encoder ownership remains opt-in. See [native VMM usage](native-vmm.md).
+
 Typical policy shape:
 
 | Component | Dense BF16 default | Quantized/backend-specific default |
@@ -27,6 +33,12 @@ Typical policy shape:
 | small connectors / adapters | Diffusers group offload or caller-managed CUDA move | Diffusers group offload or caller-managed CUDA move |
 
 ## Platform Notes
+
+The VAE now defaults to no-stream leaf for `one_shot_fast`/`auto`,
+`low_ram_safe` and resolved `vmm_fast` settings. Other selected presets preserve
+historical resident staged-host behavior. Explicit per-component configs/routes
+remain authoritative. See [component strategies](component-strategies.md) for
+the exact table, convolution opt-in and acceptance scope.
 
 Windows:
 

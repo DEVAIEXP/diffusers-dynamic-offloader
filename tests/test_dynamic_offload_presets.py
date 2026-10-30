@@ -1,9 +1,11 @@
 import unittest
+from dataclasses import replace
 from unittest.mock import patch
 
 import torch
 import torch.nn as nn
 
+from diffusers_dynamic_offloader import DYNAMIC_OFFLOAD_METRICS_SCHEMA_VERSION
 from diffusers_dynamic_offloader.dynamic_offload import (
     DDO_PRESETS,
     DynamicOffloadConfig,
@@ -24,6 +26,12 @@ from diffusers_dynamic_offloader.dynamic_offload import (
 
 
 class DynamicOffloadPresetTests(unittest.TestCase):
+    def setUp(self):
+        # These routing/planner contracts must not query a real CUDA device.
+        guard = patch("diffusers_dynamic_offloader.dynamic_offload.get_cuda_total_vram_gb", return_value=8.0)
+        guard.start()
+        self.addCleanup(guard.stop)
+
     def test_auto_resolves_to_one_shot_fast(self):
         self.assertEqual(resolve_dynamic_offload_preset("auto", running_on_wsl=False), "one_shot_fast")
         self.assertEqual(resolve_dynamic_offload_preset("auto", running_on_wsl=True), "one_shot_fast")
@@ -70,6 +78,21 @@ class DynamicOffloadPresetTests(unittest.TestCase):
         self.assertEqual(settings.config.profile_vram_headroom_gb, 1.25)
         self.assertEqual(settings.as_metrics()["dynamic_offload_profile_vram_headroom_gb"], 1.25)
         self.assertFalse(hasattr(settings.config, "auto_full_pin_resident_budget_gb"))
+
+    def test_vmm_runtime_settings_require_an_explicit_mapping_budget(self):
+        settings = load_dynamic_offload_settings_from_env(
+            running_on_wsl=False,
+            environ={
+                "DDO_EXECUTION_MODE": "vmm_runtime",
+                "DDO_VMM_RESIDENT_WEIGHT_BUDGET_GB": "3.5",
+                "DDO_VMM_STAGING_BUFFER_GB": "0.75",
+            },
+        )
+        self.assertTrue(settings.enabled)
+        self.assertEqual(settings.config.execution_mode, "vmm_runtime")
+        self.assertEqual(settings.config.vmm_resident_weight_budget_gb, 3.5)
+        self.assertEqual(settings.config.vmm_staging_buffer_gb, 0.75)
+        self.assertEqual(settings.as_metrics()["dynamic_offload_vmm_resident_weight_budget_gb"], 3.5)
 
     def test_wsl_disables_pinned_memory_by_default(self):
         settings = load_dynamic_offload_settings_from_env(
@@ -242,6 +265,23 @@ class DynamicOffloadPresetTests(unittest.TestCase):
         self.assertEqual(results["transformer"].route, "dynamic_offload")
         self.assertIs(results["text_encoder"].settings, settings)
         self.assertIs(results["transformer"].settings, settings)
+
+    def test_apply_result_exposes_versioned_runner_neutral_metrics(self):
+        settings = load_dynamic_offload_settings_from_env(
+            running_on_wsl=False,
+            environ={"DDO_PRESET": "one_shot_fast"},
+        )
+        result = enable_dynamic_offload(nn.Linear(2, 2), settings=settings, apply_hook=False)
+
+        metrics = result.metrics_snapshot()
+        payload = metrics.as_dict()
+
+        self.assertEqual(payload["schema_version"], DYNAMIC_OFFLOAD_METRICS_SCHEMA_VERSION)
+        self.assertEqual(payload["route"], "dynamic_offload")
+        self.assertEqual(payload["configuration"]["dynamic_offload_effective_preset"], "one_shot_fast")
+        self.assertEqual(payload["setup"], result.event_payload)
+        self.assertEqual(payload["runtime"], {})
+        self.assertIn("DDO profile", metrics.format_profile())
 
     def test_enable_offload_routes_diffusers_compat_transformer_to_group_offload(self):
         settings = load_dynamic_offload_settings_from_env(
@@ -480,6 +520,24 @@ class DynamicOffloadPresetTests(unittest.TestCase):
         )
         result = maybe_purge_windows_standby_cache(settings, "before_run", print_message=False)
         self.assertEqual(result["reason"], "disabled")
+
+    def test_vmm_settings_use_lifecycle_defaults_without_linear_preset_lookup(self):
+        settings = load_dynamic_offload_settings_from_env(
+            running_on_wsl=False, environ={"DDO_PRESET": "off"},
+        )
+        for preset in ("vmm_fast", "nvme_baseline"):
+            with self.subTest(preset=preset):
+                native_settings = replace(settings, effective_preset=preset)
+                result = maybe_purge_windows_standby_cache(
+                    native_settings, "before_run", environ={}, print_message=False,
+                )
+                self.assertEqual(result["reason"], "disabled")
+                self.assertEqual(native_settings.preset_value("DDO_TEST", "fallback", {}), "fallback")
+                self.assertTrue(native_settings.preset_bool(
+                    "DDO_PURGE_WINDOWS_STANDBY_BEFORE_RUN", environ={
+                        "DDO_PURGE_WINDOWS_STANDBY_BEFORE_RUN": "1",
+                    },
+                ))
 
     def test_format_presets_lists_default_mapping(self):
         formatted = format_dynamic_offload_presets(default_preset="auto", running_on_wsl=False)

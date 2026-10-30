@@ -23,6 +23,14 @@ complete model runs.
 
 ## Selected installed-wheel acceptance
 
+The current published pair is `0.1.0rc3`; see its
+[final artifact hashes and registry checks](releases.md#published-rc3).
+The final distribution passed strict metadata validation, clean Windows and
+Ubuntu 22.04 container CPU installation checks, and a clean Windows PyPI
+installation/discovery check without CUDA. Model validation below identifies
+the original wheel containers and native payloads separately; registry
+publication does not broaden their acceptance scope.
+
 The `0.1.0rc2` allocator/DDO candidate pair has selected installed allocator
 smoke-test acceptance on Windows, native Linux and WSL. The unchanged Linux
 wheel was used on both Linux targets.

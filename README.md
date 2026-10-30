@@ -27,6 +27,9 @@ This snippet selects the default linear route. See
 
 ## Documentation
 
+Read the [documentation website](https://devaiexp.github.io/diffusers-dynamic-offloader/)
+or browse the Markdown guides below.
+
 - [User guides](docs/user/README.md): installation, integration, presets and reporting.
 - [Developer guides](docs/developer/README.md): architecture, diagnostics, builds and validation.
 

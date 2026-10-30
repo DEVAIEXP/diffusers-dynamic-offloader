@@ -1,5 +1,14 @@
 # Local documentation preview
 
+The public site is <https://devaiexp.github.io/diffusers-dynamic-offloader/>.
+The `docs-pages.yml` workflow builds with MkDocs 1.6.1 in strict mode and
+publishes through GitHub Pages after documentation changes reach `main`.
+Maintainers can also dispatch it manually. Only the generated static site is
+uploaded; inference packages, submodules, local outputs and private records
+are not needed. GitHub Pages must use GitHub Actions as its publishing source.
+
+The commands below remain a local preview and do not publish anything.
+
 From the DDO repository root, run:
 
 ```text

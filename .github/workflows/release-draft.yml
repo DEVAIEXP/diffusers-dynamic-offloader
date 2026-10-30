@@ -1,0 +1,60 @@
+name: Prepare reviewed PyPI release draft
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Published PyPI prerelease version (for example 0.1.0rc4)
+        required: true
+        type: string
+      source_commit:
+        description: Full source SHA used to build the validated published wheels
+        required: true
+        type: string
+  workflow_call:
+    inputs:
+      version:
+        required: true
+        type: string
+      source_commit:
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-draft-${{ github.repository }}-${{ inputs.version }}
+  cancel-in-progress: false
+
+jobs:
+  draft:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    env:
+      RELEASE_VERSION: ${{ inputs.version }}
+      SOURCE_COMMIT: ${{ inputs.source_commit }}
+      RELEASE_REPOSITORY: ${{ github.repository }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Check out shared release tooling only
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: DEVAIEXP/diffusers-dynamic-offloader
+          ref: main
+          persist-credentials: false
+          sparse-checkout: scripts/prepare_github_release.py
+          sparse-checkout-cone-mode: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.12'
+      - name: Verify published wheels and prepare draft with changelog
+        run: >-
+          python -B scripts/prepare_github_release.py
+          --repository "$RELEASE_REPOSITORY"
+          --version "$RELEASE_VERSION"
+          --source-commit "$SOURCE_COMMIT"
+          --output "$RUNNER_TEMP/release-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"

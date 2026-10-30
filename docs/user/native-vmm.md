@@ -1,5 +1,33 @@
 # Native VMM usage and support
 
+## Optional execution-slot backing reclaim
+
+`DynamicOffloadConfig(vmm_execution_backing_reclaim=True)` enables the experimental
+Windows DXGI policy only on `vmm_fast_runtime`. The default is `False`; DDO-owned
+environment configuration also recognizes `DDO_VMM_EXECUTION_BACKING_RECLAIM=1`.
+The standard backend `build_config_from_args` path honors this override for
+`vmm/auto` as well; explicit `build_config` overrides remain authoritative.
+An explicitly enabled policy requires a compatible allocator and native execution
+slots. Linux refuses automatic enablement because DXGI is Windows-specific.
+No equivalent Linux pressure policy or cross-platform performance is implied.
+
+Before new Torch backing, native code may release at most one completed idle
+execution slot when reported local budget headroom is below the requested bytes
+plus 256 MiB. This margin is experimental. The virtual address remains reserved;
+the next slot acquisition recreates physical backing and the normal upload path
+reloads the weights. Leased/prefetched slots and pending consumers remain protected.
+Completion or partial release failures retain unsafe ownership and refuse reuse
+and close. There is no activation eviction, compression, retry or forced cleanup.
+
+Explicit native release/recreation is shared by Windows and Linux; this does not
+enable a Linux automatic pressure policy. The local rc3 Linux wheel has selected
+WSL explicit-reclaim and Linux/WSL image functional validation, with automatic
+reclaim disabled. These image runs do not validate the Windows DXGI trigger or
+establish a speed improvement. Earlier isolated Windows evidence does not certify
+a different release artifact. See [selected validation](../developer/validation.md#local-rc3-linux-wheel-pair)
+and [metrics and collection controls](metrics.md). Capacity counters do not prove
+physical local-VRAM placement.
+
 `linear/auto` remains the default portable PyTorch route. Choose native VMM
 explicitly; it is not silently enabled by a model class or platform.
 

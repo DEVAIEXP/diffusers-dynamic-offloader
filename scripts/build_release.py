@@ -32,6 +32,8 @@ FEATURES = {
 REQUIRED_EXPORTS = {
     "ddo_vmm_torch_malloc", "ddo_vmm_torch_free", "ddo_vmm_source_abi_version",
     "ddo_vmm_source_cache_create", "ddo_vmm_model_arena_create",
+    "ddo_vmm_execution_pool_reclaim_idle", "ddo_vmm_execution_pool_configure_reclaim",
+    "ddo_vmm_execution_pool_reclaim_stats",
 }
 
 

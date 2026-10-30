@@ -40,6 +40,7 @@ from .metrics import DYNAMIC_OFFLOAD_METRICS_SCHEMA_VERSION, DynamicOffloadMetri
 from .host_cache import release_pytorch_host_cache
 from .device_cache import release_native_vmm_idle_cache
 from .host_memory import inspect_host_memory
+from .memory_failure import diagnose_memory_failure
 from .timing import DynamicOffloadExecutionTimer
 from .profiles import (
     DYNAMIC_OFFLOAD_PROFILE_SCHEMA_VERSION,
@@ -71,6 +72,7 @@ __all__ = [
     "release_pytorch_host_cache",
     "release_native_vmm_idle_cache",
     "inspect_host_memory",
+    "diagnose_memory_failure",
     "DynamicOffloadExecutionTimer",
     "DynamicOffloadBackend",
     "add_dynamic_offload_arguments",

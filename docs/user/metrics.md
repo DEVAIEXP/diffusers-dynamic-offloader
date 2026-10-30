@@ -1,5 +1,24 @@
 # Metrics reference
 
+## Collection controls and overhead
+
+Runtime accounting and report display are distinct from detailed instrumentation.
+Saving a report does not enable ETW, an operator trace or a tensor access map.
+Collection has overhead; compare runs with equivalent collection settings.
+
+| Collection | Default and activation | Scope and overhead |
+| --- | --- | --- |
+| Runtime capacity/transfer counters | Part of the selected runtime; use `metrics_snapshot()` | Accounting and copied snapshots, not per-tensor physical placement. |
+| Profile/metrics display | Explicit runner display/save controls | Formatting and output I/O; no automatic detailed tracing. |
+| Allocation diagnostics | Explicit `allocation_diagnostics(enabled=True)` scope and compatible build | Driver-call timing and bounded records. |
+| Operator diagnostics | `operator_diagnostics(enabled=False)` by default | Enabled hooks, sampling, events/waits and output can affect timings. |
+| Metrics journal | `metrics_journal(..., enabled=False)` by default | Enabled snapshots and disk I/O; disabled mode creates no directories. |
+| Windows native mapping history | `DDO_VMM_MAPPING_TRACE=OFF` at build time by default; explicit recording required | Bounded native records and clock queries; internal maintainer interface. |
+| Commit sampling, ETW and owner/access investigations | Separately launched internal candidates | Not an automatic background collector or a supported normal-runner CLI. |
+
+Required native budget/completion queries are execution safety/control work,
+not optional tracing. Disabling diagnostics must not bypass ownership checks.
+
 ## Read a report
 
 Use the public result returned by DDO instead of reading hook/planner attributes:

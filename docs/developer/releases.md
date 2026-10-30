@@ -177,6 +177,38 @@ Actions retention is not permanent package publication or backup.
 Clean CI candidates need their own installed validation; local dirty builds
 do not certify them.
 
+## GitHub release drafts
+
+After publishing and verifying a wheel version on PyPI, open **Actions → Prepare
+reviewed PyPI release draft → Run workflow** on `main`. Supply the published
+version (for example `0.1.0rc4`) and the full source commit SHA used for those
+wheels. Select the original build revision, not a later documentation commit.
+Run this separately in DDO and the allocator; their source SHAs differ and must
+match the recorded allocator gitlink. No extra token is required: each repository
+uses its own scoped `GITHUB_TOKEN` through the shared DDO workflow.
+
+The workflow downloads that project's existing PyPI wheels, checks SHA256 and
+package/version metadata, and attaches them with `SHA256SUMS`, a manifest and
+generated release notes. It creates a **draft prerelease**, refuses existing
+tags/releases and never replaces assets, runs CUDA, rebuilds binaries or uploads
+to PyPI. Upload failure can leave a partial draft; inspect it before continuing.
+The draft itself does not prove that the supplied source SHA built the wheels;
+the maintainer must verify that identity against the build records.
+
+Review the assets, source target, changelog and validation scope in **Releases**.
+Publishing the draft is a separate explicit action and creates its `v<version>`
+tag at the selected commit. The automated notes list merged pull requests and
+link to the full comparison; `.github/release.yml` groups labeled changes.
+Review and edit the notes when direct commits or validation details need context.
+
+The allocator calls DDO's shared release workflow on `main`, so changes to that
+workflow affect subsequent allocator drafts too. No inference dependencies or
+native toolchain are installed by the draft workflow. The existing manual
+candidate builder remains the first step for new binaries and still requires
+the dedicated self-hosted runner described above. A build-only result must pass
+its separate installed GPU/platform gates before publication; this workflow does
+not turn new CI builds into accepted release assets.
+
 ## Publication checklist
 
 1. Review source revisions, allocator gitlink, version pairing and required notices.

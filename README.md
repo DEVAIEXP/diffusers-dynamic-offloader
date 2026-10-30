@@ -12,7 +12,7 @@ or [Modular Diffusers](docs/user/modular-pipeline.md) integration.
 
 Normal linear use requires no native allocator or compiler. Native VMM is optional:
 it uses a matching packaged DLL/.so and bootstrap before CUDA initialization.
-Experimental version `0.1.0rc2` is available on PyPI. The installation guide
+Experimental version `0.1.0rc3` is available on PyPI. The installation guide
 uses published packages, without requiring a source clone or local wheel files.
 
 ```python

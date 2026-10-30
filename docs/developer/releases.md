@@ -12,7 +12,7 @@ SHA256. Install and validate the actual wheel pair, then distribute those
 same bytes without rebuilding. NVIDIA driver libraries remain external.
 There is no import-time or inference-time build/download.
 
-## Published prerelease
+## Previous published prerelease
 
 Version `0.1.0rc2` is published on PyPI for
 [DDO](https://pypi.org/project/diffusers-dynamic-offloader/0.1.0rc2/) and the
@@ -31,7 +31,11 @@ below produce initial candidates; their Linux outputs still require that audit
 before index publication. Published files are immutable: corrections require
 a new release, not replacing an existing version's artifacts.
 
-## Local rc3 candidate status
+## Published rc3
+
+Version `0.1.0rc3` was published on 2026-10-30 for
+[DDO](https://pypi.org/project/diffusers-dynamic-offloader/0.1.0rc3/) and the
+[allocator](https://pypi.org/project/ddo-vmm-allocator/0.1.0rc3/).
 
 The local `0.1.0rc3` Linux wheel pair has selected installed-wheel image
 functional acceptance on native Linux and WSL using the same packaged bytes.
@@ -42,13 +46,13 @@ validated. Activation NVMe eviction and compression experiments are not part of
 this release scope. Detailed operator, ETW and memory-access investigations are
 not enabled by ordinary report collection.
 
-The candidate is not published. The final local distribution assembled on
+The published files are the final distribution assembled on
 2026-10-30 passed auditwheel 6.4.2 repair for `manylinux_2_35_x86_64`, excluding
 the external system `libcuda.so.1`. Repair preserved every native library byte;
 the NVIDIA driver is not bundled. The earlier builder output retains its
 original `linux_x86_64` tag and identity.
 
-| Final local wheel | SHA256 |
+| Published wheel | SHA256 |
 | --- | --- |
 | `diffusers_dynamic_offloader-0.1.0rc3-py3-none-any.whl` | `d9cc131b40459c251a667b58b748675856325b3da7e66335f35b5f2adcb8898e` |
 | `ddo_vmm_allocator-0.1.0rc3-py3-none-win_amd64.whl` | `45e361c6ea2706bd810ce408306e889e2b8465be4aafba8d8e56f6b284e86644` |
@@ -60,10 +64,12 @@ hash, discovery and mocked bootstrap-child checks. These checks do not load
 CUDA. The selected model validations used the same native payloads; the
 final repaired Linux archive has not itself undergone a new model run.
 
-Selected development-wheel validation does not close source commits, the
-allocator gitlink, final artifact provenance, metadata/portability checks or
-package-index installation. Follow the package-index checklist below and obtain
-explicit approval before tags, pushes or uploads. Rebuilding changes artifact
+The source snapshots were matched to allocator commit `1528358` and DDO commit
+`7841e54`, including the allocator gitlink. Registry metadata and downloaded
+files matched all three hashes above. A clean Windows installation from PyPI
+passed dependency-free discovery and simulated bootstrap checks without CUDA;
+this does not replace the selected platform/model validation. No Git tags or
+pushes were performed as part of publication. Rebuilding changes artifact
 identity and must not inherit the previous wheel's acceptance automatically.
 
 ## One-command native Linux candidate generation

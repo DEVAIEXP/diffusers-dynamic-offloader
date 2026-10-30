@@ -1,6 +1,6 @@
 # Installation
 
-DDO and its native allocator are available as experimental `0.1.0rc2` packages
+DDO and its native allocator are available as experimental `0.1.0rc3` packages
 on PyPI. Use the matching versions
 below; installing a prerelease does not require building native code.
 
@@ -39,20 +39,20 @@ and their dependencies from PyPI.
 ### Windows PowerShell
 
 ```powershell
-uv venv --managed-python --python 3.12.12 .venv-ddo-rc2
-$python = (Resolve-Path '.venv-ddo-rc2/Scripts/python.exe').Path
+uv venv --managed-python --python 3.12.12 .venv-ddo-rc3
+$python = (Resolve-Path '.venv-ddo-rc3/Scripts/python.exe').Path
 uv pip install --python $python --link-mode copy --index-url https://download.pytorch.org/whl/cu132 'torch==2.12.1+cu132'
-uv pip install --python $python --link-mode copy --index-url https://pypi.org/simple/ 'diffusers-dynamic-offloader[vmm]==0.1.0rc2' 'ddo-vmm-allocator==0.1.0rc2' 'diffusers==0.41.0' 'accelerate==1.14.0' 'safetensors==0.8.0' 'psutil==7.2.2' 'numpy==2.5.3' 'cuda-core==1.2.0' 'cuda-bindings==13.4.1'
+uv pip install --python $python --link-mode copy --index-url https://pypi.org/simple/ 'diffusers-dynamic-offloader[vmm]==0.1.0rc3' 'ddo-vmm-allocator==0.1.0rc3' 'diffusers==0.41.0' 'accelerate==1.14.0' 'safetensors==0.8.0' 'psutil==7.2.2' 'numpy==2.5.3' 'cuda-core==1.2.0' 'cuda-bindings==13.4.1'
 uv pip check --python $python
 ```
 
 ### Native Linux or WSL Bash
 
 ```bash
-uv venv --managed-python --python 3.12.12 .venv-ddo-rc2
-python="$PWD/.venv-ddo-rc2/bin/python"
+uv venv --managed-python --python 3.12.12 .venv-ddo-rc3
+python="$PWD/.venv-ddo-rc3/bin/python"
 uv pip install --python "$python" --link-mode copy --index-url https://download.pytorch.org/whl/cu132 'torch==2.12.1+cu132'
-uv pip install --python "$python" --link-mode copy --index-url https://pypi.org/simple/ 'diffusers-dynamic-offloader[vmm]==0.1.0rc2' 'ddo-vmm-allocator==0.1.0rc2' 'diffusers==0.41.0' 'accelerate==1.14.0' 'safetensors==0.8.0' 'psutil==7.2.2' 'numpy==2.5.3' 'cuda-core==1.2.0' 'cuda-bindings==13.4.1'
+uv pip install --python "$python" --link-mode copy --index-url https://pypi.org/simple/ 'diffusers-dynamic-offloader[vmm]==0.1.0rc3' 'ddo-vmm-allocator==0.1.0rc3' 'diffusers==0.41.0' 'accelerate==1.14.0' 'safetensors==0.8.0' 'psutil==7.2.2' 'numpy==2.5.3' 'cuda-core==1.2.0' 'cuda-bindings==13.4.1'
 uv pip check --python "$python"
 ```
 
@@ -70,7 +70,7 @@ Bash:
 "$python" -I -B -c "import importlib.metadata as m, torch, diffusers_dynamic_offloader as d; print('DDO:', m.version('diffusers-dynamic-offloader'), d.__file__); print('Allocator:', m.version('ddo-vmm-allocator')); print('Torch:', torch.__version__); print('CUDA initialized:', torch.cuda.is_initialized())"
 ```
 
-Expected: version `0.1.0rc2`, installed `site-packages` paths and
+Expected: version `0.1.0rc3`, installed `site-packages` paths and
 `CUDA initialized: False`. Importing the package does not start CUDA; this does
 not mean GPU support is missing.
 

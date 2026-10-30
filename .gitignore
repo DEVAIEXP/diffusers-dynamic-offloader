@@ -10,6 +10,9 @@ checkpoints/
 
 # Virtual environments
 .venv
+.venv-vmm/
+.venv-linux/
+/.pytest*/
 .python-version
 
 # IDE settings
@@ -49,3 +52,11 @@ download.py
 # Binary files
 *.so
 experiments/ltx2_image_experiments.md
+
+# Local implementation reports; not part of the public delivery.
+/.internal/
+
+# Isolated external kernel comparison downloads and generated build artifacts.
+/kernels/benchmarks/external_qk_rope/vendor/
+/kernels/benchmarks/external_qk_rope/build-windows-*/
+/kernels/benchmarks/external_qk_rope/build-windows-*.log

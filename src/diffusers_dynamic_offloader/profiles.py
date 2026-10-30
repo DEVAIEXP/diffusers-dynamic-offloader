@@ -11,8 +11,8 @@ import hashlib
 import json
 import math
 import os
+import sys
 import threading
-import time
 import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
@@ -26,6 +26,25 @@ DYNAMIC_OFFLOAD_PROFILE_SCHEMA_VERSION = 1
 _PROFILE_PREFIX = "ddo-capacity-v1"
 _SDNQ_DEFAULT_RESIDENT_CEILING_GB = 6.0
 _SDNQ_PROBE_MIN_SAFE_BUDGET_GB = 2.0
+
+
+def inspect_vmm_component(module, *, component: str = "model", module_pattern: str = ".*"):
+    """Observe native selection on CPU/meta; no attachment or support claim.
+
+    The optional allocator package is imported only when this is requested.
+    No budget, profile file, module, source or CUDA state is modified.
+    """
+    from .metrics import DynamicOffloadMetrics
+
+    if not isinstance(component, str) or not component.strip():
+        raise ValueError("component must be a nonempty string")
+    from ddo_vmm_allocator import inspect_model_linear_layout
+
+    return DynamicOffloadMetrics(
+        route="vmm_capacity_inspection",
+        configuration={"component": component, "module_pattern": module_pattern},
+        setup={"capacity_inspection": inspect_model_linear_layout(module, module_pattern)},
+    )
 
 
 class _CudaPeakSampler:
@@ -66,16 +85,30 @@ class _CudaPeakSampler:
 class _NamedProfile:
     """Library-owned identity, application and measurement for a named workload."""
 
-    def __init__(self, module, config):
+    def __init__(self, module, config, *, component="model"):
         self.config = config
         self.context = {
             "name": config.profile_name,
             "model_class": type(module).__qualname__,
             "identity_version": 2,
+            "execution_mode": config.execution_mode,
         }
         self.report = {"name": config.profile_name, "status": "disabled"}
+        # Explicit VMM component profiles must not share observations merely
+        # because two components have the same Python class/profile name.
+        # Preserve generic VMM and all existing linear/SDNQ profile identities.
+        if config.execution_mode == "vmm_fast_runtime" and component != "model":
+            if not isinstance(component, str) or not component.strip():
+                raise ValueError("VMM profile component must be a non-empty string.")
+            self.context.update(identity_version=3, component=component)
+            self.report["component"] = component
         self._active = False
         self._sdnq_probe_budget_gb: float | None = None
+        self._vmm_hook = None
+
+    def attach_hook(self, hook) -> None:
+        """Associate the applied runtime so a VMM profile can take a snapshot."""
+        self._vmm_hook = hook
 
     def prepare(self):
         config = self.config
@@ -86,8 +119,14 @@ class _NamedProfile:
         if config.build_profile:
             if torch.device(config.execution_device).type != "cuda":
                 raise ValueError("Profile calibration requires a CUDA execution device.")
-            if config.execution_mode not in {"linear_runtime", "sdnq_runtime"}:
-                raise ValueError("Profile calibration requires execution_mode='linear_runtime' or 'sdnq_runtime'.")
+            if config.execution_mode not in {"linear_runtime", "sdnq_runtime", "vmm_fast_runtime"}:
+                raise ValueError(
+                    "Profile calibration requires execution_mode='linear_runtime', 'sdnq_runtime', or 'vmm_fast_runtime'."
+                )
+            if config.execution_mode == "vmm_fast_runtime":
+                self.report["status"] = "observing_vmm_capacity"
+                self.report["profile_measurement_kind"] = "vmm_capacity"
+                return config
             if not math.isfinite(config.profile_vram_headroom_gb) or config.profile_vram_headroom_gb < 0:
                 raise ValueError("profile_vram_headroom_gb must be finite and non-negative.")
             self.report["status"] = "calibrating"
@@ -99,6 +138,14 @@ class _NamedProfile:
                 print(f"[dynamic-offload] profile {config.profile_name!r}: calibrating SDNQ zero-resident baseline.")
             print(f"[dynamic-offload] profile {config.profile_name!r}: calibrating with zero resident budget.")
             return replace(config, resident_module_budget_gb=0.0, profile_resident_module_budget_gb=0.0)
+        if config.execution_mode == "vmm_fast_runtime":
+            record = load_dynamic_offload_profile(self.context)
+            if record is None:
+                self.report["status"] = "missing"
+            else:
+                self.report["status"] = "observed"
+                self.report["vmm_capacity"] = dict((record.get("observations") or [{}])[-1].get("vmm", {}))
+            return config
         # An explicit caller budget has always taken precedence over a saved
         # recommendation.  It is not itself a profile calibration.
         if config.resident_module_budget_gb > 0:
@@ -132,6 +179,49 @@ class _NamedProfile:
     @contextmanager
     def measure(self):
         """Measure only the caller's inference region, then persist on success."""
+        if self.config.execution_mode == "vmm_fast_runtime":
+            if not self.config.build_profile:
+                yield self.report
+                return
+            if self._vmm_hook is None:
+                raise RuntimeError("VMM capacity profiling requires an applied dynamic-offload hook.")
+            if self._active:
+                raise RuntimeError("A profile measurement is already active.")
+            self._active = True
+            try:
+                yield self.report
+                torch.cuda.synchronize(torch.device(self.config.execution_device))
+                stats = self._vmm_hook.vmm_runtime_stats() or {}
+                capacity = {
+                    "backend": "vmm_fast_runtime",
+                    "platform": sys.platform,
+                    "virtual_bytes": int(stats.get("fast_virtual_bytes", 0)),
+                    "page_bytes": int(stats.get("fast_page_bytes", 0)),
+                    "resident_bytes": int(stats.get("fast_resident_bytes", 0)),
+                    "file_backed_bindings": int(stats.get("fast_file_backed_bindings", 0)),
+                    "file_backed_bytes": int(stats.get("fast_file_backed_bytes", 0)),
+                    "cpu_source_bindings": int(stats.get("fast_cpu_source_bindings", 0)),
+                    "faults": int(stats.get("fast_faults", 0)),
+                    "signature_hits": int(stats.get("fast_signature_hits", 0)),
+                    "uploads": int(stats.get("fast_uploads", 0)),
+                    "temporary_tensors": int(stats.get("fast_temporary_tensors", 0)),
+                    "temporary_bytes": int(stats.get("fast_temporary_bytes", 0)),
+                }
+                observation = {
+                    "status": "success",
+                    "profile_measurement_kind": "vmm_capacity",
+                    "capacity": {"metric": "vmm_virtual_bytes", "value": capacity["virtual_bytes"]},
+                    "vmm": capacity,
+                }
+                path = record_dynamic_offload_profile(self.context, observation)
+                self.report.update(path=str(path), **observation)
+                self.report["status"] = "saved"
+            except BaseException:
+                self.report["status"] = "failed"
+                raise
+            finally:
+                self._active = False
+            return
         if not self.config.build_profile and self._sdnq_probe_budget_gb is None:
             yield self.report
             return

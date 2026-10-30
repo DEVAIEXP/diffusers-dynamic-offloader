@@ -5,7 +5,6 @@ from contextlib import ExitStack
 from types import SimpleNamespace
 from unittest.mock import patch
 
-import torch
 import torch.nn as nn
 
 from diffusers_dynamic_offloader import (
@@ -28,6 +27,9 @@ class NamedProfileTests(unittest.TestCase):
         self.stack.enter_context(patch("torch.cuda.memory_reserved", return_value=int(0.5 * 1024**3)))
         self.stack.enter_context(patch("torch.cuda.max_memory_reserved", return_value=int(5.5 * 1024**3)))
         self.stack.enter_context(patch("torch.cuda.mem_get_info", return_value=(7 * 1024**3, 8 * 1024**3)))
+        # Capacity profiles are CPU contracts. An unmocked device-property
+        # query would silently initialize CUDA on GPU-equipped machines.
+        self.stack.enter_context(patch("torch.cuda.get_device_properties", return_value=SimpleNamespace(total_memory=8 * 1024**3)))
 
     def enable(self, **kwargs):
         return enable_offload(nn.Linear(2, 2), apply_hook=False, use_environment=False,
@@ -66,7 +68,7 @@ class NamedProfileTests(unittest.TestCase):
         with patch(
             "torch.cuda.get_device_properties",
             return_value=SimpleNamespace(total_memory=8 * 1024**3),
-        ), patch("torch.cuda.max_memory_reserved", return_value=int(4 * 1024**3)):
+        ), patch("torch.cuda.max_memory_reserved", return_value=4 * 1024**3):
             profile = _NamedProfile(nn.Linear(2, 2), config)
             prepared = profile.prepare()
             with profile.measure():
@@ -109,12 +111,95 @@ class NamedProfileTests(unittest.TestCase):
         self.assertAlmostEqual(saved["recommendation"]["profile_resident_module_budget_gb"], 0.83, places=2)
         self.assertNotIn("sdnq_probe_resident_budget_gb", saved["recommendation"])
 
+    def test_vmm_profile_records_capacity_without_changing_the_vmm_budget(self):
+        config = DynamicOffloadConfig(
+            execution_mode="vmm_fast_runtime",
+            execution_device="cuda",
+            profile_name="vmm-example",
+            build_profile=True,
+            vmm_resident_weight_budget_gb=4,
+        )
+        profile = _NamedProfile(nn.Linear(2, 2), config)
+        prepared = profile.prepare()
+        profile.attach_hook(
+            SimpleNamespace(
+                vmm_runtime_stats=lambda: {
+                    "fast_virtual_bytes": 16 * 1024**2,
+                    "fast_page_bytes": 2 * 1024**2,
+                    "fast_resident_bytes": 4 * 1024**2,
+                    "fast_file_backed_bindings": 2,
+                    "fast_file_backed_bytes": 64,
+                    "fast_cpu_source_bindings": 0,
+                    "fast_faults": 3,
+                    "fast_signature_hits": 1,
+                    "fast_uploads": 2,
+                    "fast_temporary_tensors": 0,
+                    "fast_temporary_bytes": 0,
+                }
+            )
+        )
+
+        with profile.measure() as report:
+            pass
+
+        self.assertEqual(prepared.vmm_resident_weight_budget_gb, 4)
+        self.assertEqual(report["status"], "saved")
+        saved = load_dynamic_offload_profile(profile.context)
+        observation = saved["observations"][-1]
+        self.assertEqual(observation["profile_measurement_kind"], "vmm_capacity")
+        self.assertEqual(observation["vmm"]["virtual_bytes"], 16 * 1024**2)
+        self.assertEqual(observation["vmm"]["cpu_source_bindings"], 0)
+
     def test_different_names_are_independent(self):
         with self.enable(build_profile=True).profile_run():
             pass
         other = enable_offload(nn.Linear(2, 2), apply_hook=False, use_environment=False,
                                profile_name="other")
         self.assertFalse(other.settings.config._profile_budget_applied)
+
+    def test_vmm_components_have_independent_capacity_observations(self):
+        config = DynamicOffloadConfig(execution_mode="vmm_fast_runtime",
+                                     execution_device="cuda", profile_name="shared-name",
+                                     build_profile=True, vmm_resident_weight_budget_gb=4)
+        profiles = []
+        for component, size in (("transformer", 1024), ("text_encoder", 2048)):
+            profile = _NamedProfile(nn.Linear(2, 2), config, component=component)
+            self.assertIs(profile.prepare(), config)
+            profile.attach_hook(SimpleNamespace(vmm_runtime_stats=lambda size=size: {
+                "fast_virtual_bytes": size, "fast_page_bytes": 512,
+                "fast_file_backed_bindings": 2, "fast_cpu_source_bindings": 0,
+            }))
+            with profile.measure():
+                pass
+            profiles.append(profile)
+        self.assertNotEqual(profiles[0].context, profiles[1].context)
+        for profile, size in zip(profiles, (1024, 2048)):
+            saved = load_dynamic_offload_profile(profile.context)
+            self.assertEqual(saved["observations"][-1]["vmm"]["virtual_bytes"], size)
+            self.assertEqual(profile.context["identity_version"], 3)
+            self.assertEqual(config.vmm_resident_weight_budget_gb, 4)
+
+    def test_generic_vmm_and_linear_profile_identities_are_preserved(self):
+        for mode in ("vmm_fast_runtime", "linear_runtime", "sdnq_runtime"):
+            config = DynamicOffloadConfig(execution_mode=mode, profile_name="identity")
+            generic = _NamedProfile(nn.Linear(2, 2), config)
+            self.assertEqual(generic.context["identity_version"], 2)
+            self.assertNotIn("component", generic.context)
+            if mode != "vmm_fast_runtime":
+                component = _NamedProfile(nn.Linear(2, 2), config, component="text_encoder")
+                self.assertEqual(component.context, generic.context)
+
+    def test_enable_offload_passes_component_to_vmm_profile(self):
+        config = DynamicOffloadConfig(execution_mode="vmm_fast_runtime", profile_name="component")
+        with patch("diffusers_dynamic_offloader.profiles._NamedProfile", wraps=_NamedProfile) as factory:
+            enable_offload(nn.Linear(2, 2), component="text_encoder", route="dynamic_offload",
+                           config=config, apply_hook=False, use_environment=False)
+        self.assertEqual(factory.call_args.kwargs["component"], "text_encoder")
+
+    def test_vmm_component_profile_refuses_blank_identity(self):
+        config = DynamicOffloadConfig(execution_mode="vmm_fast_runtime")
+        with self.assertRaisesRegex(ValueError, "non-empty"):
+            _NamedProfile(nn.Linear(2, 2), config, component=" ")
 
     def test_loader_consumes_profile_options(self):
         calls = []

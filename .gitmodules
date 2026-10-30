@@ -1,0 +1,3 @@
+[submodule "ddo-vmm-allocator"]
+	path = ddo-vmm-allocator
+	url = https://github.com/DEVAIEXP/ddo-vmm-allocator.git

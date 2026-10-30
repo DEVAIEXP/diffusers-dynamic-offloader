@@ -1,0 +1,50 @@
+site_name: Diffusers Dynamic Offloader
+site_description: DDO integration and developer documentation
+docs_dir: docs
+site_dir: .internal/docs-preview/site
+dev_addr: 127.0.0.1:8001
+use_directory_urls: true
+theme:
+  name: mkdocs
+  locale: en
+  highlightjs: false
+plugins:
+  - search
+extra_javascript:
+  - docs/assets/mermaid.js
+hooks:
+  - tools/docs/preview.py
+watch:
+  - README.md
+  - AGENTS.md
+nav:
+  - Project: README.md
+  - User guides:
+      - Overview: docs/user/README.md
+      - Installation: docs/user/installation.md
+      - Full pipeline: docs/user/full-pipeline.md
+      - Staged pipeline: docs/user/staged-pipeline.md
+      - Modular Diffusers: docs/user/modular-pipeline.md
+      - Presets and platforms: docs/user/presets-and-platforms.md
+      - Configuration: docs/user/configuration.md
+      - Component strategies: docs/user/component-strategies.md
+      - Dynamic loading: docs/user/dynamic-loading.md
+      - Capacity profiles: docs/user/capacity-profiles.md
+      - Metrics: docs/user/metrics.md
+      - Native VMM: docs/user/native-vmm.md
+      - Linear convolution: docs/user/linear-convolution-offload.md
+      - Saved FP8: docs/user/fp8-weight-only.md
+      - FP8 conversion: docs/user/fp8-weight-only-conversion.md
+  - Developer guides:
+      - Overview: docs/developer/README.md
+      - Development installation: docs/developer/installation.md
+      - Architecture: docs/developer/architecture.md
+      - Support: docs/developer/support.md
+      - Test hardware: docs/developer/hardware.md
+      - Validation: docs/developer/validation.md
+      - Native builds: docs/developer/builds.md
+      - Package delivery: docs/developer/releases.md
+      - Manual validation: docs/developer/manual-validation.md
+      - Host registration: docs/developer/host-registration-probe.md
+      - Host-cache boundary: docs/developer/pytorch-host-cache-boundary.md
+      - Documentation preview: docs/developer/docs-preview.md

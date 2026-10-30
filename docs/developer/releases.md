@@ -1,0 +1,228 @@
+# Package delivery
+
+## Ownership and artifacts
+
+The allocator repository owns platform-native DLL/.so wheels. DDO owns its
+pure Python wheel and compatible allocator dependency. Examples owns model
+runners and benchmarks, not native distribution.
+
+Build from reviewed source revisions with the allocator submodule initialized.
+Record source identity, API/ABI, native features, toolchain, dependencies and
+SHA256. Install and validate the actual wheel pair, then distribute those
+same bytes without rebuilding. NVIDIA driver libraries remain external.
+There is no import-time or inference-time build/download.
+
+## Previous published prerelease
+
+Version `0.1.0rc2` is published on PyPI for
+[DDO](https://pypi.org/project/diffusers-dynamic-offloader/0.1.0rc2/) and the
+[allocator](https://pypi.org/project/ddo-vmm-allocator/0.1.0rc2/).
+The three published wheels match the validated TestPyPI files byte for byte.
+
+| Wheel | SHA256 |
+| --- | --- |
+| `diffusers_dynamic_offloader-0.1.0rc2-py3-none-any.whl` | `f6d7d743a6c8dcc492e390bbc688a43f64b880243465ac38b71ca1013b8435b7` |
+| `ddo_vmm_allocator-0.1.0rc2-py3-none-win_amd64.whl` | `5cc5b2594d20b97150f92cebc83f285a8574990ecf235eb80b773f5fb241754a` |
+| `ddo_vmm_allocator-0.1.0rc2-py3-none-manylinux_2_35_x86_64.whl` | `9e5f2bb735dbe05b4c105e292c45f1e64302f7b82664da1dd0b87a7f4893fc98` |
+
+The Linux wheel was audited/repaired for `manylinux_2_35_x86_64`, without
+bundling the NVIDIA driver or changing the native library bytes. The builders
+below produce initial candidates; their Linux outputs still require that audit
+before index publication. Published files are immutable: corrections require
+a new release, not replacing an existing version's artifacts.
+
+## Published rc3
+
+Version `0.1.0rc3` was published on 2026-10-30 for
+[DDO](https://pypi.org/project/diffusers-dynamic-offloader/0.1.0rc3/) and the
+[allocator](https://pypi.org/project/ddo-vmm-allocator/0.1.0rc3/).
+
+The local `0.1.0rc3` Linux wheel pair has selected installed-wheel image
+functional acceptance on native Linux and WSL using the same packaged bytes.
+See [validation and artifact identities](validation.md#local-rc3-linux-wheel-pair).
+The candidate contains shared execution-slot release/recreation support;
+automatic pressure-triggered reclaim is Windows-only, opt-in and separately
+validated. Activation NVMe eviction and compression experiments are not part of
+this release scope. Detailed operator, ETW and memory-access investigations are
+not enabled by ordinary report collection.
+
+The published files are the final distribution assembled on
+2026-10-30 passed auditwheel 6.4.2 repair for `manylinux_2_35_x86_64`, excluding
+the external system `libcuda.so.1`. Repair preserved every native library byte;
+the NVIDIA driver is not bundled. The earlier builder output retains its
+original `linux_x86_64` tag and identity.
+
+| Published wheel | SHA256 |
+| --- | --- |
+| `diffusers_dynamic_offloader-0.1.0rc3-py3-none-any.whl` | `d9cc131b40459c251a667b58b748675856325b3da7e66335f35b5f2adcb8898e` |
+| `ddo_vmm_allocator-0.1.0rc3-py3-none-win_amd64.whl` | `45e361c6ea2706bd810ce408306e889e2b8465be4aafba8d8e56f6b284e86644` |
+| `ddo_vmm_allocator-0.1.0rc3-py3-none-manylinux_2_35_x86_64.whl` | `018fb09d2b95d07bd5987702172252bcfc1febb7be609a0725d684322eef5364` |
+
+All three files passed strict metadata validation with twine 7.0.0 and
+packaging 26.3. The final Windows and Linux pairs passed isolated CPU metadata,
+hash, discovery and mocked bootstrap-child checks. These checks do not load
+CUDA. The selected model validations used the same native payloads; the
+final repaired Linux archive has not itself undergone a new model run.
+
+The source snapshots were matched to allocator commit `1528358` and DDO commit
+`7841e54`, including the allocator gitlink. Registry metadata and downloaded
+files matched all three hashes above. A clean Windows installation from PyPI
+passed dependency-free discovery and simulated bootstrap checks without CUDA;
+this does not replace the selected platform/model validation. No Git tags or
+pushes were performed as part of publication. Rebuilding changes artifact
+identity and must not inherit the previous wheel's acceptance automatically.
+
+## One-command native Linux candidate generation
+
+From the DDO root, with uv, CMake, a C++20 compiler, readelf, nm and a reviewed
+CUDA toolkit installed:
+
+```bash
+uv run --locked --project tools/release python scripts/build_release.py \
+  --version 0.1.0rc3 --cuda-toolkit /path/to/reviewed/cu13 --dry-run
+```
+
+The version is an example for a new candidate, not a published package claim.
+Review the plan and remove `--dry-run` to build. Existing output directories
+are refused. Dirty sources are refused unless `--allow-dirty` explicitly
+selects a development snapshot; that snapshot is not a clean tagged release.
+`--allocator-version` selects a different reviewed package pairing.
+
+The builder uses locked release tools, isolated source snapshots and a new
+CPU installation environment. It compiles native CPU contracts, audits ELF
+dependencies/symbols/exports, verifies wheels and checks installed discovery.
+It does not execute CUDA. Default output:
+`.internal/releases/<version>/linux-x86_64/`.
+
+A host-built Linux wheel inherits that host's C/C++ ABI requirements. Building
+on a newer distribution does not make it installable on Ubuntu/WSL 22.04.
+Use the Docker ABI-baseline recipe for that target; neither wheel is
+automatically manylinux-compliant.
+
+## Docker candidate from Windows (Ubuntu 22.04 ABI baseline)
+
+```powershell
+python -B scripts/build_release_docker.py --version 0.1.0rc3 --dry-run
+```
+
+Docker Desktop must provide Linux x86-64 containers. The recipe pins its CUDA
+13.2.1 Ubuntu 22.04 image by digest and its release tools. Image preparation
+downloads build dependencies, not models. Candidate execution has no GPU or
+network, two CPUs and a 6 GiB memory/swap ceiling. Source is mounted read-only;
+output uses a separate directory.
+
+The wrapper invokes the Linux builder, including CPU contracts and installed
+discovery. It refuses requirements above GLIBC 2.35, GLIBCXX 3.4.30 or CXXABI
+1.3.13. The toolkit link stub is not distributed; the host supplies libcuda.
+The wheel tag remains `linux_x86_64`, not manylinux.
+
+Default output: `.internal/releases/<version>/docker-linux-x86_64/`.
+Retain Docker provenance with the release manifest. Validate the unchanged
+wheel separately on native Linux and WSL; container CPU success is not CUDA
+acceptance.
+
+## Windows native candidate generation
+
+Use Python 3.12, uv, CMake >=3.25, MSVC 2022 x64 Build Tools and CUDA 13.2.
+Keep Windows release tools separate from Linux environments on shared storage.
+
+```powershell
+$env:UV_PROJECT_ENVIRONMENT = "$PWD/tools/release/.venv-windows"
+uv sync --locked --project tools/release --link-mode copy
+& "$env:UV_PROJECT_ENVIRONMENT/Scripts/python.exe" -B scripts/build_release.py `
+  --version 0.1.0rc3 `
+  --cuda-toolkit 'C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v13.2' `
+  --dumpbin 'C:/path/to/reviewed/MSVC/bin/Hostx64/x64/dumpbin.exe' `
+  --dry-run
+```
+
+Select the installed dumpbin path, review the plan and remove `--dry-run`.
+The builder compiles native CPU contracts and a Release AMD64 DLL, audits PE
+dependencies/exports without loading it and checks clean-wheel discovery.
+The allocator wheel is `py3-none-win_amd64`; DDO remains pure Python.
+
+The Windows profile enables span pool, joined spans and allocation diagnostics;
+Linux enables span pool without the latter two features. Probes, execution
+kernels, source dispatcher and test hooks are disabled in both profiles.
+Review explicit features rather than assuming CMake defaults.
+Default output: `.internal/releases/<version>/windows-amd64/`.
+
+## Distribution and validation
+
+Each candidate's `dist/` contains both wheels, `SHA256SUMS` and
+`release-manifest.json`; Docker adds its provenance record. Source snapshots,
+private logs and test environments are not distribution assets.
+
+Follow [installation](../user/installation.md) and [validation](validation.md)
+for clean-environment checks. CPU discovery is separate from installed CUDA
+validation and from full-model acceptance. Never overwrite accepted binaries
+or retag a host build as manylinux without its required audit.
+
+## GitHub candidate workflow
+
+`.github/workflows/release-candidates.yml` uses manual `workflow_dispatch`
+with an explicit prerelease version. It invokes the local builders for Windows
+CUDA 13.2 and Docker Linux. It does not publish packages, create tags/releases,
+run CUDA or download models.
+
+The workflow requires a dedicated trusted self-hosted Windows x64 runner with
+the `ddo-release` label, PowerShell 7, Git, uv, Python 3.12, CMake, MSVC, CUDA
+13.2 and Docker Desktop. Define `DDO_RELEASE_CUDA132` and
+`DDO_RELEASE_DUMPBIN` as the toolkit and dumpbin paths. Windows symlink tests
+require developer mode or symlink privilege. Do not use a personal inference
+checkout as the runner's disposable workspace.
+
+Only distribution files are retained as Actions artifacts, for 14 days.
+Actions retention is not permanent package publication or backup.
+Clean CI candidates need their own installed validation; local dirty builds
+do not certify them.
+
+## Publication checklist
+
+1. Review source revisions, allocator gitlink, version pairing and required notices.
+2. Build candidates and verify manifests/checksums.
+3. Validate the exact installed artifacts on the intended targets.
+4. Publish those bytes with compatibility and installation instructions.
+5. Update user documentation to the actual package-index/release availability.
+
+Package-index upload is not implemented by the candidate workflow. Keep
+credentials out of source and private records out of release assets.
+
+## Package-index preparation
+
+Local wheel acceptance and index acceptance are separate gates. Before uploading
+to TestPyPI or PyPI:
+
+1. Ensure published dependency metadata contains no direct URL or Git requirements,
+   including optional extras. Checkout-only `diffusers-mm` is in the
+   `vmm-harness` dependency group, not a published extra. Maintainers who need it
+   can install it explicitly with `uv pip install --group vmm-harness` from this
+   checkout and their selected environment.
+2. Run metadata validation on the newly assembled wheels. Changed metadata
+   means a changed wheel hash and requires validation of the resulting file.
+   Use `twine==7.0.0` with `packaging==26.3` for the current candidates and run
+   `python -m twine check --strict <wheel-files>`. The allocator uses Core
+   Metadata 2.5; use tools that support that version. Metadata validation does
+   not upload packages or test CUDA.
+3. Audit Linux wheels against an appropriate manylinux policy before assigning
+   that tag. A builder's `linux_x86_64` output needs this audit before index
+   publication. An Ubuntu ABI baseline alone does not establish
+   manylinux compliance. Resolve external CUDA-driver linkage without bundling
+   the system driver; do not merely rename the wheel or suppress audit failures.
+4. Keep the native library bytes and their hashes when possible. Record any
+   repair-induced change and revalidate the resulting installed artifact.
+5. Close source commits and the allocator gitlink, then record the exact wheel
+   set and checksums. TestPyPI credentials and project ownership must be configured
+   before an explicitly approved upload. Never paste tokens into documentation,
+   commands recorded in the repository or chat.
+
+TestPyPI is a separate registry with separate accounts. For installation tests,
+obtain third-party dependencies from their documented production indexes, then
+install the exact DDO/allocator versions from TestPyPI with `--no-deps`. Do not
+resolve arbitrary third-party dependencies from the test registry. Repeat the
+installed native check and the selected model recipe on Windows and Linux;
+Windows model acceptance does not establish Linux model acceptance.
+
+References: [direct URL restrictions](https://setuptools.pypa.io/en/stable/userguide/dependency_management.html#direct-url-dependencies),
+[manylinux policies and audit](https://github.com/pypa/auditwheel), and
+[using TestPyPI](https://packaging.python.org/en/latest/guides/using-testpypi/).

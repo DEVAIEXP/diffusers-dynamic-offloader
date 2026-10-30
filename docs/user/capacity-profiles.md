@@ -32,7 +32,7 @@ with the earlier host-context API are not automatically mapped to names.
 
 ## Calibration and measurement
 
-Calibration requires the dynamic CUDA linear runtime. It forces the resident
+Residency calibration requires the dynamic CUDA linear or SDNQ runtime. It forces the resident
 module budget to zero. The host chooses the number of inference steps and wraps
 the region to measure in `profile_run()`. DDO saves only when that region exits
 successfully; an exception leaves an existing recommendation untouched.
@@ -50,6 +50,20 @@ settings loader also accepts `DDO_PROFILE_VRAM_HEADROOM_GB`.
 This is a measured estimate, not a guarantee for changed inputs or later steps.
 A manual positive `resident_module_budget_gb` overrides profile reuse, and
 `max_resident_module_budget_gb` caps the automatic recommendation when positive.
+
+For `sdnq_runtime`, automatic pin/RAM admission counts direct packed parameters,
+scales and backend auxiliaries, not dense Linear shape eligibility. Dense fallback
+Linears are kept on the execution device and are not SDNQ pin candidates. The
+resolved byte ceiling, ratio, maximum and known available-RAM headroom bound new
+pins; existing loader-owned pins are preserved and any excess is reported.
+This accounts for ordinary packed tensors, not arbitrary tensor-subclass backing
+storage or GPU dequantization temporaries. A pin budget is not a resident budget.
+
+An SDNQ zero-resident calibration can save a pending resident probe when measured
+headroom permits it. The report's `profile_measurement_kind` distinguishes
+`sdnq_baseline_safe`, `sdnq_baseline_probe_pending` and `sdnq_probe`; a pending
+recommendation is not a validated resident run. Reusing that profile may perform
+the probe in a later inference. Do not infer video capacity from an image profile.
 
 ## Staged pipelines and loading
 

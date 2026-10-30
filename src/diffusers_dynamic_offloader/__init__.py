@@ -1,3 +1,7 @@
+from .backend import (
+    DynamicOffloadBackend, add_dynamic_offload_arguments,
+    add_dynamic_offload_lifecycle_arguments, resolve_dynamic_offload_backend,
+)
 from .dynamic_offload import (
     DDO_PRESETS,
     DiffusersGroupOffloadResult,
@@ -32,6 +36,12 @@ from .dynamic_offload import (
     remove_dynamic_offload,
     resolve_dynamic_offload_preset,
 )
+from .metrics import DYNAMIC_OFFLOAD_METRICS_SCHEMA_VERSION, DynamicOffloadMetrics
+from .host_cache import release_pytorch_host_cache
+from .device_cache import release_native_vmm_idle_cache
+from .host_memory import inspect_host_memory
+from .memory_failure import diagnose_memory_failure
+from .timing import DynamicOffloadExecutionTimer
 from .profiles import (
     DYNAMIC_OFFLOAD_PROFILE_SCHEMA_VERSION,
     DynamicOffloadProfileSession,
@@ -40,10 +50,12 @@ from .profiles import (
     get_dynamic_offload_profile_capacity,
     get_dynamic_offload_profile_dir,
     get_dynamic_offload_profile_recommendation,
+    inspect_vmm_component,
     load_dynamic_offload_profile,
     normalize_dynamic_offload_profile_context,
     record_dynamic_offload_profile,
 )
+from .vmm_weight_store import VmmWeightLease, VmmWeightStore, VmmWeightStoreStats
 
 __all__ = [
     "DDO_PRESETS",
@@ -55,6 +67,17 @@ __all__ = [
     "DynamicOffloadSettings",
     "DynamicOffloadState",
     "DiffusersGroupOffloadResult",
+    "DYNAMIC_OFFLOAD_METRICS_SCHEMA_VERSION",
+    "DynamicOffloadMetrics",
+    "release_pytorch_host_cache",
+    "release_native_vmm_idle_cache",
+    "inspect_host_memory",
+    "diagnose_memory_failure",
+    "DynamicOffloadExecutionTimer",
+    "DynamicOffloadBackend",
+    "add_dynamic_offload_arguments",
+    "add_dynamic_offload_lifecycle_arguments",
+    "resolve_dynamic_offload_backend",
     "apply_dynamic_offload",
     "detect_quantized_backend_modules",
     "enable_dynamic_offload",
@@ -85,7 +108,11 @@ __all__ = [
     "get_dynamic_offload_profile_capacity",
     "get_dynamic_offload_profile_dir",
     "get_dynamic_offload_profile_recommendation",
+    "inspect_vmm_component",
     "load_dynamic_offload_profile",
     "normalize_dynamic_offload_profile_context",
     "record_dynamic_offload_profile",
+    "VmmWeightLease",
+    "VmmWeightStore",
+    "VmmWeightStoreStats",
 ]

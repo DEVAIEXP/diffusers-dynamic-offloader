@@ -57,6 +57,9 @@ Diffusers leaf text encoder and resident temporal VAE; the method column names
 the **transformer** route. GPU peaks are sampled absolute driver usage; RAM peaks
 are process RSS. Times are seconds and memory is GiB.
 
+Before comparing rows, read the [labels and memory glossary](https://devaiexp.github.io/ddo-examples/docs/benchmarks/glossary/)
+for runtime labels, latency scope and peak-memory definitions.
+
 | Transformer method | Denoise (s) | Video VAE decode (s) | Tracked total (s) | Peak GPU (absolute, GiB) | Peak RAM (RSS, GiB) |
 | --- | ---: | ---: | ---: | ---: | ---: |
 | Diffusers streamed leaf | 392.91 | 22.52 | 452.33 | 4.72 | 41.34 |

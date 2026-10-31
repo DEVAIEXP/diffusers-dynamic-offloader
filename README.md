@@ -33,11 +33,14 @@ Diffusers leaf text encoder and resident temporal VAE; the method column names
 the **transformer** route. GPU peaks are sampled absolute driver usage; RAM peaks
 are process RSS. Times are seconds and memory is GiB.
 
-| Transformer method | Denoise (s) | Tracked total (s) | Peak GPU (absolute, GiB) | Peak RAM (RSS, GiB) |
-| --- | ---: | ---: | ---: | ---: |
-| Diffusers streamed leaf | 392.91 | 452.33 | 4.72 | 41.34 |
-| DDO linear (`one_shot_fast`) | 262.22 | 336.44 | 4.72 | 47.87 |
-| DDO native VMM (`vmm_fast`) | 207.40 | 277.09 | 5.21 | 32.65 |
+| Transformer method | Denoise (s) | Video VAE decode (s) | Tracked total (s) | Peak GPU (absolute, GiB) | Peak RAM (RSS, GiB) |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Diffusers streamed leaf | 392.91 | 22.52 | 452.33 | 4.72 | 41.34 |
+| DDO linear (`one_shot_fast`) | 262.22 | 23.47 | 336.44 | 4.72 | 47.87 |
+| DDO native VMM (`vmm_fast`) | 207.40 | 24.00 | 277.09 | 5.21 | 32.65 |
+
+Video VAE decode excludes decoder loading, audio decode and vocoder work. The
+tracked total already includes these phases; it is not denoise plus decode.
 
 This is a selected pipeline comparison, not an allocator-only ablation or a
 universal speedup. Tracked total excludes command startup and downloads. Read

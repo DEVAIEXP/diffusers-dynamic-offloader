@@ -35,7 +35,7 @@ established linear route. A route's status does not certify every model,
 architecture or hardware configuration. See [presets and component policies](docs/user/presets-and-platforms.md)
 and [support boundaries](docs/developer/support.md).
 
-## Architecture at a glance
+## Architecture overview
 
 DDO configures offloading per component. For example, an encoder can use
 Diffusers leaf offloading while the transformer uses a DDO runtime.

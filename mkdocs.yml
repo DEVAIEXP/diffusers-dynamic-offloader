@@ -22,6 +22,7 @@ watch:
   - AGENTS.md
 nav:
   - Project: README.md
+  - Benchmarks: https://devaiexp.github.io/ddo-examples/docs/benchmarks/summary/
   - User guides:
       - Overview: docs/user/README.md
       - Installation: docs/user/installation.md

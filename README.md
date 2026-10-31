@@ -35,6 +35,31 @@ established linear route. A route's status does not certify every model,
 architecture or hardware configuration. See [presets and component policies](docs/user/presets-and-platforms.md)
 and [support boundaries](docs/developer/support.md).
 
+## Architecture at a glance
+
+DDO configures offloading per component. For example, an encoder can use
+Diffusers leaf offloading while the transformer uses a DDO runtime.
+
+```mermaid
+flowchart TB
+    pipeline["Diffusers pipeline: encoder, transformer, VAE"]
+    policy["DDO: resolve the configured route per component"]
+    pipeline --> policy
+    policy --> linear["DDO linear: PyTorch-backed offloading"]
+    policy --> native["Native fast VMM: experimental C++ memory management"]
+    policy --> compat["Diffusers compatibility: official offload hooks"]
+    linear --> compute["Model / backend computation"]
+    native --> compute
+    compat --> compute
+    compute --> reports["DDO metrics and lifecycle reports"]
+```
+
+The branches show alternative routes, not automatic performance tuning or
+parallel execution. This overview highlights the main choices; the runtime
+table above also covers the NVMe baseline and SDNQ route. See the
+[detailed architecture](docs/developer/architecture.md) for native ownership,
+memory management and safe cleanup.
+
 ## What native VMM adds
 
 VMM means **CUDA Virtual Memory Management**. The optional native allocator keeps

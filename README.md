@@ -20,7 +20,7 @@ Diffusers hooks. The model/backend still owns the computation.
 | --- | --- | --- |
 | **DDO linear** (`linear_runtime`) | Uses PyTorch-backed offloading for dense weights; no native allocator is required. | Established default route, including `one_shot_fast`, `low_ram_safe`, `wsl_compat` and `warm_process` policies. |
 | **DDO native fast VMM** (`vmm_fast_runtime`) | Uses the optional C++ allocator, bounded GPU arena and retained weight sources. | Experimental; selected Windows, native Linux and WSL workloads are validated separately. |
-| **Legacy NVMe VMM** (`vmm_runtime`) | Preserves the older NVMe-backed offload implementation. | Protected baseline/fallback, selected explicitly with `vmm/nvme_baseline`; separate from native fast. |
+| **NVMe-backed VMM** (`vmm_runtime`) | Uses NVMe storage as a backing source for weights and manages GPU residency through VMM. | Maintained baseline/fallback, selected explicitly with `vmm/nvme_baseline`; separate from native fast. |
 | **Diffusers compatibility** | Delegates offloading to official Diffusers block/group or leaf hooks and preserves backend forwards. | Maintained compatibility routes, useful alone or alongside DDO strategies in other phases. |
 | **SDNQ packed route** (`sdnq_runtime`) | Offloads supported packed modules while preserving SDNQ computation. | Backend-specific, selected recipes only; not general quantization or native VMM support. |
 

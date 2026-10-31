@@ -9,6 +9,32 @@ manages loading, transfers and resource lifetime; Diffusers and the selected
 backend still perform the model computation. Encoder, transformer and VAE phases
 can use different strategies, including official Diffusers leaf offloading.
 
+## Runtimes: how DDO executes offloading
+
+A **runtime** is the implementation that manages weight placement, transfers
+and reuse while the model runs. DDO provides several routes so that a workload
+can use PyTorch-backed offloading, native memory management or official
+Diffusers hooks. The model/backend still owns the computation.
+
+| Route | What it does | Status / scope |
+| --- | --- | --- |
+| **DDO linear** (`linear_runtime`) | Uses PyTorch-backed offloading for dense weights; no native allocator is required. | Established default route, including `one_shot_fast`, `low_ram_safe`, `wsl_compat` and `warm_process` policies. |
+| **DDO native fast VMM** (`vmm_fast_runtime`) | Uses the optional C++ allocator, bounded GPU arena and retained weight sources. | Experimental; selected Windows, native Linux and WSL workloads are validated separately. |
+| **Legacy NVMe VMM** (`vmm_runtime`) | Preserves the older NVMe-backed offload implementation. | Protected baseline/fallback, selected explicitly with `vmm/nvme_baseline`; separate from native fast. |
+| **Diffusers compatibility** | Delegates offloading to official Diffusers block/group or leaf hooks and preserves backend forwards. | Maintained compatibility routes, useful alone or alongside DDO strategies in other phases. |
+| **SDNQ packed route** (`sdnq_runtime`) | Offloads supported packed modules while preserving SDNQ computation. | Backend-specific, selected recipes only; not general quantization or native VMM support. |
+
+A **backend** selects a runtime family; a **preset** selects its policy.
+For dense weights, `linear/auto` selects `one_shot_fast`, while `vmm/auto`
+selects experimental native fast VMM. The `off` preset leaves placement to the
+caller. An encoder, transformer and VAE can use different routes; choosing VMM
+for the transformer does not make the entire pipeline native.
+
+The current `0.1.0rc3` package is an **experimental prerelease**, including the
+established linear route. A route's status does not certify every model,
+architecture or hardware configuration. See [presets and component policies](docs/user/presets-and-platforms.md)
+and [support boundaries](docs/developer/support.md).
+
 ## What native VMM adds
 
 VMM means **CUDA Virtual Memory Management**. The optional native allocator keeps
@@ -19,10 +45,8 @@ It does not reserve all GPU memory, pin every allocation in local VRAM, compress
 activations or change the model's attention/math. Windows may still page GPU
 allocations under pressure.
 
-The regular **DDO linear** route uses PyTorch-backed offloading and needs no
-native allocator. **DDO native VMM** is a separate optional route. Neither is a
-replacement for every Diffusers offloading strategy; choose per workload and
-component. See [native integration](docs/user/native-vmm.md) and
+Choose a route per workload and component; native VMM does not replace every
+Diffusers offloading strategy. See [native integration](docs/user/native-vmm.md) and
 [architecture](docs/developer/architecture.md) for the contracts.
 
 ## Measured example

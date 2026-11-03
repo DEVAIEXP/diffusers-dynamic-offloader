@@ -102,6 +102,101 @@ routes; the enclosing frames group execution routes and native-library ownership
     describe capacity; they do not tune GPU residency in Python. Hosts consume
     this public interface, not internal hook or planner fields.
 
+## Native weight loading and transport
+
+The native fast route separates initial component loading from repeated weight
+delivery during inference. `from_pretrained_with_dynamic_offload(...)` associates
+supported tensors with immutable checkpoint slices. `enable_offload(...)` then
+connects component hooks to the native arena and transport. The generic loading
+helper alone does not select this transport or replace every loader allocation;
+see [dynamic loading](../user/dynamic-loading.md) and
+[native integration](../user/native-vmm.md).
+
+The following expands box 10 for file-backed weights in `vmm_fast_runtime`.
+It does not describe the linear route or the protected NVMe baseline.
+
+```mermaid
+flowchart TB
+    checkpoint["Immutable checkpoint shards"]
+    descriptors["Retained source descriptors: identity, offsets and sizes"]
+    batch["Reusable native batches: source ranges and destinations"]
+    lookup{"Requested source bytes retained?"}
+    readers["Bounded native readers: positioned file I/O"]
+    cache["Persistent CPU source storage"]
+    fallback["Uncached fallback: read into reusable host ring"]
+    registered{"Source storage registered with CUDA?"}
+    ring["Reusable registered staging ring"]
+    upload["Asynchronous H2D on owned upload stream"]
+    destination["GPU model arena or reusable execution slot"]
+    compute["Original model / backend forward"]
+    fence["Upload and last-consumer completion fences"]
+
+    checkpoint --> descriptors --> batch --> lookup
+    lookup -- "Hit" --> cache
+    lookup -- "Miss; storage admitted" --> readers --> cache
+    lookup -- "Retention bypass" --> fallback --> ring
+    cache --> registered
+    registered -- "Yes" --> upload
+    registered -- "No; staging fallback" --> ring --> upload
+    upload --> destination
+    destination -- "Consumer waits for upload readiness" --> compute
+    compute --> fence
+    fence -. "Permit safe slot, ticket and buffer retirement or reuse" .-> batch
+```
+
+Arrows describe ownership and data paths, not a promise of simultaneous disk,
+DMA and compute activity. Retained-source preparation and GPU look-ahead are
+distinct: reading bytes into CPU storage does not make them registered or GPU
+resident. Optional dispatcher observations depend on native build/API support.
+
+### Resources and responsibilities
+
+| Resource | Capability | Boundary |
+| --- | --- | --- |
+| Source descriptors | Retain immutable file identity and byte ranges independently of loader CPU tensors. | Checkpoints must remain unchanged while sources are live. Supported source association must be established during loading. |
+| Positioned readers | Windows uses overlapped file reads; Linux uses `pread`. A bounded native worker pool reads chunks into owned buffers. | The current implementation uses 2 MiB chunks and at most eight workers, further limited by ring slot count. These are implementation details, not public tuning arguments or evidence of disk saturation. |
+| Persistent CPU storage | Retains source bytes so neighboring ranges and later requests can reuse them without another source read. | The storage ceiling is separate from CUDA registration and GPU capacity. Partial coverage can cause rereads or bypasses. |
+| CUDA registration | Allows retained host bytes to supply asynchronous transfers directly when admitted. | Unregistering preserves stored content. A registration fallback can stage already retained bytes through the ring without rereading the file. |
+| Host ring | Reuses bounded registered staging slots for file reads or copies from unregistered retained bytes. | A slot remains owned until its read and DMA complete. Uncached fallback can wait for file readiness before submitting H2D. |
+| Immutable batches | Reuse validated source ranges and destination metadata across uploads, reducing repeated host orchestration. | Batches retain source and transfer ownership through partial failures; they are not a second Python weight cache. |
+| GPU arena and execution slots | Keep stable virtual addresses and reuse physical capacity for weights required by the current execution unit. | Virtual reservation, materialized backing and physical local-VRAM placement are different observations. Reuse requires upload and consumer completion. |
+| Component hooks | Arrange demand delivery and supported next-unit GPU look-ahead before calling the original forward. | Prefetch admission can be refused by capacity. Model order, attention, timestep and backend mathematics remain outside native transport policy. |
+
+Storage, registration, staging and GPU capacities are independently bounded.
+Increasing retained CPU storage does not increase the GPU weight budget, and
+reserving GPU virtual addresses does not materialize all of that capacity.
+Native admission checks and completion fences remain authoritative on both cache
+hits and fallbacks. Missing observations or unproven completion do not authorize
+growth, early reuse or forced release.
+
+### Observability and performance interpretation
+
+Read transport observations through `DynamicOffloadMetrics`, `as_dict()` and
+`format_profile()`, rather than native handles or hook internals. The
+[metric catalog](../user/metrics.md#native-pipeline-source-abi-v11-stats-v8)
+documents field availability, units and nested timing scopes.
+
+- Source-read bytes count file reads requested by DDO, including aligned windows;
+  the operating system may satisfy them from its page cache. They are not a
+  measurement of physical disk traffic.
+- DMA bytes describe host-to-device transport, not checkpoint loading or model
+  computation. A cache hit can avoid a source read while still requiring H2D.
+- `fast_source_cache_batch_bypass_bytes` identifies uncached ring traffic.
+  Registration fallback is different: retained bytes can still be available.
+- `fast_source_cache_source_ready_seconds` measures host readiness checks/waits
+  entering direct retained-source upload; explicit source waits and fallback
+  are excluded. It is not total disk service time. Batch submission and registration scopes can
+  contain other waits; nested timers must not be summed as independent work.
+- GPU prefetch hits and dispatcher window counts establish scheduling events,
+  not useful overlap or speedup. Compare complete phases and completed workload
+  timings under the same capacities before changing transport policy.
+
+These mechanisms support bounded streaming and reuse without requiring a new
+checkpoint format or changing tensor values. They do not compress weights,
+provide direct storage-to-GPU DMA, or guarantee that loading is the workload's
+bottleneck. Windows, native Linux and WSL have separate capacity and validation
+boundaries; see [support](support.md) and [validation](validation.md).
+
 ## Optional execution-slot backing cycle
 
 This cycle expands the native execution slots in box 10. Explicit release and

@@ -62,6 +62,14 @@ memory management and safe cleanup.
 
 ## What native VMM adds
 
+The native fast route also provides a bounded weight transport: parallel native
+file reads, retained CPU source bytes, independently limited CUDA registration,
+reusable staging buffers and asynchronous uploads. Supported weights remain
+associated with immutable checkpoint slices, allowing repeated delivery without
+retaining loader CPU tensors as the source cache. See the
+[native loading and transport architecture](docs/developer/architecture.md#native-weight-loading-and-transport)
+for the data paths, fallback behavior and measurements used to assess their benefit.
+
 VMM means **CUDA Virtual Memory Management**. The optional native allocator keeps
 GPU pointer addresses stable while managing the physical memory behind them.
 The native fast route uses a bounded weight arena, reusable execution buffers

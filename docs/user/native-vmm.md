@@ -78,6 +78,11 @@ checkpoint slices. The host provides the model loader and pipeline phases;
 DDO/native code owns descriptors, source bytes, transfers, events and cleanup.
 The checkpoint must stay immutable throughout execution.
 
+The [native loading and transport architecture](../developer/architecture.md#native-weight-loading-and-transport)
+shows positioned parallel reads, retained CPU storage, registration, staging and
+GPU execution buffers, including the uncached fallback. These resources have
+separate lifetimes and limits; cache hits do not necessarily eliminate H2D.
+
 Active GPU capacity, retained host storage and CUDA registration have separate
 ceilings. A virtual address reservation is not physical VRAM consumption.
 The benchmark used full-source coverage; smaller host capacity can introduce

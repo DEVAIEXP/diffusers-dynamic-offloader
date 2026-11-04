@@ -37,6 +37,33 @@ explicitly; it is not silently enabled by a model class or platform.
 | `--ddo-backend vmm --ddo-preset auto` | Experimental `vmm_fast_runtime` |
 | `--ddo-backend vmm --ddo-preset nvme_baseline` | Protected `vmm_runtime` |
 
+## Proposed resident-weight tuning for larger GPUs
+
+Start with the resident-weight budget from a validated recipe. For the same
+workload on a larger GPU, try assigning a fraction of the additional VRAM to
+weights:
+
+```text
+trial budget = baseline budget + fraction × (target VRAM − baseline VRAM)
+```
+
+For example, the LTX 2.3 video VMM fast recipe uses a 1.5 GiB resident-weight
+budget on an 8 GiB GPU. The following values are proposed trials for a 16 GiB
+GPU and still need validation on that hardware.
+
+| Fraction of additional VRAM | `--ddo-vmm-resident-weight-budget-gb` |
+| --- | ---: |
+| 0% (same-budget control) | 1.5 |
+| 25% (first trial) | 3.5 |
+| 50% (second trial) | 5.5 |
+
+Keep resolution, duration, attention backend and all other settings fixed.
+Change only the resident-weight budget and compare completed runs using denoising
+time and absolute peak VRAM. Leave room for activations and temporary buffers.
+Host staging, source cache and source registration have separate budgets.
+For the linear runtime, use [capacity profiles](capacity-profiles.md) on the
+target GPU with the intended workload.
+
 ## Installation and lifecycle
 
 Install a matching platform allocator/DDO wheel pair using the

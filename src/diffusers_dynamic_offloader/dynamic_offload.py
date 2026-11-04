@@ -2934,7 +2934,10 @@ def load_dynamic_offload_settings_from_env(
         vmm_module_pattern=preset_env("DDO_VMM_MODULE_PATTERN", r".*"),
         vmm_page_mb=int(preset_env("DDO_VMM_PAGE_MB", "0")),
         vmm_dxgi_local_headroom_gb=float(preset_env("DDO_VMM_DXGI_LOCAL_HEADROOM_GB", "0")),
-        vmm_execution_backing_reclaim=preset_env("DDO_VMM_EXECUTION_BACKING_RECLAIM", "0").strip().lower() in {"1", "true", "yes", "on"},
+        vmm_execution_backing_reclaim=(
+            execution_mode == "vmm_fast_runtime"
+            and preset_bool("DDO_VMM_EXECUTION_BACKING_RECLAIM")
+        ),
         vmm_dxgi_shared_headroom_gb=float(preset_env("DDO_VMM_DXGI_SHARED_HEADROOM_GB", "0")),
         vmm_dxgi_system_headroom_gb=float(preset_env("DDO_VMM_DXGI_SYSTEM_HEADROOM_GB", "0")),
         vmm_host_cache_gb=float(preset_env("DDO_VMM_HOST_CACHE_GB", "0")),

@@ -6,11 +6,24 @@ from diffusers_dynamic_offloader import dynamic_offload as runtime
 
 
 def test_reclaim_remains_disabled_without_explicit_configuration():
-    settings = runtime.load_dynamic_offload_settings_from_env(environ={}, running_on_wsl=False)
+    settings = runtime.load_dynamic_offload_settings_from_env(
+        environ={"DDO_EXECUTION_MODE": "vmm_fast_runtime"}, running_on_wsl=False)
     assert settings.config.vmm_execution_backing_reclaim is False
     settings = runtime.load_dynamic_offload_settings_from_env(
-        environ={"DDO_VMM_EXECUTION_BACKING_RECLAIM": "1"}, running_on_wsl=False)
+        environ={"DDO_EXECUTION_MODE": "vmm_fast_runtime", "DDO_VMM_EXECUTION_BACKING_RECLAIM": "1"},
+        running_on_wsl=False,
+    )
     assert settings.config.vmm_execution_backing_reclaim is True
+
+
+@pytest.mark.parametrize("mode", ["linear_runtime", "vmm_runtime", "plan", "off"])
+def test_inherited_reclaim_is_ignored_outside_native_fast_route(mode):
+    settings = runtime.load_dynamic_offload_settings_from_env(
+        environ={"DDO_EXECUTION_MODE": mode, "DDO_VMM_EXECUTION_BACKING_RECLAIM": "1"},
+        running_on_wsl=False,
+    )
+    assert settings.config.execution_mode == mode
+    assert settings.config.vmm_execution_backing_reclaim is False
 
 
 @pytest.mark.parametrize("mode", ["linear_runtime", "vmm_runtime", "off"])

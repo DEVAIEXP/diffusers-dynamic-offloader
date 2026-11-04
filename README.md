@@ -30,7 +30,7 @@ selects experimental native fast VMM. The `off` preset leaves placement to the
 caller. An encoder, transformer and VAE can use different routes; choosing VMM
 for the transformer does not make the entire pipeline native.
 
-The current `0.1.0rc3` package is an **experimental prerelease**, including the
+The current DDO package, `0.1.0rc4`, is an **experimental prerelease**, including the
 established linear route. A route's status does not certify every model,
 architecture or hardware configuration. See [presets and component policies](docs/user/presets-and-platforms.md)
 and [support boundaries](docs/developer/support.md).
@@ -93,6 +93,9 @@ are process RSS. Times are seconds and memory is GiB.
 Before comparing rows, read the [labels and memory glossary](https://devaiexp.github.io/ddo-examples/docs/benchmarks/glossary/)
 for runtime labels, latency scope and peak-memory definitions.
 
+All rows use default PyTorch SDPA for video self-attention. The internal SDPA
+kernel was not recorded.
+
 | Runtime method | Denoise (s) | Video VAE decode (s) | Tracked total (s) | Peak GPU (absolute, GiB) | Peak RAM (RSS, GiB) |
 | --- | ---: | ---: | ---: | ---: | ---: |
 | Diffusers streamed leaf | 392.91 | 22.52 | 452.33 | 4.72 | 41.34 |
@@ -118,8 +121,8 @@ or [Modular Diffusers](docs/user/modular-pipeline.md) integration.
 
 Normal linear use requires no native allocator or compiler. Native VMM is optional:
 it uses a matching packaged DLL/.so and bootstrap before CUDA initialization.
-Experimental version `0.1.0rc3` is available on PyPI. The installation guide
-uses published packages, without requiring a source clone or local wheel files.
+DDO `0.1.0rc4` and its optional VMM allocator `0.1.0rc3` are available on PyPI.
+The installation guide uses the published packages directly.
 
 ```python
 from diffusers_dynamic_offloader import enable_offload

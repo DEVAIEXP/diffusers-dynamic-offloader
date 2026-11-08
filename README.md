@@ -9,6 +9,12 @@ manages loading, transfers and resource lifetime; Diffusers and the selected
 backend still perform the model computation. Encoder, transformer and VAE phases
 can use different strategies, including official Diffusers leaf offloading.
 
+## Design goal
+
+DDO manages how much of the model's weights stay on the GPU, leaving room for activations and temporary buffers. The goal is to make larger inference workloads practical on GPUs with limited VRAM. Moving weights on demand has a cost, and its impact on runtime depends on the workload and the available memory.
+
+Benchmarks should show whether the same workload completes on each runtime, how much VRAM it uses, and how long it takes. A workload that puts pressure on one GPU may leave substantial headroom on another, so the benchmark context matters when interpreting the results.
+
 ## Runtimes: how DDO executes offloading
 
 A **runtime** is the implementation that manages weight placement, transfers

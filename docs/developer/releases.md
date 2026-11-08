@@ -142,9 +142,12 @@ dependencies/exports without loading it and checks clean-wheel discovery.
 The allocator wheel is `py3-none-win_amd64`; DDO remains pure Python.
 
 The Windows profile enables span pool, joined spans and allocation diagnostics;
-Linux enables span pool without the latter two features. Probes, execution
-kernels, source dispatcher and test hooks are disabled in both profiles.
-Review explicit features rather than assuming CMake defaults.
+Linux enables span pool without the latter two features. Since rc5 both profiles
+also enable the segmented pool driver, automatic segmented selection and timing
+counters; the DDO bootstrap defaults configure these and refuse a binary
+without their exports. Probes, execution kernels, source dispatcher and test
+hooks are disabled in both profiles. Review explicit features rather than
+assuming CMake defaults.
 Default output: `.internal/releases/<version>/windows-amd64/`.
 
 ## Distribution and validation

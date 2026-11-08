@@ -36,6 +36,15 @@ def test_windows_profile_does_not_mutate_linux_features():
     assert builder.platform_profile("linux")[0] == "linux_x86_64"
 
 
+@pytest.mark.parametrize("target", ["win32", "linux"])
+def test_both_profiles_build_the_segmented_pool_required_by_bootstrap_defaults(target):
+    features = builder.platform_profile(target)[1]
+    for name in ("DDO_VMM_SEGMENTED_DRIVER", "DDO_VMM_AUTO_SEGMENTED", "DDO_VMM_TIMING_COUNTERS"):
+        assert features[name] == "ON"
+    assert features["DDO_VMM_NATIVE_SPAN_POOL"] == "ON"  # CMake requirement of the segmented pool.
+    assert {"ddo_exp_segmented_configure_auto", "ddo_exp_segmented_configure_growable"} <= builder.REQUIRED_EXPORTS
+
+
 def test_git_identity_keeps_warning_channel_out_of_commit(monkeypatch, tmp_path):
     def output(command, **kwargs):
         assert kwargs["stderr"] == builder.subprocess.PIPE

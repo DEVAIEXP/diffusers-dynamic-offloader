@@ -28,12 +28,18 @@ FEATURES = {
     "DDO_VMM_NATIVE_SOURCE_DISPATCHER": "OFF",
     "DDO_VMM_SOURCE_TEST_HOOKS": "OFF",
     "DDO_VMM_ALLOCATION_DIAGNOSTICS": "OFF",
+    # Segmented pool owners and the growable shared owner configured by the
+    # DDO bootstrap defaults (rc5); bounded read-only timing observations.
+    "DDO_VMM_SEGMENTED_DRIVER": "ON",
+    "DDO_VMM_AUTO_SEGMENTED": "ON",
+    "DDO_VMM_TIMING_COUNTERS": "ON",
 }
 REQUIRED_EXPORTS = {
     "ddo_vmm_torch_malloc", "ddo_vmm_torch_free", "ddo_vmm_source_abi_version",
     "ddo_vmm_source_cache_create", "ddo_vmm_model_arena_create",
     "ddo_vmm_execution_pool_reclaim_idle", "ddo_vmm_execution_pool_configure_reclaim",
     "ddo_vmm_execution_pool_reclaim_stats",
+    "ddo_exp_segmented_configure_auto", "ddo_exp_segmented_configure_growable",
 }
 
 

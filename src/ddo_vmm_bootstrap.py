@@ -83,10 +83,17 @@ def _discover_library(checkout: Path | None, package: Path | None) -> Path | Non
     return next((path for path in candidates if path.is_file()), None)
 
 
+DEFAULT_ALLOCATOR_CACHE_MIB = 4096
+DEFAULT_GROWABLE_RESERVE_GIB = 8
+_MAX_GROWABLE_RESERVE_GIB = 64
+
+
 def ensure_vmm_fast_process(
     *,
     library_path: str | os.PathLike[str] | None = None,
-    allocator_cache_mib: int = 512,
+    allocator_cache_mib: int = DEFAULT_ALLOCATOR_CACHE_MIB,
+    segmented_pool: bool = True,
+    growable_reserve_gib: int = DEFAULT_GROWABLE_RESERVE_GIB,
     argv: Sequence[str] | None = None,
     environ: Mapping[str, str] | None = None,
 ) -> None:
@@ -97,12 +104,25 @@ def ensure_vmm_fast_process(
     platform-packaged binary automatically. Explicit paths and the environment
     override discovery for diagnostics; missing binaries are never downloaded
     or built during execution.
+
+    The child allocator is configured cold, before CUDA initialization:
+    ``allocator_cache_mib`` bounds idle cached device memory,
+    ``segmented_pool`` enables automatic segmented pool owners and
+    ``growable_reserve_gib`` sizes one growable shared owner (0 disables it).
+    The defaults are the settings validated for the native route; a binary
+    without the segmented pool exports is refused, never silently downgraded.
     """
     environment = os.environ if environ is None else environ
     if environment.get(_CHILD_MARKER) == "1":
         return
     if allocator_cache_mib < 0:
         raise ValueError("allocator_cache_mib must be non-negative")
+    if isinstance(growable_reserve_gib, bool) or not isinstance(growable_reserve_gib, int):
+        raise ValueError("growable_reserve_gib must be an integer")
+    if not 0 <= growable_reserve_gib <= _MAX_GROWABLE_RESERVE_GIB:
+        raise ValueError(f"growable_reserve_gib must be within [0, {_MAX_GROWABLE_RESERVE_GIB}]")
+    if growable_reserve_gib and not segmented_pool:
+        raise ValueError("growable_reserve_gib requires segmented_pool")
     torch_module = sys.modules.get("torch")
     if torch_module is not None and torch_module.cuda.is_initialized():
         raise RuntimeError("vmm_fast bootstrap must run before CUDA is initialized")
@@ -130,6 +150,9 @@ def ensure_vmm_fast_process(
     child_environment[_CHILD_MARKER] = "1"
     child_environment["DDO_VMM_LIBRARY_PATH"] = library
     child_environment["DDO_VMM_TORCH_CACHE_MIB"] = str(allocator_cache_mib)
+    # Read only by install_pytorch_vmm_allocator in the child bootstrap.
+    child_environment["DDO_VMM_SEGMENTED_AUTO"] = "1" if segmented_pool else "0"
+    child_environment["DDO_VMM_GROWABLE_RESERVE_BYTES"] = str(growable_reserve_gib * 1024**3)
     if root is not None:
         source_root = str(root / "src")
         existing_path = child_environment.get("PYTHONPATH")

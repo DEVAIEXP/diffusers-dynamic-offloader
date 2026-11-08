@@ -37,6 +37,33 @@ explicitly; it is not silently enabled by a model class or platform.
 | `--ddo-backend vmm --ddo-preset auto` | Experimental `vmm_fast_runtime` |
 | `--ddo-backend vmm --ddo-preset nvme_baseline` | Protected `vmm_runtime` |
 
+## Proposed resident-weight tuning for larger GPUs
+
+Start with the resident-weight budget from a validated recipe. For the same
+workload on a larger GPU, try assigning a fraction of the additional VRAM to
+weights:
+
+```text
+trial budget = baseline budget + fraction × (target VRAM − baseline VRAM)
+```
+
+For example, the LTX 2.3 video VMM fast recipe uses a 1.5 GiB resident-weight
+budget on an 8 GiB GPU. The following values are proposed trials for a 16 GiB
+GPU and still need validation on that hardware.
+
+| Fraction of additional VRAM | `--ddo-vmm-resident-weight-budget-gb` |
+| --- | ---: |
+| 0% (same-budget control) | 1.5 |
+| 25% (first trial) | 3.5 |
+| 50% (second trial) | 5.5 |
+
+Keep resolution, duration, attention backend and all other settings fixed.
+Change only the resident-weight budget and compare completed runs using denoising
+time and absolute peak VRAM. Leave room for activations and temporary buffers.
+Host staging, source cache and source registration have separate budgets.
+For the linear runtime, use [capacity profiles](capacity-profiles.md) on the
+target GPU with the intended workload.
+
 ## Installation and lifecycle
 
 Install a matching platform allocator/DDO wheel pair using the
@@ -70,6 +97,18 @@ if vmm_fast_requested():
 
 # Only now import Torch, Diffusers and the application pipeline.
 ```
+
+The child allocator is configured before CUDA initialization with the native
+route defaults: segmented pool owners, one 8 GiB growable shared owner reservation
+and a 4096 MiB idle cache (see the bootstrap controls in
+[configuration](configuration.md)). These require a native binary built with
+the segmented pool features; an older binary is refused rather than silently run
+without them. Pass `segmented_pool=False, growable_reserve_gib=0` to
+`ensure_vmm_fast_process` to use such a binary with the previous pool behavior.
+DDO also selects `block_child` execution units by default
+(`vmm_execution_unit_level`). These defaults were selected from Windows LTX 2.3
+video measurements; they are not a general acceptance claim for other models or
+platforms.
 
 Then add DDO's standard arguments, resolve the route and pass its configuration.
 For native weights, load with `from_pretrained_with_dynamic_offload(...,

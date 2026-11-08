@@ -57,6 +57,51 @@ def test_parent_rejects_negative_cache(tmp_path):
         ensure_vmm_fast_process(argv=[str(tmp_path / "runner.py")], allocator_cache_mib=-1, environ={})
 
 
+def _relaunch_environment(tmp_path, **kwargs):
+    runner = tmp_path / "runner.py"
+    library = tmp_path / "ddo_vmm.dll"
+    runner.touch()
+    library.touch()
+    with (
+        patch("ddo_vmm_bootstrap._default_allocator_root", return_value=tmp_path),
+        patch("ddo_vmm_bootstrap.subprocess.run") as run,
+        patch("ddo_vmm_bootstrap.sys.modules", {}),
+    ):
+        run.return_value.returncode = 0
+        with pytest.raises(SystemExit, match="0"):
+            ensure_vmm_fast_process(library_path=library, argv=[str(runner)], environ={}, **kwargs)
+    return run.call_args.kwargs["env"]
+
+
+def test_default_child_allocator_configuration_is_the_validated_native_setting(tmp_path):
+    environment = _relaunch_environment(tmp_path)
+    assert environment["DDO_VMM_TORCH_CACHE_MIB"] == "4096"
+    assert environment["DDO_VMM_SEGMENTED_AUTO"] == "1"
+    assert environment["DDO_VMM_GROWABLE_RESERVE_BYTES"] == str(8 * 1024**3)
+
+
+def test_explicit_child_allocator_configuration_overrides_defaults(tmp_path):
+    environment = _relaunch_environment(tmp_path, allocator_cache_mib=32, segmented_pool=False,
+                                        growable_reserve_gib=0)
+    assert environment["DDO_VMM_TORCH_CACHE_MIB"] == "32"
+    assert environment["DDO_VMM_SEGMENTED_AUTO"] == "0"
+    assert environment["DDO_VMM_GROWABLE_RESERVE_BYTES"] == "0"
+
+
+@pytest.mark.parametrize("kwargs, message", [
+    (dict(growable_reserve_gib=-1), "within"),
+    (dict(growable_reserve_gib=65), "within"),
+    (dict(growable_reserve_gib=1.5), "integer"),
+    (dict(growable_reserve_gib=True), "integer"),
+    (dict(segmented_pool=False), "requires segmented_pool"),
+])
+def test_parent_rejects_invalid_pool_configuration_before_launch(tmp_path, kwargs, message):
+    with patch("ddo_vmm_bootstrap.subprocess.run") as run:
+        with pytest.raises(ValueError, match=message):
+            ensure_vmm_fast_process(argv=[str(tmp_path / "runner.py")], environ={}, **kwargs)
+    run.assert_not_called()
+
+
 @pytest.mark.parametrize("platform,relative", [
     ("win32", "build/Release/ddo_vmm.dll"),
     ("linux", "build-linux/libddo_vmm.so"),

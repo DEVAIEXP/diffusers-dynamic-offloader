@@ -21,6 +21,7 @@ from diffusers.hooks.hooks import HookRegistry, ModelHook
 from .metrics import DynamicOffloadMetrics
 
 _DEFAULT_TARGET_MODULE_CLASSES = (nn.Linear, nn.Embedding)
+VMM_EXECUTION_UNIT_LEVELS = ("block", "block_child")
 _DYNAMIC_OFFLOAD_HOOK = "dynamic_offload"
 _DDO_ENV_PREFIX = "DDO_"
 _PIN_MEMORY_ERRORS = (RuntimeError, getattr(torch, "AcceleratorError", RuntimeError))
@@ -581,6 +582,10 @@ class DynamicOffloadConfig:
     vmm_execution_auxiliary_ownership: bool = False
     vmm_component_buffer_limit_mb: int = 1
     vmm_page_mb: int = 0
+    # Execution unit granularity of vmm_fast_runtime: "block" fences each
+    # outermost ModuleList item, "block_child" its direct children (smaller
+    # execution slots, leaving device memory for activations).
+    vmm_execution_unit_level: str = "block_child"
     vmm_dxgi_local_headroom_gb: float = 0.0
     vmm_execution_backing_reclaim: bool = False
     vmm_dxgi_shared_headroom_gb: float = 0.0
@@ -689,6 +694,7 @@ class DynamicOffloadSettings:
             "dynamic_offload_vmm_execution_auxiliary_ownership": config.vmm_execution_auxiliary_ownership,
             "dynamic_offload_vmm_component_buffer_limit_mb": config.vmm_component_buffer_limit_mb,
             "dynamic_offload_vmm_page_mb": config.vmm_page_mb,
+            "dynamic_offload_vmm_execution_unit_level": config.vmm_execution_unit_level,
             "dynamic_offload_vmm_dxgi_local_headroom_gb": config.vmm_dxgi_local_headroom_gb,
             "dynamic_offload_vmm_execution_backing_reclaim": config.vmm_execution_backing_reclaim,
             "dynamic_offload_vmm_dxgi_shared_headroom_gb": config.vmm_dxgi_shared_headroom_gb,
@@ -1573,6 +1579,14 @@ class DynamicOffloadHook(ModelHook):
         if self.config.vmm_page_mb < 0:
             raise ValueError("vmm_fast page size must be non-negative")
         re.compile(self.config.vmm_module_pattern)
+        if self.config.vmm_execution_unit_level not in VMM_EXECUTION_UNIT_LEVELS:
+            raise ValueError(f"vmm_execution_unit_level must be one of {VMM_EXECUTION_UNIT_LEVELS}")
+        try:
+            from ddo_vmm_allocator.model_arena_adapter import configure_experimental_execution_unit_level
+        except ImportError as error:  # pragma: no cover - same requirement as the attach below.
+            raise RuntimeError("vmm_fast_runtime requires ddo-vmm-allocator") from error
+        # Unit discovery (auxiliary layout and attachment) reads this setting.
+        configure_experimental_execution_unit_level(self.config.vmm_execution_unit_level)
         if self.config.vmm_execution_auxiliary_ownership:
             if not self.config.vmm_native_transport or self.config.vmm_component_tensor_ownership:
                 raise ValueError("execution auxiliary ownership requires native transport without component ownership")
@@ -2933,6 +2947,7 @@ def load_dynamic_offload_settings_from_env(
         vmm_source_registered_gb=float(preset_env("DDO_VMM_SOURCE_REGISTERED_GB", "0")),
         vmm_module_pattern=preset_env("DDO_VMM_MODULE_PATTERN", r".*"),
         vmm_page_mb=int(preset_env("DDO_VMM_PAGE_MB", "0")),
+        vmm_execution_unit_level=preset_env("DDO_VMM_EXECUTION_UNIT_LEVEL", "block_child").strip().lower(),
         vmm_dxgi_local_headroom_gb=float(preset_env("DDO_VMM_DXGI_LOCAL_HEADROOM_GB", "0")),
         vmm_execution_backing_reclaim=(
             execution_mode == "vmm_fast_runtime"

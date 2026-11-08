@@ -178,6 +178,7 @@ are consumed by `DynamicOffloadSettings.from_env(...)`.
 | `vmm_source_registered_gb` | `0.0` | `DDO_VMM_SOURCE_REGISTERED_GB` | `--ddo-vmm-source-registered-gb`; registration within retained storage; zero uses storage ceiling, explicit values require whole64MiB segments within storage capacity. |
 | `vmm_module_pattern` | `.*` | `DDO_VMM_MODULE_PATTERN` | Config/ENV; select native attachment units, not model architecture detection. No generic CLI flag currently. |
 | `vmm_page_mb` | `0` | `DDO_VMM_PAGE_MB` | Config/ENV; zero requests native/default geometry. Explicit page size must satisfy native alignment/support checks. No generic CLI flag currently. |
+| `vmm_execution_unit_level` | `block_child` | `DDO_VMM_EXECUTION_UNIT_LEVEL` | Config/ENV; `block` fences each outermost `ModuleList` item, `block_child` its direct children (smaller execution slots; the execution queue learns the unit order on the first pass). `vmm_fast_runtime` only. No generic CLI flag currently. |
 | `vmm_dxgi_local_headroom_gb` | `0.0` | `DDO_VMM_DXGI_LOCAL_HEADROOM_GB` | Config/ENV; Windows local budget reserve, not a Linux requirement. |
 | `vmm_dxgi_shared_headroom_gb` | `0.0` | `DDO_VMM_DXGI_SHARED_HEADROOM_GB` | Config/ENV; Windows non-local budget reserve, not measured shared-memory usage. |
 | `vmm_dxgi_system_headroom_gb` | `0.0` | `DDO_VMM_DXGI_SYSTEM_HEADROOM_GB` | Config/ENV; Windows system reserve. Linux uses native host/cgroup/process admission instead. |
@@ -204,7 +205,9 @@ Bootstrap controls are process setup, not residency presets/config fields:
 | Control | Meaning |
 | --- | --- |
 | `DDO_VMM_LIBRARY_PATH` / bootstrap `library_path` | Matching platform native library; chosen before CUDA initialization. |
-| Bootstrap `allocator_cache_mib` | Global native PyTorch allocator cache; default512MiB. Bootstrap writes `DDO_VMM_TORCH_CACHE_MIB` for the child; it does not automatically honor a conflicting pre-existing cache environment value. |
+| Bootstrap `allocator_cache_mib` | Global native PyTorch allocator idle cache; default 4096 MiB. Bootstrap writes `DDO_VMM_TORCH_CACHE_MIB` for the child; it does not automatically honor a conflicting pre-existing cache environment value. |
+| Bootstrap `segmented_pool` | Automatic segmented pool owners (dead-page reuse, capacity transactions); default `True`. Configured cold in the child before CUDA initialization; a native binary without the segmented pool exports is refused, not downgraded. |
+| Bootstrap `growable_reserve_gib` | Virtual address reservation of one growable shared pool owner per device; default 8, `0` disables, at most 64; requires `segmented_pool`. Requests that do not fit fall back to request-sized owners. |
 | `DDO_VMM_ALLOCATOR_ROOT` | Host-harness checkout locator where supported, not a universal `DynamicOffloadConfig` option. |
 
 See [native usage](native-vmm.md) for bootstrap/lifecycle, and

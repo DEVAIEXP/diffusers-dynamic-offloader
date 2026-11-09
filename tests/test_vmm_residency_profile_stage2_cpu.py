@@ -231,6 +231,20 @@ def test_decide_budget_threshold_and_noise(floor_s, ceiling_s, extra_gib, spread
     assert result["decision"] == decision
 
 
+def test_default_threshold_keeps_the_floor_for_small_measured_image_gains():
+    threshold = DynamicOffloadConfig().vmm_profile_min_gain_per_gib
+    assert threshold == 0.02
+    # 2026-11-09 benchmark-recipe builds: LTX image 1.565 %/GiB, Qwen 512^2 1.215 %/GiB.
+    for floor_s, ceiling_s, extra_gib, spread in ((1.4280, 1.3967, 1.4, 0.005), (0.8780, 0.8402, 3.7, 0.002)):
+        result = profiles.decide_vmm_resident_budget(
+            floor_s, ceiling_s, FLOOR, FLOOR + int(extra_gib * GiB), threshold,
+            floor_spread_seconds=spread, ceiling_spread_seconds=spread)
+        assert (result["decision"], result["reason"]) == ("floor", "gain_below_threshold")
+    strong = profiles.decide_vmm_resident_budget(10.0, 9.0, FLOOR, FLOOR + 2 * GiB, threshold,
+                                                 floor_spread_seconds=0.05, ceiling_spread_seconds=0.05)
+    assert strong["decision"] == "ceiling"  # 5 % per GiB.
+
+
 def test_the_measured_10s_case_would_need_a_gain_above_its_noise():
     # 2026-11-10 10 s numbers: 44.380 s floor vs 43.405 s at +2.42 GiB (0.908 %/GiB).
     kept = profiles.decide_vmm_resident_budget(44.380, 43.405, FLOOR, FLOOR + int(2.42 * GiB), 0.005,

@@ -595,8 +595,10 @@ class DynamicOffloadConfig:
     vmm_profile_margin_gb: float = 0.25
     # Two-build calibration: keep the hardware ceiling only when the steady
     # forward speedup per extra GiB reaches this fraction of the floor forward
-    # time (0.005 = 0.5 % per GiB); otherwise keep the structural floor.
-    vmm_profile_min_gain_per_gib: float = 0.005
+    # time (0.02 = 2 % per GiB); otherwise keep the structural floor. Extra
+    # residency also removes headroom for phases outside the measured region
+    # (decode, other processes), so small gains keep the floor.
+    vmm_profile_min_gain_per_gib: float = 0.02
     vmm_dxgi_local_headroom_gb: float = 0.0
     vmm_execution_backing_reclaim: bool = False
     vmm_dxgi_shared_headroom_gb: float = 0.0

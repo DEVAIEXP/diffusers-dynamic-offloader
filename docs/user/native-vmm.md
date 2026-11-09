@@ -73,7 +73,8 @@ with offload.profile_run():
      whole model fits under the ceiling (`whole_model`).
   2. **Ceiling build.** The arena runs at that ceiling. DDO keeps the ceiling
      only when `(floor time - ceiling time) / floor time / extra GiB` reaches
-     `vmm_profile_min_gain_per_gib` (default 0.005, that is 0.5 % per GiB) and
+     `vmm_profile_min_gain_per_gib` (default 0.02, that is 2 % per GiB: extra
+     residency also removes headroom for decode and other processes) and
      the time saved exceeds the larger steady spread of the two builds;
      otherwise it saves the floor and leaves the device memory free. The
      ceiling run's peak must fit the lowest device budget of both builds minus

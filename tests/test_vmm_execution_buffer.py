@@ -11,7 +11,9 @@ from diffusers_dynamic_offloader.vmm_weight_store import SafetensorFileSlice, Sa
 @pytest.mark.parametrize("unit_name", ["transformer_blocks", "layers"])
 @pytest.mark.parametrize("block_depth", [1, 2])
 @pytest.mark.parametrize("unit_level", ["block", "block_child"])
-def test_public_native_buffer_reuses_backing_without_tail_remaps(tmp_path, unit_name, block_depth, unit_level):
+@pytest.mark.parametrize("source_dispatcher", [True, False], ids=["dispatcher", "direct-reads"])
+def test_public_native_buffer_reuses_backing_without_tail_remaps(tmp_path, unit_name, block_depth, unit_level,
+                                                                 source_dispatcher):
     if not torch.cuda.is_available():
         pytest.skip("requires CUDA")
 
@@ -54,7 +56,7 @@ def test_public_native_buffer_reuses_backing_without_tail_remaps(tmp_path, unit_
             # This is a small-contract capacity, not a production budget change.
             vmm_resident_weight_budget_gb=6 / 1024, vmm_page_mb=1,
             vmm_staging_buffer_gb=2 / 1024, vmm_source_cache_gb=64 / 1024,
-            vmm_execution_unit_level=unit_level,
+            vmm_execution_unit_level=unit_level, vmm_source_dispatcher=source_dispatcher,
         ),
     )
     # block fences each list item; block_child makes each direct child a unit.
@@ -89,6 +91,8 @@ def test_public_native_buffer_reuses_backing_without_tail_remaps(tmp_path, unit_
         assert stats["fast_gpu_prefetch_cancelled_units"] > 0
         assert stats["fast_source_cache_batch_submissions"] > 0
         assert stats["fast_source_cache_events_reused"] > 0
+        # The selection is observable: direct reads omit the dispatcher fields.
+        assert (stats.get("fast_source_cache_source_dispatcher_enabled") == 1) is source_dispatcher
     finally:
         remove_dynamic_offload(model)
     assert slices.closed

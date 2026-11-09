@@ -176,18 +176,23 @@ class NamedProfileTests(unittest.TestCase):
         for profile, size in zip(profiles, (1024, 2048)):
             saved = load_dynamic_offload_profile(profile.context)
             self.assertEqual(saved["observations"][-1]["vmm"]["virtual_bytes"], size)
-            self.assertEqual(profile.context["identity_version"], 3)
+            self.assertEqual(profile.context["identity_version"], 4)
+            self.assertEqual(profile.context["runtime"], "vmm")
             self.assertEqual(config.vmm_resident_weight_budget_gb, 4)
 
-    def test_generic_vmm_and_linear_profile_identities_are_preserved(self):
-        for mode in ("vmm_fast_runtime", "linear_runtime", "sdnq_runtime"):
+    def test_linear_profile_identities_are_preserved_and_vmm_uses_identity_4(self):
+        for mode in ("linear_runtime", "sdnq_runtime"):
             config = DynamicOffloadConfig(execution_mode=mode, profile_name="identity")
             generic = _NamedProfile(nn.Linear(2, 2), config)
             self.assertEqual(generic.context["identity_version"], 2)
             self.assertNotIn("component", generic.context)
-            if mode != "vmm_fast_runtime":
-                component = _NamedProfile(nn.Linear(2, 2), config, component="text_encoder")
-                self.assertEqual(component.context, generic.context)
+            self.assertNotIn("runtime", generic.context)
+            component = _NamedProfile(nn.Linear(2, 2), config, component="text_encoder")
+            self.assertEqual(component.context, generic.context)
+        vmm = _NamedProfile(nn.Linear(2, 2), DynamicOffloadConfig(execution_mode="vmm_fast_runtime",
+                                                                  profile_name="identity"))
+        self.assertEqual(vmm.context["identity_version"], 4)
+        self.assertEqual((vmm.context["runtime"], vmm.context["component"]), ("vmm", "model"))
 
     def test_enable_offload_passes_component_to_vmm_profile(self):
         config = DynamicOffloadConfig(execution_mode="vmm_fast_runtime", profile_name="component")

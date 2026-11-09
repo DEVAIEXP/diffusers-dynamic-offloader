@@ -82,7 +82,8 @@ def test_argument_helper_keeps_runner_surface_small():
 
     assert (args.ddo_backend, args.ddo_preset, args.show_metrics) == ("vmm", "auto", True)
     config = resolve_dynamic_offload_backend(args.ddo_backend, args.ddo_preset).build_config_from_args(args)
-    assert config.vmm_resident_weight_budget_gb == 4.0
+    # Omitted on vmm/auto: resolved by a saved VMM profile or the structural floor.
+    assert config.vmm_resident_weight_budget_gb == 0.0
 
 
 def test_runner_arguments_preserve_independent_source_storage_and_registration():
@@ -94,7 +95,7 @@ def test_runner_arguments_preserve_independent_source_storage_and_registration()
     config = resolve_dynamic_offload_backend(args.ddo_backend, args.ddo_preset).build_config_from_args(args)
     assert config.vmm_source_cache_gb == 24.625
     assert config.vmm_source_registered_gb == 0.5
-    assert config.vmm_resident_weight_budget_gb == 4.0
+    assert config.vmm_resident_weight_budget_gb == 0.0
 
 
 def test_registration_argument_defaults_do_not_change_protected_routes():

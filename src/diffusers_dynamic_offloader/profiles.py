@@ -24,6 +24,12 @@ import torch
 
 DYNAMIC_OFFLOAD_PROFILE_SCHEMA_VERSION = 1
 _PROFILE_PREFIX = "ddo-capacity-v1"
+# VMM residency profiles use their own identity and file prefix so a linear
+# profile with the same name can never be selected for the native route.
+_VMM_PROFILE_PREFIX = "ddo-vmm-residency-v1"
+VMM_PROFILE_IDENTITY_VERSION = 4
+# Arena space kept above the two execution slots at the structural floor.
+VMM_FLOOR_ARENA_HEADROOM_BYTES = 64 * 1024**2
 _SDNQ_DEFAULT_RESIDENT_CEILING_GB = 6.0
 _SDNQ_PROBE_MIN_SAFE_BUDGET_GB = 2.0
 
@@ -83,6 +89,114 @@ class _CudaPeakSampler:
 
 
 VMM_RESIDENCY_OBSERVATION_SCHEMA_VERSION = 1
+
+
+def _total_system_ram_bytes() -> int | None:
+    """Total physical RAM, or None when it cannot be observed."""
+    try:
+        import psutil
+
+        return int(psutil.virtual_memory().total)
+    except Exception:
+        pass
+    try:
+        if os.name == "nt":
+            import ctypes
+
+            class _MemoryStatus(ctypes.Structure):
+                _fields_ = [("length", ctypes.c_ulong), ("load", ctypes.c_ulong),
+                            ("total_phys", ctypes.c_ulonglong), ("avail_phys", ctypes.c_ulonglong),
+                            ("total_page", ctypes.c_ulonglong), ("avail_page", ctypes.c_ulonglong),
+                            ("total_virtual", ctypes.c_ulonglong), ("avail_virtual", ctypes.c_ulonglong),
+                            ("avail_extended", ctypes.c_ulonglong)]
+
+            status = _MemoryStatus(length=ctypes.sizeof(_MemoryStatus))
+            if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status)):
+                return int(status.total_phys)
+            return None
+        return int(os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES"))
+    except Exception:
+        return None
+
+
+_NATIVE_IDENTITY_CACHE: dict[tuple[str, int, int], str] = {}
+
+
+def _native_library_identity() -> str | None:
+    """SHA256 of the installed native allocator library, or None."""
+    try:
+        from ddo_vmm_allocator.torch_allocator import installed_library_path
+
+        path = installed_library_path()
+    except Exception:
+        return None
+    if path is None:
+        return None
+    try:
+        status = Path(path).stat()
+        key = (str(path), status.st_size, status.st_mtime_ns)
+        if key not in _NATIVE_IDENTITY_CACHE:
+            _NATIVE_IDENTITY_CACHE[key] = hashlib.sha256(Path(path).read_bytes()).hexdigest()
+        return _NATIVE_IDENTITY_CACHE[key]
+    except OSError:
+        return None
+
+
+def _vmm_machine_identity(config) -> dict[str, Any]:
+    """Machine part of a VMM residency profile identity (model + RAM/VRAM).
+
+    Device memory is rounded to 256 MiB and RAM to 1 GiB so that small reported
+    differences do not split profiles; the WDDM budget is observed per build and
+    is not part of the key (it varies between sessions).
+    """
+    gpu_name = device_memory_mib = None
+    try:
+        properties = torch.cuda.get_device_properties(torch.device(config.execution_device))
+        gpu_name = str(properties.name)
+        device_memory_mib = int(round(properties.total_memory / (256 * 1024**2))) * 256
+    except Exception:
+        pass
+    ram = _total_system_ram_bytes()
+    return {
+        "platform": sys.platform,
+        "gpu_name": gpu_name,
+        "device_memory_mib": device_memory_mib,
+        "host_ram_gib": None if ram is None else int(round(ram / 1024**3)),
+        "native_library_sha256": _native_library_identity(),
+    }
+
+
+def recommend_vmm_resident_budget(observation: Mapping[str, Any], margin_bytes: int) -> dict[str, Any] | None:
+    """Residency ceiling from one measured build region, or None when unobservable.
+
+    ``ceiling = device_budget - margin - (peak - weights_resident)``, clamped
+    below by the structural floor (two execution slots plus arena headroom) and
+    above by the floor plus the arena's virtual size. The non-weight part
+    (activations, allocator pool, context) is what the measured region used
+    besides the resident weights, so the formula is valid at any build budget.
+    """
+    budget = observation.get("device_budget_bytes")
+    peak = observation.get("peak_usage_bytes")
+    weights = observation.get("total_weight_resident_bytes")
+    slots = observation.get("execution_slots_bytes")
+    if not all(isinstance(value, int) and value >= 0 for value in (budget, peak, weights, slots)):
+        return None
+    floor = slots + VMM_FLOOR_ARENA_HEADROOM_BYTES
+    non_weight = max(0, peak - weights)
+    available = budget - margin_bytes - non_weight
+    virtual = observation.get("arena_virtual_bytes")
+    ceiling = max(floor, available)
+    if isinstance(virtual, int) and virtual > 0:
+        ceiling = min(ceiling, floor + virtual)
+    if non_weight + floor > budget:
+        fit = "does_not_fit"
+    elif available < floor + margin_bytes:
+        fit = "fits_at_limit"
+    else:
+        fit = "fits_with_headroom"
+    return {"vmm_resident_weight_budget_gb": round(ceiling / 1024**3, 4), "vmm_resident_weight_budget_bytes": ceiling,
+            "fit_class": fit, "floor_bytes": floor, "non_weight_peak_bytes": non_weight,
+            "margin_bytes": margin_bytes, "device_budget_bytes": budget}
 
 
 def _tensor_shapes(value: Any) -> Any:
@@ -180,8 +294,9 @@ class _VmmResidencySampler:
 
         return {
             "schema_version": VMM_RESIDENCY_OBSERVATION_SCHEMA_VERSION,
-            "floor_bytes": stat("fast_execution_buffer_capacity_bytes"),
+            "execution_slots_bytes": stat("fast_execution_buffer_capacity_bytes"),
             "arena_resident_bytes": stat("fast_resident_bytes"),
+            "arena_virtual_bytes": stat("fast_virtual_bytes"),
             "total_weight_resident_bytes": stat("fast_total_weight_resident_bytes"),
             "device_total_bytes": self.device_total_bytes,
             "device_budget_bytes": budget,
@@ -209,10 +324,15 @@ class _NamedProfile:
         # Explicit VMM component profiles must not share observations merely
         # because two components have the same Python class/profile name.
         # Preserve generic VMM and all existing linear/SDNQ profile identities.
-        if config.execution_mode == "vmm_fast_runtime" and component != "model":
+        if config.execution_mode == "vmm_fast_runtime":
             if not isinstance(component, str) or not component.strip():
                 raise ValueError("VMM profile component must be a non-empty string.")
-            self.context.update(identity_version=3, component=component)
+            # Residency profile identity: model, component, unit level and the
+            # machine's RAM/VRAM and native artifact; own file prefix.
+            self.context.update(identity_version=VMM_PROFILE_IDENTITY_VERSION, runtime="vmm",
+                                component=component, unit_level=config.vmm_execution_unit_level)
+            if config.profile_name:
+                self.context.update(_vmm_machine_identity(config))
             self.report["component"] = component
         self._active = False
         self._sdnq_probe_budget_gb: float | None = None
@@ -254,12 +374,28 @@ class _NamedProfile:
             return replace(config, resident_module_budget_gb=0.0, profile_resident_module_budget_gb=0.0)
         if config.execution_mode == "vmm_fast_runtime":
             record = load_dynamic_offload_profile(self.context)
-            if record is None:
+            if record is not None:
+                last = (record.get("observations") or [{}])[-1]
+                self.report["vmm_capacity"] = dict(last.get("vmm", {}))
+                if last.get("vmm_residency") is not None:
+                    self.report["vmm_residency"] = dict(last["vmm_residency"])
+            recommendation = get_dynamic_offload_profile_recommendation(record or {}) or {}
+            if config.vmm_resident_weight_budget_gb > 0:
+                # An explicit budget stays authoritative over a saved profile.
+                self.report["status"] = "explicit"
+                self.report["resident_budget_gb"] = config.vmm_resident_weight_budget_gb
+                return config
+            budget = recommendation.get("vmm_resident_weight_budget_gb")
+            if not isinstance(budget, (int, float)) or not math.isfinite(budget) or budget <= 0:
                 self.report["status"] = "missing"
-            else:
-                self.report["status"] = "observed"
-                self.report["vmm_capacity"] = dict((record.get("observations") or [{}])[-1].get("vmm", {}))
-            return config
+                print(f"[dynamic-offload] VMM profile {config.profile_name!r}: no saved residency budget; "
+                      "running at the structural floor (build it with build_profile=True).")
+                return config
+            self.report.update(status="applied", resident_budget_gb=budget,
+                               fit_class=recommendation.get("fit_class"))
+            print(f"[dynamic-offload] VMM profile {config.profile_name!r}: residency budget={budget:.3f} GiB "
+                  f"({recommendation.get('fit_class')}).")
+            return replace(config, vmm_resident_weight_budget_gb=float(budget), _profile_budget_applied=True)
         # An explicit caller budget has always taken precedence over a saved
         # recommendation.  It is not itself a profile calibration.
         if config.resident_module_budget_gb > 0:
@@ -330,12 +466,27 @@ class _NamedProfile:
                     "profile_measurement_kind": "vmm_capacity",
                     "capacity": {"metric": "vmm_virtual_bytes", "value": capacity["virtual_bytes"]},
                     "vmm": capacity,
-                    # Device observation of this build region; no recommendation yet.
+                    # Device observation of this build region.
                     "vmm_residency": residency_observation,
                 }
-                path = record_dynamic_offload_profile(self.context, observation)
+                margin_bytes = int(self.config.vmm_profile_margin_gb * 1024**3)
+                recommendation = recommend_vmm_resident_budget(residency_observation, margin_bytes)
+                path = record_dynamic_offload_profile(self.context, observation, recommendation=recommendation)
                 self.report.update(path=str(path), **observation)
                 self.report["status"] = "saved"
+                if recommendation is None:
+                    self.report["fit_class"] = "unavailable"
+                    print(f"[dynamic-offload] VMM profile {self.config.profile_name!r}: device observations "
+                          f"unavailable; no residency budget recommended; saved to {path}")
+                else:
+                    self.report.update(fit_class=recommendation["fit_class"],
+                                       resident_budget_gb=recommendation["vmm_resident_weight_budget_gb"])
+                    print(f"[dynamic-offload] VMM profile {self.config.profile_name!r}: "
+                          f"peak non-weight={recommendation['non_weight_peak_bytes'] / 1024**3:.2f} GiB, "
+                          f"device budget={recommendation['device_budget_bytes'] / 1024**3:.2f} GiB "
+                          f"({residency_observation.get('budget_source')}), margin={margin_bytes / 1024**3:.2f} GiB, "
+                          f"residency budget={recommendation['vmm_resident_weight_budget_gb']:.3f} GiB "
+                          f"({recommendation['fit_class']}); saved to {path}")
             except BaseException:
                 self.report["status"] = "failed"
                 raise
@@ -452,7 +603,8 @@ def dynamic_offload_profile_key(context: Mapping[str, Any]) -> str:
     """Return the stable, privacy-preserving filename key for a context."""
     normalized = normalize_dynamic_offload_profile_context(context)
     encoded = json.dumps(normalized, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("utf-8")
-    return f"{_PROFILE_PREFIX}-{hashlib.sha256(encoded).hexdigest()[:24]}"
+    prefix = _VMM_PROFILE_PREFIX if normalized.get("runtime") == "vmm" else _PROFILE_PREFIX
+    return f"{prefix}-{hashlib.sha256(encoded).hexdigest()[:24]}"
 
 
 def get_dynamic_offload_profile_dir(profile_dir: str | Path | None = None) -> Path:

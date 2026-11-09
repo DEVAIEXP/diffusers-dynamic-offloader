@@ -74,7 +74,12 @@ class DynamicOffloadBackend:
             vmm_execution_unit_level=dynamic_offload_preset_env_value(
                 "DDO_VMM_EXECUTION_UNIT_LEVEL", "block_child", effective_preset=self.effective_preset,
             ).strip().lower(),
-            vmm_resident_weight_budget_gb=args.ddo_vmm_resident_weight_budget_gb,
+            vmm_resident_weight_budget_gb=(
+                args.ddo_vmm_resident_weight_budget_gb if args.ddo_vmm_resident_weight_budget_gb is not None
+                # The protected NVMe route requires a positive budget; the
+                # native fast route resolves an omitted one through its profile.
+                else 4.0 if self.execution_mode == "vmm_runtime" else 0.0
+            ),
             vmm_staging_buffer_gb=staging,
             vmm_native_transport=getattr(args, "ddo_vmm_native_transport", False),
             vmm_native_source_cache_slot_mb=getattr(args, "ddo_vmm_native_source_cache_slot_mb", 0),
@@ -141,8 +146,9 @@ def add_dynamic_offload_arguments(parser: argparse.ArgumentParser) -> argparse.A
     parser.add_argument(
         "--ddo-vmm-resident-weight-budget-gb",
         type=float,
-        default=4.0,
-        help="Native VMM active-residency capacity in GiB (default: 4).",
+        default=None,
+        help=("Native VMM active-residency capacity in GiB. Omitted: vmm/auto uses a saved "
+              "--ddo-profile or the structural floor; vmm/nvme_baseline uses 4."),
     )
     parser.add_argument(
         "--ddo-vmm-total-staging-gb", type=float, default=None,

@@ -589,6 +589,10 @@ class DynamicOffloadConfig:
     # Source-only native read dispatcher for the persistent source cache. True
     # uses it when the native build provides it; False uses direct ring reads.
     vmm_source_dispatcher: bool = True
+    # VMM residency profile: device-budget margin kept free when a profile build
+    # recommends the residency budget. Without an explicit budget and without
+    # a saved profile, vmm_fast_runtime runs at the structural floor.
+    vmm_profile_margin_gb: float = 0.25
     vmm_dxgi_local_headroom_gb: float = 0.0
     vmm_execution_backing_reclaim: bool = False
     vmm_dxgi_shared_headroom_gb: float = 0.0
@@ -1591,10 +1595,10 @@ class DynamicOffloadHook(ModelHook):
         resources_start = time.perf_counter()
         if self.execution_device.type != "cuda" or self.offload_device.type != "cpu":
             raise ValueError("vmm_fast_runtime requires execution_device='cuda:*' and offload_device='cpu'")
-        if self.vmm_resident_weight_budget_bytes <= 0:
-            raise ValueError("vmm_fast_runtime requires a positive vmm_resident_weight_budget_gb")
         if self.vmm_staging_buffer_bytes <= 0:
             raise ValueError("vmm_fast_runtime requires a positive vmm_staging_buffer_gb")
+        if not math.isfinite(self.config.vmm_profile_margin_gb) or self.config.vmm_profile_margin_gb < 0:
+            raise ValueError("vmm_profile_margin_gb must be finite and non-negative")
         if self.config.vmm_page_mb < 0:
             raise ValueError("vmm_fast page size must be non-negative")
         re.compile(self.config.vmm_module_pattern)
@@ -1606,6 +1610,20 @@ class DynamicOffloadHook(ModelHook):
             raise RuntimeError("vmm_fast_runtime requires ddo-vmm-allocator") from error
         # Unit discovery (auxiliary layout and attachment) reads this setting.
         configure_experimental_execution_unit_level(self.config.vmm_execution_unit_level)
+        if self.vmm_resident_weight_budget_bytes <= 0:
+            # No explicit budget and no saved profile: the structural floor
+            # (two execution slots at this unit level plus arena headroom).
+            from ddo_vmm_allocator.model_arena_adapter import estimate_execution_slot_bytes
+            from .profiles import VMM_FLOOR_ARENA_HEADROOM_BYTES
+
+            slot = estimate_execution_slot_bytes(module, self.config.vmm_module_pattern)
+            if slot <= 0:
+                raise ValueError("vmm_fast_runtime found no execution unit to size the structural floor")
+            self.vmm_resident_weight_budget_bytes = 2 * slot + VMM_FLOOR_ARENA_HEADROOM_BYTES
+            budget_source = "structural_floor"
+        else:
+            budget_source = "profile" if self.config._profile_budget_applied else "configured"
+        self.state.planner_decisions["vmm_resident_weight_budget_source"] = budget_source
         if not isinstance(self.config.vmm_source_dispatcher, bool):
             raise ValueError("vmm_source_dispatcher must be a bool")
         from ddo_vmm_allocator.source_cache import configure_source_dispatcher

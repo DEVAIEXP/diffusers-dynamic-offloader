@@ -58,7 +58,7 @@ def test_windows_build_records_wddm_budget_peak_floor_and_first_forward_shapes(m
     assert observation["peak_usage_bytes"] == observation["peak_local_usage_bytes"] == 5 * GiB
     assert observation["peak_driver_used_bytes"] == 5 * GiB
     assert observation["device_total_bytes"] == 8 * GiB
-    assert observation["floor_bytes"] == 608174080
+    assert observation["execution_slots_bytes"] == 608174080
     assert observation["arena_resident_bytes"] == 40 * 1024**2
     assert observation["first_forward_seen"] is True
     assert observation["input_shapes"] == {"args": [[3, 4]], "kwargs": None}  # First forward only.
@@ -85,7 +85,7 @@ def test_unavailable_observations_stay_null_not_zero(monkeypatch):
     observation = build(nn.Linear(2, 2), SimpleNamespace(vmm_runtime_stats=lambda: minimal,
                                                          vmm_device_memory=lambda: None))
     for name in ("device_budget_bytes", "budget_source", "peak_usage_bytes", "device_total_bytes",
-                 "floor_bytes", "total_weight_resident_bytes"):
+                 "execution_slots_bytes", "total_weight_resident_bytes"):
         assert observation[name] is None, name
 
 

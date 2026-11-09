@@ -68,6 +68,12 @@ class DynamicOffloadBackend:
                     effective_preset=self.effective_preset,
                 ).strip().lower() in {"1", "true", "yes", "on"}
             ),
+            vmm_source_dispatcher=dynamic_offload_preset_env_value(
+                "DDO_VMM_SOURCE_DISPATCHER", "1", effective_preset=self.effective_preset,
+            ).strip().lower() in {"1", "true", "yes", "on"},
+            vmm_execution_unit_level=dynamic_offload_preset_env_value(
+                "DDO_VMM_EXECUTION_UNIT_LEVEL", "block_child", effective_preset=self.effective_preset,
+            ).strip().lower(),
             vmm_resident_weight_budget_gb=args.ddo_vmm_resident_weight_budget_gb,
             vmm_staging_buffer_gb=staging,
             vmm_native_transport=getattr(args, "ddo_vmm_native_transport", False),

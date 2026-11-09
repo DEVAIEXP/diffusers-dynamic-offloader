@@ -762,7 +762,7 @@ The isolated source-dispatcher candidate adds optional observations:
 
 | Metric | Unit / collection | Meaning / diagnostic action |
 | --- | --- | --- |
-| `fast_source_cache_source_dispatcher_enabled` | boolean / cache snapshot | Source-only native dispatcher is selected; not proof that all model bytes are ready, registered or GPU resident. Older/disabled DLLs omit this field. |
+| `fast_source_cache_source_dispatcher_enabled` | boolean / cache snapshot | Source-only native dispatcher is selected; not proof that all model bytes are ready, registered or GPU resident. Older/disabled DLLs, and caches with `vmm_source_dispatcher=False`, omit this field. |
 | `fast_source_cache_source_dispatcher_owned_windows` | windows / optional native snapshot | Submitted window leases not yet retired by the dispatcher; may include completed I/O awaiting retirement. Not GPU residency, active chunk count or unread bytes. Expect zero after full source drain. |
 | `fast_source_cache_source_dispatcher_peak_windows` | windows / peak since cache clear | Highest number of submitted window leases retained concurrently. Greater than one verifies multi-window admission, not simultaneous disk activity or speedup. Must not exceed window limit. Clear resets it. |
 | `fast_source_cache_source_dispatcher_window_limit` | windows / optional native snapshot | Native metadata flight bound: minimum of admitted cache slots, existing I/O workers and eight. No extra storage/registration/GPU ceiling. Zero until dispatcher starts or after clear; older DLLs omit these three fields. |

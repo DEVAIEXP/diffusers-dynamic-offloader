@@ -39,7 +39,8 @@ def test_windows_profile_does_not_mutate_linux_features():
 @pytest.mark.parametrize("target", ["win32", "linux"])
 def test_both_profiles_build_the_segmented_pool_required_by_bootstrap_defaults(target):
     features = builder.platform_profile(target)[1]
-    for name in ("DDO_VMM_SEGMENTED_DRIVER", "DDO_VMM_AUTO_SEGMENTED", "DDO_VMM_TIMING_COUNTERS"):
+    for name in ("DDO_VMM_SEGMENTED_DRIVER", "DDO_VMM_AUTO_SEGMENTED", "DDO_VMM_TIMING_COUNTERS",
+                 "DDO_VMM_NATIVE_SOURCE_DISPATCHER"):
         assert features[name] == "ON"
     assert features["DDO_VMM_NATIVE_SPAN_POOL"] == "ON"  # CMake requirement of the segmented pool.
     assert {"ddo_exp_segmented_configure_auto", "ddo_exp_segmented_configure_growable"} <= builder.REQUIRED_EXPORTS

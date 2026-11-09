@@ -25,7 +25,9 @@ FEATURES = {
     "DDO_VMM_NATIVE_JOINED_SPANS": "OFF",
     "DDO_VMM_BUILD_PROBES": "OFF",
     "DDO_VMM_BUILD_EXECUTION_OPS": "OFF",
-    "DDO_VMM_NATIVE_SOURCE_DISPATCHER": "OFF",
+    # Measured with the rc5 Windows candidate; selectable at runtime through
+    # DDO vmm_source_dispatcher, so one binary covers both read paths.
+    "DDO_VMM_NATIVE_SOURCE_DISPATCHER": "ON",
     "DDO_VMM_SOURCE_TEST_HOOKS": "OFF",
     "DDO_VMM_ALLOCATION_DIAGNOSTICS": "OFF",
     # Segmented pool owners and the growable shared owner configured by the
@@ -40,6 +42,7 @@ REQUIRED_EXPORTS = {
     "ddo_vmm_execution_pool_reclaim_idle", "ddo_vmm_execution_pool_configure_reclaim",
     "ddo_vmm_execution_pool_reclaim_stats",
     "ddo_exp_segmented_configure_auto", "ddo_exp_segmented_configure_growable",
+    "ddo_vmm_source_dispatcher_enabled", "ddo_vmm_source_cache_select_dispatcher",
 }
 
 

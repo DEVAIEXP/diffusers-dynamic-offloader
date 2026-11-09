@@ -47,15 +47,15 @@ weights:
 trial budget = baseline budget + fraction × (target VRAM − baseline VRAM)
 ```
 
-For example, the LTX 2.3 video VMM fast recipe uses a 1.5 GiB resident-weight
-budget on an 8 GiB GPU. The following values are proposed trials for a 16 GiB
-GPU and still need validation on that hardware.
+For example, the LTX 2.3 video VMM fast recipe uses a 0.625 GiB resident-weight
+budget on an 8 GiB GPU with `block_child` execution units. The following values
+are proposed trials for a 16 GiB GPU and still need validation on that hardware.
 
 | Fraction of additional VRAM | `--ddo-vmm-resident-weight-budget-gb` |
 | --- | ---: |
-| 0% (same-budget control) | 1.5 |
-| 25% (first trial) | 3.5 |
-| 50% (second trial) | 5.5 |
+| 0% (same-budget control) | 0.625 |
+| 25% (first trial) | 2.625 |
+| 50% (second trial) | 4.625 |
 
 Keep resolution, duration, attention backend and all other settings fixed.
 Change only the resident-weight budget and compare completed runs using denoising

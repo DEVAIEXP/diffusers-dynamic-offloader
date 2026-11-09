@@ -586,6 +586,9 @@ class DynamicOffloadConfig:
     # outermost ModuleList item, "block_child" its direct children (smaller
     # execution slots, leaving device memory for activations).
     vmm_execution_unit_level: str = "block_child"
+    # Source-only native read dispatcher for the persistent source cache. True
+    # uses it when the native build provides it; False uses direct ring reads.
+    vmm_source_dispatcher: bool = True
     vmm_dxgi_local_headroom_gb: float = 0.0
     vmm_execution_backing_reclaim: bool = False
     vmm_dxgi_shared_headroom_gb: float = 0.0
@@ -695,6 +698,7 @@ class DynamicOffloadSettings:
             "dynamic_offload_vmm_component_buffer_limit_mb": config.vmm_component_buffer_limit_mb,
             "dynamic_offload_vmm_page_mb": config.vmm_page_mb,
             "dynamic_offload_vmm_execution_unit_level": config.vmm_execution_unit_level,
+            "dynamic_offload_vmm_source_dispatcher": config.vmm_source_dispatcher,
             "dynamic_offload_vmm_dxgi_local_headroom_gb": config.vmm_dxgi_local_headroom_gb,
             "dynamic_offload_vmm_execution_backing_reclaim": config.vmm_execution_backing_reclaim,
             "dynamic_offload_vmm_dxgi_shared_headroom_gb": config.vmm_dxgi_shared_headroom_gb,
@@ -1587,6 +1591,12 @@ class DynamicOffloadHook(ModelHook):
             raise RuntimeError("vmm_fast_runtime requires ddo-vmm-allocator") from error
         # Unit discovery (auxiliary layout and attachment) reads this setting.
         configure_experimental_execution_unit_level(self.config.vmm_execution_unit_level)
+        if not isinstance(self.config.vmm_source_dispatcher, bool):
+            raise ValueError("vmm_source_dispatcher must be a bool")
+        from ddo_vmm_allocator.source_cache import configure_source_dispatcher
+
+        # Read when the persistent source cache is created during attachment.
+        configure_source_dispatcher(self.config.vmm_source_dispatcher)
         if self.config.vmm_execution_auxiliary_ownership:
             if not self.config.vmm_native_transport or self.config.vmm_component_tensor_ownership:
                 raise ValueError("execution auxiliary ownership requires native transport without component ownership")
@@ -2948,6 +2958,7 @@ def load_dynamic_offload_settings_from_env(
         vmm_module_pattern=preset_env("DDO_VMM_MODULE_PATTERN", r".*"),
         vmm_page_mb=int(preset_env("DDO_VMM_PAGE_MB", "0")),
         vmm_execution_unit_level=preset_env("DDO_VMM_EXECUTION_UNIT_LEVEL", "block_child").strip().lower(),
+        vmm_source_dispatcher=preset_bool("DDO_VMM_SOURCE_DISPATCHER", "1"),
         vmm_dxgi_local_headroom_gb=float(preset_env("DDO_VMM_DXGI_LOCAL_HEADROOM_GB", "0")),
         vmm_execution_backing_reclaim=(
             execution_mode == "vmm_fast_runtime"

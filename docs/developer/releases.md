@@ -145,8 +145,11 @@ The Windows profile enables span pool, joined spans and allocation diagnostics;
 Linux enables span pool without the latter two features. Since rc5 both profiles
 also enable the segmented pool driver, automatic segmented selection and timing
 counters; the DDO bootstrap defaults configure these and refuse a binary
-without their exports. Probes, execution kernels, source dispatcher and test
-hooks are disabled in both profiles. Review explicit features rather than
+without their exports. Both also build the source-only read dispatcher, which
+DDO selects per run (`vmm_source_dispatcher`, default on); the Linux dispatcher
+path has no selected Linux acceptance yet. Allocation diagnostics are compiled
+in on Windows but stay disabled until a diagnostic scope enables them. Probes,
+execution kernels and test hooks are disabled in both profiles. Review explicit features rather than
 assuming CMake defaults.
 Default output: `.internal/releases/<version>/windows-amd64/`.
 

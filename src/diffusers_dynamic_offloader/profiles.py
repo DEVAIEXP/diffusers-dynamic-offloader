@@ -49,6 +49,22 @@ def _vmm_transport_identity(config) -> dict[str, Any]:
                           "host_cache_gb": gib("vmm_host_cache_gb")}}
 # Arena space kept above the two execution slots at the structural floor.
 VMM_FLOOR_ARENA_HEADROOM_BYTES = 64 * 1024**2
+_VMM_DEFAULT_PAGE_BYTES = 2 * 1024**2
+
+
+def vmm_structural_floor_bytes(slot_bytes: int, page_bytes: int | None, *, slots: int = 2) -> int:
+    """Smallest residency budget the native arena accepts with ``slots`` execution slots.
+
+    Native admission page-aligns each slot and requires at least one free arena
+    page beyond them, so the floor is ``slots`` page-aligned slots plus the
+    larger of the arena headroom and one page, rounded up to whole pages.
+    """
+    page = page_bytes if isinstance(page_bytes, int) and page_bytes > 0 else _VMM_DEFAULT_PAGE_BYTES
+
+    def align(value: int) -> int:
+        return -(-value // page) * page
+
+    return align(slots * align(slot_bytes) + max(VMM_FLOOR_ARENA_HEADROOM_BYTES, page))
 _SDNQ_DEFAULT_RESIDENT_CEILING_GB = 6.0
 _SDNQ_PROBE_MIN_SAFE_BUDGET_GB = 2.0
 
@@ -200,7 +216,9 @@ def recommend_vmm_resident_budget(observation: Mapping[str, Any], margin_bytes: 
     slots = observation.get("execution_slots_bytes")
     if not all(isinstance(value, int) and value >= 0 for value in (budget, peak, weights, slots)):
         return None
-    floor = slots + VMM_FLOOR_ARENA_HEADROOM_BYTES
+    # ``slots`` is the measured total of the (already page-aligned) slots.
+    page = observation.get("page_bytes")
+    floor = vmm_structural_floor_bytes(slots, page, slots=1) if slots else VMM_FLOOR_ARENA_HEADROOM_BYTES
     non_weight = max(0, peak - weights)
     available = budget - margin_bytes - non_weight
     virtual = observation.get("arena_virtual_bytes")
@@ -365,6 +383,7 @@ class _VmmResidencySampler:
         return {
             "schema_version": VMM_RESIDENCY_OBSERVATION_SCHEMA_VERSION,
             "execution_slots_bytes": stat("fast_execution_buffer_capacity_bytes"),
+            "page_bytes": stat("fast_page_bytes"),
             "arena_resident_bytes": stat("fast_resident_bytes"),
             "arena_virtual_bytes": stat("fast_virtual_bytes"),
             "total_weight_resident_bytes": stat("fast_total_weight_resident_bytes"),

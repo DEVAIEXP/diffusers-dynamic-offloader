@@ -1655,12 +1655,14 @@ class DynamicOffloadHook(ModelHook):
             # No explicit budget and no saved profile: the structural floor
             # (two execution slots at this unit level plus arena headroom).
             from ddo_vmm_allocator.model_arena_adapter import estimate_execution_slot_bytes
-            from .profiles import VMM_FLOOR_ARENA_HEADROOM_BYTES
+            from .profiles import vmm_structural_floor_bytes
 
             slot = estimate_execution_slot_bytes(module, self.config.vmm_module_pattern)
             if slot <= 0:
                 raise ValueError("vmm_fast_runtime found no execution unit to size the structural floor")
-            self.vmm_resident_weight_budget_bytes = 2 * slot + VMM_FLOOR_ARENA_HEADROOM_BYTES
+            # Page-aware: native admission page-aligns each slot and needs a free page.
+            page = int(self.config.vmm_page_mb) * 1024**2 or None
+            self.vmm_resident_weight_budget_bytes = vmm_structural_floor_bytes(slot, page)
             budget_source = "structural_floor"
         else:
             budget_source = "profile" if self.config._profile_budget_applied else "configured"

@@ -95,7 +95,9 @@ with offload.profile_run():
   (`fits`, `reduced`, `device_budget_below_floor` or `unavailable`); an
   unavailable observation keeps the saved budget.
   Without a saved profile the component runs at the structural floor (two
-  execution slots plus 64 MiB arena headroom) and reports `missing`.
+  execution slots plus 64 MiB arena headroom) and reports `missing`. With arena
+  pages larger than 2 MiB (`vmm_page_mb`), each slot is page-aligned and the
+  headroom is at least one page, as native admission requires.
 - **Identity** (version 5): name, model class, component, execution unit level,
   platform, GPU name, device memory (256 MiB steps), host RAM (1 GiB steps), the
   native library SHA256 and the weight transport (native transport, total

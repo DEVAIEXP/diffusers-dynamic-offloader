@@ -1292,6 +1292,21 @@ class DynamicOffloadHook(ModelHook):
             result["copied_bytes"] += fast_stats["upload_bytes"]
         return result
 
+    def vmm_device_memory(self) -> dict[str, int] | None:
+        """Windows WDDM local budget and this process's local usage, or None.
+
+        Read-only DXGI query through the native library; no CUDA call. Other
+        platforms and failed queries return None (unavailable, not zero).
+        """
+        store = self._vmm_fast_store
+        if store is None or sys.platform != "win32":
+            return None
+        try:
+            info = store._library.windows_memory_info(store._device_ordinal)
+        except Exception:
+            return None
+        return {"local_budget_bytes": info.local_budget_bytes, "local_usage_bytes": info.local_usage_bytes}
+
     def deinitalize_hook(self, module: nn.Module) -> nn.Module:
         self._clear_vmm_execution_groups()
         self._restore_patches()

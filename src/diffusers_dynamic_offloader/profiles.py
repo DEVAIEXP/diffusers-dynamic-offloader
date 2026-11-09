@@ -82,6 +82,118 @@ class _CudaPeakSampler:
         return self.peak_bytes
 
 
+VMM_RESIDENCY_OBSERVATION_SCHEMA_VERSION = 1
+
+
+def _tensor_shapes(value: Any) -> Any:
+    """Shapes of the tensors in a forward input, recursively; other values omitted."""
+    if isinstance(value, torch.Tensor):
+        return list(value.shape)
+    if isinstance(value, (list, tuple)):
+        shapes = [_tensor_shapes(item) for item in value]
+        return [shape for shape in shapes if shape is not None] or None
+    if isinstance(value, Mapping):
+        shapes = {str(key): _tensor_shapes(item) for key, item in value.items()}
+        return {key: shape for key, shape in sorted(shapes.items()) if shape is not None} or None
+    return None
+
+
+class _VmmResidencySampler:
+    """Observe the device during a VMM profile build region (no residency change).
+
+    Samples driver-visible device usage and, on Windows, the WDDM local budget and
+    this process's local usage; captures the first forward's tensor input shapes
+    of the component. Missing observations stay ``None`` (unavailable, not zero).
+    """
+
+    def __init__(self, hook, module, device: torch.device, interval_seconds: float = 0.05):
+        self.hook = hook
+        self.module = module
+        self.device = device
+        self.interval_seconds = interval_seconds
+        self.peak_driver_used_bytes: int | None = None
+        self.device_total_bytes: int | None = None
+        self.peak_local_usage_bytes: int | None = None
+        self.local_budget_bytes: int | None = None
+        self.input_shapes: Any = None
+        self._forward_seen = False
+        self._handle = None
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+
+    def _sample(self) -> None:
+        try:
+            free, total = torch.cuda.mem_get_info(self.device)
+        except Exception:
+            free = total = None
+        if total is not None:
+            used = int(total - free)
+            self.device_total_bytes = int(total)
+            self.peak_driver_used_bytes = used if self.peak_driver_used_bytes is None else max(self.peak_driver_used_bytes, used)
+        query = getattr(self.hook, "vmm_device_memory", None)
+        memory = query() if callable(query) else None
+        if memory:
+            usage = int(memory["local_usage_bytes"])
+            self.local_budget_bytes = int(memory["local_budget_bytes"])
+            self.peak_local_usage_bytes = usage if self.peak_local_usage_bytes is None else max(self.peak_local_usage_bytes, usage)
+
+    def _first_forward(self, module, args, kwargs) -> None:
+        if not self._forward_seen:
+            self._forward_seen = True
+            self.input_shapes = {"args": _tensor_shapes(tuple(args)), "kwargs": _tensor_shapes(dict(kwargs))}
+
+    def start(self) -> None:
+        if isinstance(self.module, torch.nn.Module):
+            self._handle = self.module.register_forward_pre_hook(self._first_forward, with_kwargs=True)
+        self._sample()
+
+        def run() -> None:
+            while not self._stop.wait(self.interval_seconds):
+                self._sample()
+
+        self._thread = threading.Thread(target=run, name="ddo-vmm-residency-profile", daemon=True)
+        self._thread.start()
+
+    def close(self) -> None:
+        """Stop sampling and remove the forward hook; idempotent."""
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout=self.interval_seconds * 2 + 0.1)
+            self._thread = None
+        if self._handle is not None:
+            self._handle.remove()
+            self._handle = None
+
+    def stop(self, stats: Mapping[str, Any]) -> dict[str, Any]:
+        self.close()
+        self._sample()
+        if self.local_budget_bytes is not None:
+            budget, source, peak = self.local_budget_bytes, "dxgi_local_budget", self.peak_local_usage_bytes
+        elif self.device_total_bytes is not None:
+            budget, source, peak = self.device_total_bytes, "cuda_device_total", self.peak_driver_used_bytes
+        else:
+            budget = source = peak = None
+
+        def stat(name):
+            value = stats.get(name)
+            return int(value) if isinstance(value, (int, float)) else None
+
+        return {
+            "schema_version": VMM_RESIDENCY_OBSERVATION_SCHEMA_VERSION,
+            "floor_bytes": stat("fast_execution_buffer_capacity_bytes"),
+            "arena_resident_bytes": stat("fast_resident_bytes"),
+            "total_weight_resident_bytes": stat("fast_total_weight_resident_bytes"),
+            "device_total_bytes": self.device_total_bytes,
+            "device_budget_bytes": budget,
+            "budget_source": source,
+            "peak_usage_bytes": peak,
+            "peak_driver_used_bytes": self.peak_driver_used_bytes,
+            "peak_local_usage_bytes": self.peak_local_usage_bytes,
+            "first_forward_seen": self._forward_seen,
+            "input_shapes": self.input_shapes,
+        }
+
+
 class _NamedProfile:
     """Library-owned identity, application and measurement for a named workload."""
 
@@ -105,6 +217,8 @@ class _NamedProfile:
         self._active = False
         self._sdnq_probe_budget_gb: float | None = None
         self._vmm_hook = None
+        # The component module, for the first-forward input-shape observation.
+        self._module = module
 
     def attach_hook(self, hook) -> None:
         """Associate the applied runtime so a VMM profile can take a snapshot."""
@@ -188,10 +302,14 @@ class _NamedProfile:
             if self._active:
                 raise RuntimeError("A profile measurement is already active.")
             self._active = True
+            device = torch.device(self.config.execution_device)
+            residency = _VmmResidencySampler(self._vmm_hook, self._module, device)
             try:
+                residency.start()
                 yield self.report
-                torch.cuda.synchronize(torch.device(self.config.execution_device))
+                torch.cuda.synchronize(device)
                 stats = self._vmm_hook.vmm_runtime_stats() or {}
+                residency_observation = residency.stop(stats)
                 capacity = {
                     "backend": "vmm_fast_runtime",
                     "platform": sys.platform,
@@ -212,6 +330,8 @@ class _NamedProfile:
                     "profile_measurement_kind": "vmm_capacity",
                     "capacity": {"metric": "vmm_virtual_bytes", "value": capacity["virtual_bytes"]},
                     "vmm": capacity,
+                    # Device observation of this build region; no recommendation yet.
+                    "vmm_residency": residency_observation,
                 }
                 path = record_dynamic_offload_profile(self.context, observation)
                 self.report.update(path=str(path), **observation)
@@ -220,6 +340,7 @@ class _NamedProfile:
                 self.report["status"] = "failed"
                 raise
             finally:
+                residency.close()
                 self._active = False
             return
         if not self.config.build_profile and self._sdnq_probe_budget_gb is None:

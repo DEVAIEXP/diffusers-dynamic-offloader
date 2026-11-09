@@ -52,16 +52,19 @@ flowchart TB
     policy["DDO: resolve the configured route per component"]
     pipeline --> policy
     policy --> linear["DDO linear: PyTorch-backed offloading"]
-    policy --> native["Native fast VMM: experimental C++ memory management"]
+    policy --> native["Native fast VMM: experimental C++ weight arena and PyTorch allocator pool"]
     policy --> compat["Diffusers compatibility: official offload hooks"]
+    profile["VMM residency profile: saved weight budget per model and machine"] -.-> native
     linear --> compute["Model / backend computation"]
     native --> compute
     compat --> compute
     compute --> reports["DDO metrics and lifecycle reports"]
+    reports -.-> profile
 ```
 
-The branches show alternative routes, not automatic performance tuning or
-parallel execution. This overview highlights the main choices; the runtime
+The branches show alternative routes, not parallel execution. The dotted
+profile loop applies to native fast VMM only: one measured build saves the
+residency budget that later runs use; it is not continuous tuning. This overview highlights the main choices; the runtime
 table above also covers the NVMe baseline and SDNQ route. See the
 [detailed architecture](docs/developer/architecture.md) for native ownership,
 memory management and safe cleanup.

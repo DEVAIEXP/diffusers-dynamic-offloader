@@ -28,19 +28,25 @@ flowchart TB
 
     subgraph allocator["ddo-vmm-allocator: same native DLL / .so"]
         regions["9. VMM regions: stable addresses and physical backing"]
-        arena["10. Model arena: residency, sources, slot backing and event fences"]
+        arena["10. Model arena: residency, execution units and slots, sources and event fences"]
+        pool["15. Process PyTorch allocator: segmented pool, growable shared owner, idle cache"]
     end
 
     nvme --> regions
     fast --> arena
+    bootstrap -. "cold pool configuration" .-> pool
+    profile["16. VMM residency profile: one measured build, saved budget per model and machine"]
+    profile -. "residency ceiling at attachment" .-> fast
     linear --> compute["11. Model forward and backend computation"]
     backend --> compute
     regions --> compute
     arena --> compute
+    pool -. "activations and temporaries" .-> compute
     compute --> retire["12. DDO lifecycle: retire resources after owned work completes"]
     retire --> next["13. Host: next component phase"]
     policy -. "configuration and capacity" .-> report["14. DynamicOffloadMetrics: public snapshots and profile"]
     retire -. "execution and cleanup observations" .-> report
+    report -. "build observation" .-> profile
 ```
 
 Solid arrows show integration and resource flow, not a single CUDA stream or a
@@ -50,6 +56,7 @@ guarantee that transfers overlap computation.
 
 Numbers identify boxes, not mandatory sequential steps. Boxes 5–8 are alternative
 routes; the enclosing frames group execution routes and native-library ownership.
+Boxes 15 and 16 apply to the native fast route only.
 
 1. **Host runner.** Parses arguments and coordinates component phases. It chooses
    the offload policy, not which individual weights stay in GPU memory. Model
@@ -57,7 +64,8 @@ routes; the enclosing frames group execution routes and native-library ownership
    model-agnostic.
 2. **Native bootstrap.** For native fast execution, relaunches the command in a
    fresh child and installs the process-wide allocator before imports that can
-   initialize CUDA. Other routes do not require this bootstrap.
+   initialize CUDA, configuring its pool cold (box 15). Other routes do not
+   require this bootstrap.
 3. **Settings and loading.** Resolves configuration and associates supported
    checkpoint sources with the loaded component.
 4. **Component policy.** `enable_offload` resolves the preset, backend and explicit
@@ -80,7 +88,10 @@ routes; the enclosing frames group execution routes and native-library ownership
    and native structures.
 10. **Model arena.** Native C++ manages which weights occupy GPU memory, source
     bytes, CUDA host-memory registration, reusable transfer buffers and memory
-    limits. Source bytes are kept independently of loader CPU tensors. Storage,
+    limits. Weights are delivered per execution unit into two reusable slots with
+    next-unit look-ahead; `vmm_execution_unit_level` selects whole blocks or their
+    direct children (`block_child`, default), and the residency budget is the
+    shared ceiling of the slots and the arena. Source bytes are kept independently of loader CPU tensors. Storage,
     registration and GPU memory have separate limits; unregistering must preserve
     stored bytes. On Linux, allocation checks use the actual overcommit mode,
     `MemAvailable`, cgroup v2 and process limits. Mode 2 also enforces the remaining
@@ -107,6 +118,19 @@ routes; the enclosing frames group execution routes and native-library ownership
     attachment. Python never moves weights or changes residency during
     execution. Hosts consume this public interface, not internal hook or
     planner fields.
+15. **Process PyTorch allocator.** The native pluggable allocator serves the
+    process's PyTorch allocations (activations and temporaries) from segmented
+    pool owners with dead-page reuse, one growable shared owner per device
+    (default 8 GiB virtual reservation) and a bounded idle cache (default
+    4096 MiB). The bootstrap configures it before CUDA initialization; a binary
+    without these features is refused, not downgraded. Bounded capacity
+    transactions release idle units under pressure and keep ownership on
+    partial failure.
+16. **VMM residency profile.** A named build run measures one region and saves a
+    residency budget for the model, component and machine (RAM/VRAM, native
+    library). Later runs create the arena with it once; an explicit budget wins,
+    and without a profile the arena starts at the structural floor. See
+    [VMM residency profile](../user/native-vmm.md#vmm-residency-profile).
 
 ## Native weight loading and transport
 
@@ -153,7 +177,9 @@ flowchart TB
 Arrows describe ownership and data paths, not a promise of simultaneous disk,
 DMA and compute activity. Retained-source preparation and GPU look-ahead are
 distinct: reading bytes into CPU storage does not make them registered or GPU
-resident. Optional dispatcher observations depend on native build/API support.
+resident. The source-only read dispatcher is built into the release binaries
+and selected per run (`vmm_source_dispatcher`, default on); without it the
+cache uses direct ring reads. Dispatcher observations depend on that selection.
 
 ### Resources and responsibilities
 

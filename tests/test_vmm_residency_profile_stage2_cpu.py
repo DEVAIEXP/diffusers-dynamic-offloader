@@ -95,8 +95,9 @@ def build_profile(observed, **overrides):
 SHAPES = {"args": [[1, 22000, 128]], "kwargs": None}
 
 
-def timed(seconds, **overrides):
-    return observation(**{"steady_forward_seconds": seconds, "input_shapes": SHAPES, **overrides})
+def timed(seconds, spread=0.05, **overrides):
+    return observation(**{"steady_forward_seconds": seconds, "steady_forward_spread_seconds": spread,
+                          "input_shapes": SHAPES, **overrides})
 
 
 def saved(profile):
@@ -129,14 +130,16 @@ def test_build_one_measures_the_floor_and_saves_a_pending_ceiling():
     assert used.report["build_stage"] == "floor_measured"
 
 
-@pytest.mark.parametrize("ceiling_seconds, decision, reason", [
-    (32.9, "floor", "gain_below_threshold"),
-    (30.0, "ceiling", "gain_at_or_above_threshold"),
+@pytest.mark.parametrize("ceiling_seconds, spread, decision, reason", [
+    (32.97, 0.05, "floor", "gain_within_timing_noise"),      # 0.03 s gain inside 0.05 s spread.
+    (32.80, 0.01, "floor", "gain_below_threshold"),          # Above noise, ~0.2 %/GiB.
+    (30.00, 0.05, "ceiling", "gain_at_or_above_threshold"),
+    (30.00, 4.00, "floor", "gain_within_timing_noise"),      # Large gain but noisier than it.
 ])
-def test_build_two_keeps_the_ceiling_only_above_the_gain_threshold(ceiling_seconds, decision, reason):
-    first, _, _ = build_profile(timed(33.0))
+def test_build_two_keeps_the_ceiling_only_above_threshold_and_noise(ceiling_seconds, spread, decision, reason):
+    first, _, _ = build_profile(timed(33.0, spread=0.01))
     ceiling = saved(first)["ceiling_budget_bytes"]
-    profile, prepared, report = build_profile(timed(ceiling_seconds))
+    profile, prepared, report = build_profile(timed(ceiling_seconds, spread=spread))
     assert prepared.vmm_resident_weight_budget_gb == ceiling / GiB  # Measured at the ceiling.
     final = saved(profile)
     assert final["vmm_build_stage"] == "final" and (final["decision"], final["reason"]) == (decision, reason)
@@ -177,7 +180,10 @@ def test_no_headroom_or_no_timing_keeps_the_floor(tmp_path, monkeypatch):
     assert (saved(profile)["decision"], saved(profile)["reason"]) == ("floor", "no_headroom")
     monkeypatch.setenv("DDO_PROFILE_DIR", str(tmp_path / "other"))
     profile, _, _ = build_profile(timed(None))
-    assert saved(profile)["reason"] == "timing_unavailable_use_two_or_more_steps"
+    assert saved(profile)["reason"] == "timing_unavailable_use_three_or_more_steps"
+    monkeypatch.setenv("DDO_PROFILE_DIR", str(tmp_path / "two-steps"))
+    profile, _, _ = build_profile(timed(33.0, spread=None))  # Two steps: one steady forward only.
+    assert saved(profile)["reason"] == "timing_unavailable_use_three_or_more_steps"
 
 
 def test_explicit_budget_is_refused_during_a_build_and_wins_otherwise():
@@ -190,15 +196,27 @@ def test_explicit_budget_is_refused_during_a_build_and_wins_otherwise():
     assert explicit.report["status"] == "explicit"
 
 
-@pytest.mark.parametrize("floor_s, ceiling_s, extra_gib, decision", [
-    (33.0, 32.9, 3.0, "floor"),      # 0.1 % per GiB < 0.5 %.
-    (33.0, 32.4, 3.0, "ceiling"),    # 0.61 % per GiB.
-    (None, 30.0, 3.0, "floor"),      # Missing floor timing.
-    (33.0, 30.0, 0.0, "floor"),      # No extra memory.
+@pytest.mark.parametrize("floor_s, ceiling_s, extra_gib, spreads, decision", [
+    (33.0, 32.9, 3.0, (0.01, 0.01), "floor"),      # 0.1 % per GiB < 0.5 %.
+    (33.0, 32.4, 3.0, (0.05, 0.05), "ceiling"),    # 0.61 % per GiB, above noise.
+    (33.0, 32.4, 3.0, (0.70, 0.05), "floor"),      # Gain 0.6 s within 0.7 s noise.
+    (33.0, 32.4, 3.0, (None, 0.05), "floor"),      # Noise unknown.
+    (None, 30.0, 3.0, (0.05, 0.05), "floor"),      # Missing floor timing.
+    (33.0, 30.0, 0.0, (0.05, 0.05), "floor"),      # No extra memory.
 ])
-def test_decide_budget_threshold(floor_s, ceiling_s, extra_gib, decision):
-    result = profiles.decide_vmm_resident_budget(floor_s, ceiling_s, FLOOR, FLOOR + int(extra_gib * GiB), 0.005)
+def test_decide_budget_threshold_and_noise(floor_s, ceiling_s, extra_gib, spreads, decision):
+    result = profiles.decide_vmm_resident_budget(floor_s, ceiling_s, FLOOR, FLOOR + int(extra_gib * GiB), 0.005,
+                                                 floor_spread_seconds=spreads[0], ceiling_spread_seconds=spreads[1])
     assert result["decision"] == decision
+
+
+def test_the_measured_10s_case_would_need_a_gain_above_its_noise():
+    # 2026-11-10 10 s numbers: 44.380 s floor vs 43.405 s at +2.42 GiB (0.908 %/GiB).
+    kept = profiles.decide_vmm_resident_budget(44.380, 43.405, FLOOR, FLOOR + int(2.42 * GiB), 0.005,
+                                               floor_spread_seconds=0.3, ceiling_spread_seconds=0.3)
+    noisy = profiles.decide_vmm_resident_budget(44.380, 43.405, FLOOR, FLOOR + int(2.42 * GiB), 0.005,
+                                                floor_spread_seconds=1.2, ceiling_spread_seconds=0.3)
+    assert kept["decision"] == "ceiling" and noisy["reason"] == "gain_within_timing_noise"
 
 
 def test_other_machine_or_component_does_not_reuse_the_profile(monkeypatch):

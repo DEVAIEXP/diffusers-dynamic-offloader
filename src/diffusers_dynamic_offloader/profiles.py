@@ -330,30 +330,52 @@ class _VmmResidencySampler:
             # initial weight load). None with fewer than two forwards.
             "steady_forward_seconds": (round(sum(self.forward_seconds[1:]) / len(self.forward_seconds[1:]), 6)
                                        if len(self.forward_seconds) >= 2 else None),
+            # Spread (max - min) of the steady forwards: the run's own timing
+            # noise. None with fewer than two steady forwards (three forwards).
+            "steady_forward_spread_seconds": (round(max(self.forward_seconds[1:]) - min(self.forward_seconds[1:]), 6)
+                                              if len(self.forward_seconds) >= 3 else None),
         }
 
 
 def decide_vmm_resident_budget(floor_seconds: float | None, ceiling_seconds: float | None,
                                floor_bytes: int, ceiling_bytes: int,
-                               min_gain_per_gib: float) -> dict[str, Any]:
+                               min_gain_per_gib: float, *,
+                               floor_spread_seconds: float | None = None,
+                               ceiling_spread_seconds: float | None = None) -> dict[str, Any]:
     """Choose between the structural floor and the hardware ceiling from two builds.
 
-    The ceiling is kept only when the steady-forward speedup per extra GiB is at
-    least ``min_gain_per_gib`` (fraction of the floor forward time per GiB);
-    otherwise the floor is kept and the device memory stays free. Missing timings
-    keep the floor (conservative).
+    The ceiling is kept only when both hold: the steady-forward speedup per
+    extra GiB is at least ``min_gain_per_gib`` (fraction of the floor forward
+    time per GiB), and the speedup exceeds the timing noise, taken as the
+    larger steady-forward spread of the two builds. Otherwise the floor is kept
+    and the device memory stays free. Missing timings or spreads keep the floor
+    (conservative).
     """
     extra_gib = (ceiling_bytes - floor_bytes) / 1024**3
+    noise = None if floor_spread_seconds is None or ceiling_spread_seconds is None else max(
+        floor_spread_seconds, ceiling_spread_seconds)
     result = {"floor_forward_seconds": floor_seconds, "ceiling_forward_seconds": ceiling_seconds,
+              "floor_forward_spread_seconds": floor_spread_seconds,
+              "ceiling_forward_spread_seconds": ceiling_spread_seconds, "noise_seconds": noise,
               "extra_gib": round(extra_gib, 4), "min_gain_per_gib": min_gain_per_gib}
-    if not floor_seconds or ceiling_seconds is None or extra_gib <= 0:
-        return {**result, "decision": "floor", "reason": "timing_unavailable" if extra_gib > 0 else "no_headroom",
+    if extra_gib <= 0:
+        return {**result, "decision": "floor", "reason": "no_headroom", "gain_per_gib": None,
+                "budget_bytes": floor_bytes}
+    if not floor_seconds or ceiling_seconds is None or noise is None:
+        return {**result, "decision": "floor", "reason": "timing_unavailable_use_three_or_more_steps",
                 "gain_per_gib": None, "budget_bytes": floor_bytes}
-    gain_per_gib = (floor_seconds - ceiling_seconds) / floor_seconds / extra_gib
-    keep = gain_per_gib >= min_gain_per_gib
-    return {**result, "decision": "ceiling" if keep else "floor",
-            "reason": "gain_at_or_above_threshold" if keep else "gain_below_threshold",
-            "gain_per_gib": round(gain_per_gib, 6), "budget_bytes": ceiling_bytes if keep else floor_bytes}
+    gain_seconds = floor_seconds - ceiling_seconds
+    gain_per_gib = gain_seconds / floor_seconds / extra_gib
+    if gain_seconds <= noise:
+        reason = "gain_within_timing_noise"
+    elif gain_per_gib < min_gain_per_gib:
+        reason = "gain_below_threshold"
+    else:
+        reason = "gain_at_or_above_threshold"
+    keep = reason == "gain_at_or_above_threshold"
+    return {**result, "decision": "ceiling" if keep else "floor", "reason": reason,
+            "gain_seconds": round(gain_seconds, 6), "gain_per_gib": round(gain_per_gib, 6),
+            "budget_bytes": ceiling_bytes if keep else floor_bytes}
 
 
 class _NamedProfile:
@@ -426,8 +448,8 @@ class _NamedProfile:
             result[key] = self.report.get(key)
         recommendation = self.report.get("recommendation") or {}
         result.update({key: recommendation.get(key) for key in (
-            "reason", "gain_per_gib", "floor_forward_seconds", "ceiling_forward_seconds",
-            "floor_budget_bytes", "ceiling_budget_bytes")})
+            "reason", "gain_per_gib", "gain_seconds", "noise_seconds", "floor_forward_seconds",
+            "ceiling_forward_seconds", "floor_budget_bytes", "ceiling_budget_bytes")})
         result["margin_gb"] = self.config.vmm_profile_margin_gb
         result["min_gain_per_gib"] = self.config.vmm_profile_min_gain_per_gib
         return result
@@ -553,15 +575,17 @@ class _NamedProfile:
                                    shape_check="mismatch")
                 return {**pending, "vmm_build_stage": "restart_required"} if pending else None
             floor, ceiling = int(pending["floor_budget_bytes"]), int(pending["ceiling_budget_bytes"])
-            decision = decide_vmm_resident_budget(pending.get("floor_forward_seconds"), steady,
-                                                  floor, ceiling, threshold)
+            decision = decide_vmm_resident_budget(
+                pending.get("floor_forward_seconds"), steady, floor, ceiling, threshold,
+                floor_spread_seconds=pending.get("floor_forward_spread_seconds"),
+                ceiling_spread_seconds=observation.get("steady_forward_spread_seconds"))
             peak, budget = observation.get("peak_usage_bytes"), pending.get("device_budget_bytes")
             if isinstance(peak, int) and isinstance(budget, int) and peak > budget - margin:
                 # Safety: the measured ceiling run must stay under the device budget.
                 decision.update(decision="floor", reason="ceiling_run_exceeded_device_budget", budget_bytes=floor)
             chosen = decision.pop("budget_bytes")
             return {**{key: pending[key] for key in ("fit_class", "floor_budget_bytes", "ceiling_budget_bytes",
-                                                     "floor_forward_seconds", "device_budget_bytes",
+                                                     "device_budget_bytes",
                                                      "non_weight_peak_bytes", "margin_bytes", "input_shapes")
                        if key in pending},
                     **decision, "ceiling_peak_usage_bytes": peak, "vmm_build_stage": "final",
@@ -571,8 +595,10 @@ class _NamedProfile:
         if ceiling_info is None:
             return None
         floor, ceiling = ceiling_info["floor_bytes"], ceiling_info["vmm_resident_weight_budget_bytes"]
+        spread = observation.get("steady_forward_spread_seconds")
         base = {"fit_class": ceiling_info["fit_class"], "floor_budget_bytes": floor, "ceiling_budget_bytes": ceiling,
-                "floor_forward_seconds": steady, "device_budget_bytes": ceiling_info["device_budget_bytes"],
+                "floor_forward_seconds": steady, "floor_forward_spread_seconds": spread,
+                "device_budget_bytes": ceiling_info["device_budget_bytes"],
                 "non_weight_peak_bytes": ceiling_info["non_weight_peak_bytes"], "margin_bytes": margin,
                 "min_gain_per_gib": threshold, "input_shapes": observation.get("input_shapes")}
         virtual = observation.get("arena_virtual_bytes")
@@ -580,8 +606,9 @@ class _NamedProfile:
             final = {"decision": "whole_model", "reason": "model_fits_under_the_ceiling", "budget": ceiling}
         elif ceiling <= floor:
             final = {"decision": "floor", "reason": "no_headroom", "budget": floor}
-        elif steady is None:
-            final = {"decision": "floor", "reason": "timing_unavailable_use_two_or_more_steps", "budget": floor}
+        elif steady is None or spread is None:
+            # The decision needs at least two steady forwards (three steps).
+            final = {"decision": "floor", "reason": "timing_unavailable_use_three_or_more_steps", "budget": floor}
         else:
             return {**base, "vmm_build_stage": "floor_measured", "decision": "pending_ceiling_build",
                     "vmm_resident_weight_budget_bytes": floor,
@@ -678,6 +705,7 @@ class _NamedProfile:
                         print(f"[dynamic-offload] VMM profile {name!r}: residency budget="
                               f"{recommendation['vmm_resident_weight_budget_gb']:.3f} GiB "
                               f"(decision={recommendation['decision']}, reason={recommendation['reason']}, "
+                              f"gain_s={recommendation.get('gain_seconds')}, noise_s={recommendation.get('noise_seconds')}, "
                               f"gain_per_gib={'unavailable' if gain is None else f'{gain * 100:.3f}%'}, "
                               f"threshold={recommendation['min_gain_per_gib'] * 100:.3f}%); saved to {path}")
             except BaseException:

@@ -111,7 +111,7 @@ Boxes 15 and 16 apply to the native fast route only.
 14. **Public report.** Exposes configuration, capacity and execution observations
     through `DynamicOffloadMetrics`, `as_dict()` and `format_profile()`. Linear
     and SDNQ profiles describe capacity; they do not tune GPU residency in Python.
-    The VMM residency profile is separate: two named builds (two steps each)
+    The VMM residency profile is separate: two named builds (three steps each)
     measure the floor and the hardware ceiling derived from the device budget
     and the measured non-weight peak, and DDO keeps the ceiling only when its
     measured speedup per GiB reaches a threshold; later runs with the same

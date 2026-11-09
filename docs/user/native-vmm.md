@@ -49,13 +49,14 @@ budget for later runs.
 offload = enable_offload(model, config=config, profile_name="my-video-1280x704-8s",
                          build_profile=calibrate)
 with offload.profile_run():
-    run_denoise(steps=2 if calibrate else steps)
+    run_denoise(steps=3 if calibrate else steps)
 ```
 
-- **Build, two runs of two steps each** (`build_profile=True`; run the same
+- **Build, two runs of three steps each** (`build_profile=True`; run the same
   build twice). Forwards are timed with a device synchronization (build runs
   only); the steady time is the mean of the forwards after the first, which
-  includes the initial weight load.
+  includes the initial weight load, and their spread (max - min) is the run's
+  own timing noise. At least two steady forwards are needed.
   1. **Floor build.** The arena runs at the structural floor. DDO records the
      device budget (Windows: DXGI local budget; otherwise the device total),
      the peak usage (Windows: this process's local usage; otherwise
@@ -66,11 +67,12 @@ with offload.profile_run():
      `fits_at_limit`, `does_not_fit`). It saves a pending record whose budget is
      the floor, so ordinary runs already use the floor meanwhile.
      It saves a final decision directly when there is no headroom (`floor`), no
-     steady timing (`floor`; use at least two steps) or when the whole model
-     fits under the ceiling (`whole_model`).
+     steady timing or spread (`floor`; use at least three steps) or when the
+     whole model fits under the ceiling (`whole_model`).
   2. **Ceiling build.** The arena runs at that ceiling. DDO keeps the ceiling
      only when `(floor time - ceiling time) / floor time / extra GiB` reaches
-     `vmm_profile_min_gain_per_gib` (default 0.005, that is 0.5 % per GiB);
+     `vmm_profile_min_gain_per_gib` (default 0.005, that is 0.5 % per GiB) and
+     the time saved exceeds the larger steady spread of the two builds;
      otherwise it saves the floor and leaves the device memory free. A ceiling
      run whose peak exceeded the device budget minus the margin also saves the
      floor; different input shapes between the two builds require a restart.

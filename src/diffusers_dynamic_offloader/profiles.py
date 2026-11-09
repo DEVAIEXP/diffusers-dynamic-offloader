@@ -343,6 +343,35 @@ class _NamedProfile:
     def attach_hook(self, hook) -> None:
         """Associate the applied runtime so a VMM profile can take a snapshot."""
         self._vmm_hook = hook
+        if (self.config.execution_mode == "vmm_fast_runtime" and self.config.profile_name
+                and not self.config.build_profile and isinstance(self._module, torch.nn.Module)):
+            saved = (self.report.get("vmm_residency") or {}).get("input_shapes")
+            if saved is None:
+                self.report["shape_check"] = "unavailable"
+                return
+            self.report["shape_check"] = "pending"
+
+            def check_first_forward(module, args, kwargs):
+                observed = {"args": _tensor_shapes(tuple(args)), "kwargs": _tensor_shapes(dict(kwargs))}
+                self.report["shape_check"] = "match" if _json_value(observed) == _json_value(saved) else "mismatch"
+                if self.report["shape_check"] == "mismatch":
+                    print(f"[dynamic-offload] VMM profile {self.config.profile_name!r}: first-forward input "
+                          "shapes differ from the build; rebuild the profile for this workload.")
+                handle.remove()
+
+            handle = self._module.register_forward_pre_hook(check_first_forward, with_kwargs=True)
+
+    def residency_report(self) -> dict[str, Any] | None:
+        """Public VMM residency profile summary for the metrics report, or None."""
+        if self.config.execution_mode != "vmm_fast_runtime" or not self.config.profile_name:
+            return None
+        residency = self.report.get("vmm_residency") or {}
+        keys = ("status", "fit_class", "resident_budget_gb", "shape_check", "path")
+        result = {"name": self.config.profile_name, **{key: self.report.get(key) for key in keys}}
+        result.update({key: residency.get(key) for key in (
+            "device_budget_bytes", "budget_source", "peak_usage_bytes", "execution_slots_bytes")})
+        result["margin_gb"] = self.config.vmm_profile_margin_gb
+        return result
 
     def prepare(self):
         config = self.config

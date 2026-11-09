@@ -979,6 +979,13 @@ class DynamicOffloadApplyResult:
             auxiliary_report = getattr(getattr(self.hook, "_vmm_fast_adapter", None), "auxiliary_report", None)
             if auxiliary_report is not None:
                 runtime["execution_auxiliary_ownership"] = dict(auxiliary_report)
+        residency = self._profile.residency_report() if self._profile is not None else None
+        if residency is not None:
+            if self.hook is not None:
+                planner = self.hook.state.planner_decisions
+                residency["budget_selection"] = planner.get("vmm_resident_weight_budget_source")
+                residency["effective_budget_bytes"] = self.hook.vmm_resident_weight_budget_bytes
+            runtime["vmm_residency_profile"] = residency
         report = DynamicOffloadMetrics(
             route=self.route,
             configuration=configuration,

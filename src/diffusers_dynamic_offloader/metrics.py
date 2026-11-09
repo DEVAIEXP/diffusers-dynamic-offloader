@@ -118,6 +118,25 @@ class DynamicOffloadMetrics:
                 f"materializations={materializations} "
                 f"temporary_fallbacks={temporary}"
             )
+        residency = self.runtime.get("vmm_residency_profile", {})
+        if residency:
+            def gib(value):
+                return f"{value / 1024**3:.3f}" if isinstance(value, (int, float)) else "unavailable"
+
+            lines.append(
+                f"  vmm_residency_profile={residency.get('name')} status={residency.get('status')} "
+                f"fit={residency.get('fit_class') or 'unavailable'} "
+                f"budget_gib={gib(residency.get('effective_budget_bytes'))} "
+                f"selection={residency.get('budget_selection') or 'unavailable'} "
+                f"device_budget_gib={gib(residency.get('device_budget_bytes'))} "
+                f"({residency.get('budget_source') or 'unavailable'}) "
+                f"peak_gib={gib(residency.get('peak_usage_bytes'))} "
+                f"shapes={residency.get('shape_check') or 'unavailable'}"
+            )
+            if residency.get("fit_class") == "does_not_fit":
+                lines.append("  vmm_residency_profile: the workload does not fit the device budget even at the "
+                             "structural floor; it runs at the floor (Windows may demote memory and run slower; "
+                             "Linux has no demotion)")
         timing = self.runtime.get("execution_timing", {})
         allocation = self.runtime.get("allocation_diagnostics", {})
         if allocation:

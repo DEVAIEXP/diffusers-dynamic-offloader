@@ -98,9 +98,15 @@ routes; the enclosing frames group execution routes and native-library ownership
 13. **Next component phase.** Returns orchestration to the host, which can prepare
     another component after the required cleanup boundary.
 14. **Public report.** Exposes configuration, capacity and execution observations
-    through `DynamicOffloadMetrics`, `as_dict()` and `format_profile()`. Profiles
-    describe capacity; they do not tune GPU residency in Python. Hosts consume
-    this public interface, not internal hook or planner fields.
+    through `DynamicOffloadMetrics`, `as_dict()` and `format_profile()`. Linear
+    and SDNQ profiles describe capacity; they do not tune GPU residency in Python.
+    The VMM residency profile is separate: a named build measures one region
+    (typically one step) and DDO derives the native residency ceiling from the
+    device budget and the measured non-weight peak; later runs with the same
+    profile identity create the native arena with that ceiling once, at
+    attachment. Python never moves weights or changes residency during
+    execution. Hosts consume this public interface, not internal hook or
+    planner fields.
 
 ## Native weight loading and transport
 

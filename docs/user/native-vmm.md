@@ -37,8 +37,55 @@ explicitly; it is not silently enabled by a model class or platform.
 | `--ddo-backend vmm --ddo-preset auto` | Experimental `vmm_fast_runtime` |
 | `--ddo-backend vmm --ddo-preset nvme_baseline` | Protected `vmm_runtime` |
 
+## VMM residency profile
+
+The residency budget is the shared ceiling of the two execution slots and the
+model arena. Too large a ceiling lets resident weights fill device memory that
+activations need; on Windows the working set then exceeds the WDDM local budget
+and kernels slow down. A VMM residency profile measures this once and saves the
+budget for later runs.
+
+```python
+offload = enable_offload(model, config=config, profile_name="my-video-1280x704-8s",
+                         build_profile=calibrate)
+with offload.profile_run():
+    run_denoise(steps=1 if calibrate else steps)
+```
+
+- **Build** (`build_profile=True`, typically one step): DDO records the device
+  budget (Windows: DXGI local budget; otherwise the device total), the peak
+  usage of the measured region (Windows: this process's local usage; otherwise
+  driver-visible usage), the resident weight bytes and the first forward's
+  tensor input shapes, then saves
+  `budget = device budget - margin - (peak - resident weights)`, clamped to
+  [structural floor, floor + model size], with a fit class
+  (`fits_with_headroom`, `fits_at_limit`, `does_not_fit`).
+  `vmm_profile_margin_gb` defaults to 0.25 GiB.
+- **Use** (same name, no explicit budget): the native arena is created with the
+  saved budget once, at attachment. An explicit positive budget always wins.
+  Without a saved profile the component runs at the structural floor (two
+  execution slots plus 64 MiB arena headroom) and reports `missing`.
+- **Identity**: name, model class, component, execution unit level, platform,
+  GPU name, device memory (256 MiB steps), host RAM (1 GiB steps) and the native
+  library SHA256. Files use the `ddo-vmm-residency-v1-` prefix, so linear and
+  VMM profiles never share a file even with the same name. DDO does not infer
+  resolution or duration: put the workload shape in the name. A use run whose
+  first-forward input shapes differ from the build reports `shape_check:
+  mismatch` and asks for a rebuild.
+- **Does not fit**: the component keeps running at the floor. On Windows WDDM
+  may demote memory (slower, no out-of-memory); on Linux there is no demotion
+  and no activation offload, so activations that alone exceed the device are
+  reported, not hidden.
+
+Reports: `runtime.vmm_residency_profile` in `metrics_snapshot().as_dict()` and
+one line in `format_profile()` (see [metrics](metrics.md)). This profile is
+Windows-measured on one LTX 2.3 video workload so far; Linux behaviour and other
+models need their own validation.
+
 ## Proposed resident-weight tuning for larger GPUs
 
+The VMM residency profile above derives the budget automatically from a
+measured step; the manual procedure below remains useful for comparisons.
 Start with the resident-weight budget from a validated recipe. For the same
 workload on a larger GPU, try assigning a fraction of the additional VRAM to
 weights:

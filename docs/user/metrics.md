@@ -572,11 +572,26 @@ value with low fallback volume is expected for a capacity-constrained run. A
 rising value together with high fallback volume indicates that the active
 range is larger than the safely reusable resident set.
 
-VMM `build_profile=True` does not tune a resident-module budget. It saves a
-capacity observation for the component: native virtual/page/resident bytes,
-weight-source mix, platform, fault/signature/upload activity, and fallback
-volume. The transformer is the first validated component; the same contract
-is intended for text encoders after its own CUDA validation.
+VMM `build_profile=True` does not tune a linear resident-module budget. It saves
+a capacity observation for the component (native virtual/page/resident bytes,
+weight-source mix, platform, fault/signature/upload activity, fallback volume)
+and a `vmm_residency` observation from which DDO recommends the native
+residency budget (see [VMM residency profile](native-vmm.md#vmm-residency-profile)).
+The transformer is the first validated component; the same contract is
+intended for text encoders after its own CUDA validation.
+
+`runtime.vmm_residency_profile` (VMM profiles only; absent for linear/SDNQ):
+
+| Field | Meaning |
+| --- | --- |
+| `name`, `status` | Profile name; `saved` (build), `applied` (saved budget used), `explicit` (caller budget wins), `missing` (no saved budget: structural floor). |
+| `fit_class` | `fits_with_headroom`, `fits_at_limit`, `does_not_fit`, or `unavailable` when the build could not observe the device. |
+| `resident_budget_gb` | Recommended (build) or applied budget from the profile. |
+| `effective_budget_bytes`, `budget_selection` | Budget the hook actually uses and its origin: `configured`, `profile`, `structural_floor`. |
+| `device_budget_bytes`, `budget_source` | Device budget at the build: `dxgi_local_budget` (Windows) or `cuda_device_total`. |
+| `peak_usage_bytes`, `execution_slots_bytes`, `margin_gb` | Build measurement inputs; missing values are `null` (unavailable, not zero). |
+| `shape_check` | Use runs: `match`/`mismatch` of the first forward's tensor input shapes against the build, `pending` before the first forward, `unavailable` without a saved observation. |
+| `path` | Saved profile file of a build. |
 
 The runner may merge this payload into its own run tracker, but it must not
 depend on `DynamicOffloadHook.state`, `planner_decisions`, or VMM-specific

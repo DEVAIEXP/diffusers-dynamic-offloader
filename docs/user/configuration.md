@@ -172,7 +172,8 @@ are consumed by `DynamicOffloadSettings.from_env(...)`.
 | Config field | Default | Environment | Generic DDO CLI / meaning |
 | --- | --- | --- | --- |
 | `vmm_native_transport` | `False` | `DDO_VMM_NATIVE_TRANSPORT` | `--ddo-vmm-native-transport`; native reusable registered-host windows. Source retention also selects this transport. |
-| `vmm_resident_weight_budget_gb` | `0.0` | `DDO_VMM_RESIDENT_WEIGHT_BUDGET_GB` | `--ddo-vmm-resident-weight-budget-gb`; active weight capacity, not complete driver GPU usage. CLI helper default4GiB; activations/auxiliaries need additional headroom. |
+| `vmm_resident_weight_budget_gb` | `0.0` | `DDO_VMM_RESIDENT_WEIGHT_BUDGET_GB` | `--ddo-vmm-resident-weight-budget-gb`; active weight capacity (two execution slots plus the model arena), not complete driver GPU usage. A positive value is authoritative. Omitted or 0 on `vmm/auto`: a saved [VMM residency profile](native-vmm.md#vmm-residency-profile) supplies it, otherwise the structural floor (two execution slots plus 64 MiB arena headroom). The CLI helper omits it by default; `vmm/nvme_baseline` keeps 4 GiB when omitted. |
+| `vmm_profile_margin_gb` | `0.25` | Not currently parsed from ENV | Python/config; device-budget margin kept free when a VMM residency profile build recommends the budget. |
 | `vmm_staging_buffer_gb` | `0.625` | `DDO_VMM_STAGING_BUFFER_GB` | `--ddo-vmm-staging-buffer-gb`; TOTAL host staging, rounded to native windows, not per slot. |
 | `vmm_source_cache_gb` | `0.0` | `DDO_VMM_SOURCE_CACHE_GB` | `--ddo-vmm-source-cache-gb`; native retained-storage ceiling, separate from GPU and registration. Zero disables this large retained-source configuration. |
 | `vmm_source_registered_gb` | `0.0` | `DDO_VMM_SOURCE_REGISTERED_GB` | `--ddo-vmm-source-registered-gb`; registration within retained storage; zero uses storage ceiling, explicit values require whole64MiB segments within storage capacity. |

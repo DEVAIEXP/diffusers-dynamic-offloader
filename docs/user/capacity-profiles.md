@@ -32,6 +32,10 @@ with the earlier host-context API are not automatically mapped to names.
 
 ## Calibration and measurement
 
+The native VMM route has its own residency profile with a separate identity
+and file prefix; see [VMM residency profile](native-vmm.md#vmm-residency-profile).
+This section describes the linear and SDNQ calibration.
+
 Residency calibration requires the dynamic CUDA linear or SDNQ runtime. It forces the resident
 module budget to zero. The host chooses the number of inference steps and wraps
 the region to measure in `profile_run()`. DDO saves only when that region exits

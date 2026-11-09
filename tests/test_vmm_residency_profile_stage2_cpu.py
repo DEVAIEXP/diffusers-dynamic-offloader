@@ -10,7 +10,7 @@ from diffusers_dynamic_offloader import DynamicOffloadConfig
 from diffusers_dynamic_offloader import profiles
 from diffusers_dynamic_offloader.backend import add_dynamic_offload_arguments, resolve_dynamic_offload_backend
 from diffusers_dynamic_offloader.profiles import (
-    VMM_FLOOR_ARENA_HEADROOM_BYTES, _NamedProfile, dynamic_offload_profile_key, dynamic_offload_profile_path,
+    VMM_FLOOR_ARENA_HEADROOM_BYTES, VMM_PROFILE_IDENTITY_VERSION, _NamedProfile, dynamic_offload_profile_key, dynamic_offload_profile_path,
     load_dynamic_offload_profile, recommend_vmm_resident_budget,
 )
 
@@ -108,7 +108,7 @@ def test_vmm_identity_uses_its_own_prefix_and_never_collides_with_linear():
     vmm = _NamedProfile(nn.Linear(2, 2), config(), component="transformer")
     linear = _NamedProfile(nn.Linear(2, 2), DynamicOffloadConfig(execution_mode="linear_runtime",
                                                                  profile_name="ltx23-video-1280x704-8s"))
-    assert vmm.context["runtime"] == "vmm" and vmm.context["identity_version"] == 4
+    assert vmm.context["runtime"] == "vmm" and vmm.context["identity_version"] == VMM_PROFILE_IDENTITY_VERSION
     assert vmm.context["unit_level"] == "block_child" and vmm.context["gpu_name"] == "Test GPU"
     assert dynamic_offload_profile_key(vmm.context).startswith("ddo-vmm-residency-v1-")
     assert dynamic_offload_profile_key(linear.context).startswith("ddo-capacity-v1-")

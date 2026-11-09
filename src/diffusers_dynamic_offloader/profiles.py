@@ -28,7 +28,25 @@ _PROFILE_PREFIX = "ddo-capacity-v1"
 # VMM residency profiles use their own identity and file prefix so a linear
 # profile with the same name can never be selected for the native route.
 _VMM_PROFILE_PREFIX = "ddo-vmm-residency-v1"
-VMM_PROFILE_IDENTITY_VERSION = 4
+VMM_PROFILE_IDENTITY_VERSION = 5
+
+
+def _vmm_transport_identity(config) -> dict[str, Any]:
+    """Weight transport capacities of a VMM residency profile identity.
+
+    The measured gain of extra residency depends on where non-resident weights
+    come from (retained host source versus file reads) and on the staging
+    capacity, so a profile built with one transport is never applied to another.
+    """
+    def gib(name):
+        value = getattr(config, name, 0.0)
+        return round(float(value), 3) if isinstance(value, (int, float)) and math.isfinite(value) else None
+
+    return {"transport": {"native": bool(getattr(config, "vmm_native_transport", False)),
+                          "staging_gb": gib("vmm_staging_buffer_gb"),
+                          "source_cache_gb": gib("vmm_source_cache_gb"),
+                          "source_registered_gb": gib("vmm_source_registered_gb"),
+                          "host_cache_gb": gib("vmm_host_cache_gb")}}
 # Arena space kept above the two execution slots at the structural floor.
 VMM_FLOOR_ARENA_HEADROOM_BYTES = 64 * 1024**2
 _SDNQ_DEFAULT_RESIDENT_CEILING_GB = 6.0
@@ -435,6 +453,7 @@ class _NamedProfile:
                                 component=component, unit_level=config.vmm_execution_unit_level)
             if config.profile_name:
                 self.context.update(_vmm_machine_identity(config))
+                self.context.update(_vmm_transport_identity(config))
             self.report["component"] = component
         self._active = False
         self._sdnq_probe_budget_gb: float | None = None

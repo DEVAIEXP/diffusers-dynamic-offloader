@@ -12,7 +12,11 @@ from diffusers_dynamic_offloader import (
     enable_offload,
     from_pretrained_with_dynamic_offload,
 )
-from diffusers_dynamic_offloader.profiles import _NamedProfile, load_dynamic_offload_profile
+from diffusers_dynamic_offloader.profiles import (
+    VMM_PROFILE_IDENTITY_VERSION,
+    _NamedProfile,
+    load_dynamic_offload_profile,
+)
 
 
 class NamedProfileTests(unittest.TestCase):
@@ -176,11 +180,11 @@ class NamedProfileTests(unittest.TestCase):
         for profile, size in zip(profiles, (1024, 2048)):
             saved = load_dynamic_offload_profile(profile.context)
             self.assertEqual(saved["observations"][-1]["vmm"]["virtual_bytes"], size)
-            self.assertEqual(profile.context["identity_version"], 4)
+            self.assertEqual(profile.context["identity_version"], VMM_PROFILE_IDENTITY_VERSION)
             self.assertEqual(profile.context["runtime"], "vmm")
             self.assertEqual(config.vmm_resident_weight_budget_gb, 0.0)
 
-    def test_linear_profile_identities_are_preserved_and_vmm_uses_identity_4(self):
+    def test_linear_profile_identities_are_preserved_and_vmm_uses_the_vmm_identity(self):
         for mode in ("linear_runtime", "sdnq_runtime"):
             config = DynamicOffloadConfig(execution_mode=mode, profile_name="identity")
             generic = _NamedProfile(nn.Linear(2, 2), config)
@@ -191,7 +195,7 @@ class NamedProfileTests(unittest.TestCase):
             self.assertEqual(component.context, generic.context)
         vmm = _NamedProfile(nn.Linear(2, 2), DynamicOffloadConfig(execution_mode="vmm_fast_runtime",
                                                                   profile_name="identity"))
-        self.assertEqual(vmm.context["identity_version"], 4)
+        self.assertEqual(vmm.context["identity_version"], VMM_PROFILE_IDENTITY_VERSION)
         self.assertEqual((vmm.context["runtime"], vmm.context["component"]), ("vmm", "model"))
 
     def test_enable_offload_passes_component_to_vmm_profile(self):

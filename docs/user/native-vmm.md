@@ -96,9 +96,13 @@ with offload.profile_run():
   unavailable observation keeps the saved budget.
   Without a saved profile the component runs at the structural floor (two
   execution slots plus 64 MiB arena headroom) and reports `missing`.
-- **Identity**: name, model class, component, execution unit level, platform,
-  GPU name, device memory (256 MiB steps), host RAM (1 GiB steps) and the native
-  library SHA256. Files use the `ddo-vmm-residency-v1-` prefix, so linear and
+- **Identity** (version 5): name, model class, component, execution unit level,
+  platform, GPU name, device memory (256 MiB steps), host RAM (1 GiB steps), the
+  native library SHA256 and the weight transport (native transport, total
+  staging, retained source cache, source registration and host cache). The
+  residency gain depends on where non-resident weights come from, so a profile
+  built without a retained source is never applied to a run with one; changing
+  these capacities requires a new build. Files use the `ddo-vmm-residency-v1-` prefix, so linear and
   VMM profiles never share a file even with the same name. DDO does not infer
   resolution or duration: put the workload shape in the name. A use run whose
   first-forward input shapes differ from the build reports `shape_check:

@@ -630,6 +630,10 @@ class DynamicOffloadConfig:
     # profile or the explicit resident_module_budget_gb override instead.
     profile_resident_module_budget_gb: float = 0.0
     _profile_budget_applied: bool = False
+    # Internal transfer values of a saved VMM residency profile, used to fit
+    # its budget to the device budget observed when the arena is attached.
+    _profile_floor_bytes: int | None = None
+    _profile_non_weight_peak_bytes: int | None = None
     max_pin_weight_budget_gb: float = 0.0
     available_system_ram_gb: float = 0.0
     system_ram_headroom_gb: float = 6.0
@@ -989,6 +993,9 @@ class DynamicOffloadApplyResult:
                 planner = self.hook.state.planner_decisions
                 residency["budget_selection"] = planner.get("vmm_resident_weight_budget_source")
                 residency["effective_budget_bytes"] = self.hook.vmm_resident_weight_budget_bytes
+                check = planner.get("vmm_profile_budget_check")
+                if check is not None:
+                    residency["budget_check"] = dict(check)
             runtime["vmm_residency_profile"] = residency
         report = DynamicOffloadMetrics(
             route=self.route,
@@ -1593,6 +1600,27 @@ class DynamicOffloadHook(ModelHook):
             else:
                 self._move_small_local_tensors_to_device(submodule)
 
+    def _recheck_vmm_profile_budget(self, library) -> None:
+        """Fit a saved profile budget to the current Windows device budget (read-only query)."""
+        from .profiles import recheck_vmm_profile_budget
+
+        device_budget = None
+        if sys.platform == "win32":
+            try:
+                device_budget = int(library.windows_memory_info(self.execution_device.index or 0).local_budget_bytes)
+            except Exception:
+                device_budget = None
+        check = recheck_vmm_profile_budget(
+            self.vmm_resident_weight_budget_bytes, self.config._profile_floor_bytes,
+            self.config._profile_non_weight_peak_bytes, int(self.config.vmm_profile_margin_gb * 1024**3),
+            device_budget)
+        self.state.planner_decisions["vmm_profile_budget_check"] = check
+        if check["applied_bytes"] != self.vmm_resident_weight_budget_bytes:
+            print(f"[dynamic-offload] VMM profile budget {check['saved_bytes'] / 1024**3:.3f} GiB -> "
+                  f"{check['applied_bytes'] / 1024**3:.3f} GiB ({check['status']}): the device budget is "
+                  f"{device_budget / 1024**3:.3f} GiB now.")
+            self.vmm_resident_weight_budget_bytes = int(check["applied_bytes"])
+
     def _prepare_vmm_fast_runtime(self, module: nn.Module) -> None:
         """Attach the single native model-address arena used by ``vmm_fast``.
 
@@ -1685,6 +1713,8 @@ class DynamicOffloadHook(ModelHook):
         from .vmm_weight_store import PinnedStagingPool, SafetensorSliceRegistry
 
         library, _arena_type = _load_native_allocator(None)
+        if budget_source == "profile":
+            self._recheck_vmm_profile_budget(library)
         headrooms = (self.config.vmm_dxgi_local_headroom_gb, self.config.vmm_dxgi_shared_headroom_gb,
                      self.config.vmm_dxgi_system_headroom_gb)
         if any(not math.isfinite(value) or value < 0 for value in headrooms):

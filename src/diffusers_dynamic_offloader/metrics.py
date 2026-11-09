@@ -136,6 +136,11 @@ class DynamicOffloadMetrics:
                 f"build={residency.get('build_stage') or 'unavailable'} "
                 f"decision={residency.get('decision') or 'unavailable'}"
             )
+            check = residency.get("budget_check") or {}
+            if check:
+                lines.append(f"  vmm_residency_profile budget_check={check.get('status')} "
+                             f"saved_gib={gib(check.get('saved_bytes'))} applied_gib={gib(check.get('applied_bytes'))} "
+                             f"device_budget_now_gib={gib(check.get('device_budget_bytes'))}")
             if residency.get("build_stage") == "floor_measured":
                 lines.append("  vmm_residency_profile: build 1/2 saved; the floor budget is used until the "
                              "same build runs again to measure the hardware ceiling")

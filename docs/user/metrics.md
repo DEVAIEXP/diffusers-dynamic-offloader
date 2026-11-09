@@ -588,6 +588,7 @@ intended for text encoders after its own CUDA validation.
 | `fit_class` | `fits_with_headroom`, `fits_at_limit`, `does_not_fit`, or `unavailable` when the build could not observe the device. |
 | `resident_budget_gb` | Recommended (build) or applied budget from the profile. |
 | `effective_budget_bytes`, `budget_selection` | Budget the hook actually uses and its origin: `configured`, `profile`, `structural_floor`. |
+| `budget_check` | Profile budgets only: `status` (`fits`, `reduced`, `device_budget_below_floor`, `unavailable`), `saved_bytes`, `applied_bytes`, `device_budget_bytes` (WDDM local budget at attachment; `null` when unavailable) and `margin_bytes`. |
 | `device_budget_bytes`, `budget_source` | Device budget at the build: `dxgi_local_budget` (Windows) or `cuda_device_total`. |
 | `build_peak_usage_bytes`, `execution_slots_bytes`, `margin_gb` | Inputs of the last build run (the ceiling build after a full calibration); missing values are `null` (unavailable, not zero). |
 | `use_peak_usage_bytes`, `use_peak_driver_used_bytes`, `use_device_budget_bytes` | Use runs: peak of the measured `profile_run()` region (Windows: this process's WDDM local usage; otherwise driver-visible usage), the driver-visible peak and the WDDM local budget. Sampled memory only; use runs never synchronize the device. |

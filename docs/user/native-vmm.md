@@ -82,6 +82,12 @@ with offload.profile_run():
   build.
 - **Use** (same name, no explicit budget): the native arena is created with the
   saved budget once, at attachment. An explicit positive budget always wins.
+  On Windows the saved budget is first fitted to the WDDM local budget observed
+  at attachment (other applications can shrink it after the build): it is
+  reduced to `device budget now - margin - build non-weight peak`, never below
+  the structural floor and never raised. The report shows `budget_check`
+  (`fits`, `reduced`, `device_budget_below_floor` or `unavailable`); an
+  unavailable observation keeps the saved budget.
   Without a saved profile the component runs at the structural floor (two
   execution slots plus 64 MiB arena headroom) and reports `missing`.
 - **Identity**: name, model class, component, execution unit level, platform,

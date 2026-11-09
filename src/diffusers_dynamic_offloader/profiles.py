@@ -200,6 +200,34 @@ def recommend_vmm_resident_budget(observation: Mapping[str, Any], margin_bytes: 
             "margin_bytes": margin_bytes, "device_budget_bytes": budget}
 
 
+def recheck_vmm_profile_budget(saved_bytes: int, floor_bytes: int | None, non_weight_peak_bytes: int | None,
+                               margin_bytes: int, device_budget_bytes: int | None) -> dict[str, Any]:
+    """Fit a saved residency budget to the device budget observed at use time.
+
+    The device budget (Windows DXGI local budget) can shrink between the build
+    and a later run when other applications take memory. With the build's
+    non-weight peak, ``device_budget - margin - non_weight`` is the largest
+    budget that keeps this run under ``device_budget - margin``. The saved
+    budget is reduced to it, never below the structural floor and never
+    raised. Missing observations leave the saved budget unchanged.
+    """
+    result = {"saved_bytes": saved_bytes, "applied_bytes": saved_bytes,
+              "device_budget_bytes": device_budget_bytes, "margin_bytes": margin_bytes}
+    if not all(isinstance(value, int) and value >= 0 for value in (device_budget_bytes, non_weight_peak_bytes)):
+        return {**result, "status": "unavailable"}
+    limit = device_budget_bytes - margin_bytes - non_weight_peak_bytes
+    if limit >= saved_bytes:
+        return {**result, "status": "fits"}
+    floor = floor_bytes if isinstance(floor_bytes, int) and floor_bytes > 0 else None
+    if floor is not None and limit < floor:
+        applied = min(saved_bytes, floor)
+        return {**result, "applied_bytes": applied, "status": "device_budget_below_floor"}
+    applied = max(limit, floor or 0)
+    if applied <= 0:
+        return {**result, "status": "device_budget_below_floor"}
+    return {**result, "applied_bytes": applied, "status": "reduced"}
+
+
 def _tensor_shapes(value: Any) -> Any:
     """Shapes of the tensors in a forward input, recursively; other values omitted."""
     if isinstance(value, torch.Tensor):
@@ -524,7 +552,12 @@ class _NamedProfile:
                             if recommendation.get("vmm_build_stage") == "floor_measured" else "")
             print(f"[dynamic-offload] VMM profile {config.profile_name!r}: residency budget={budget:.3f} GiB "
                   f"({recommendation.get('fit_class')}, decision={recommendation.get('decision')}){pending_note}.")
-            return replace(config, vmm_resident_weight_budget_gb=float(budget), _profile_budget_applied=True)
+            # The arena re-checks this budget against the device budget at attach time.
+            floor_bytes, non_weight = (recommendation.get("floor_budget_bytes"),
+                                       recommendation.get("non_weight_peak_bytes"))
+            return replace(config, vmm_resident_weight_budget_gb=float(budget), _profile_budget_applied=True,
+                           _profile_floor_bytes=floor_bytes if isinstance(floor_bytes, int) else None,
+                           _profile_non_weight_peak_bytes=non_weight if isinstance(non_weight, int) else None)
         # An explicit caller budget has always taken precedence over a saved
         # recommendation.  It is not itself a profile calibration.
         if config.resident_module_budget_gb > 0:

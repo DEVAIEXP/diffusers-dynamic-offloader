@@ -67,6 +67,17 @@ def test_windows_build_records_wddm_budget_peak_floor_and_first_forward_shapes(m
     assert not module._forward_pre_hooks and not module._forward_hooks  # Observation hooks removed.
 
 
+def test_the_lowest_wddm_budget_of_the_region_is_recorded(monkeypatch):
+    # WDDM lowers the process budget under the process's own load.
+    budgets = iter([int(7.086 * GiB), int(7.030 * GiB)] + [int(7.05 * GiB)] * 1000)
+    monkeypatch.setattr(torch.cuda, "mem_get_info", lambda device=None: (3 * GiB, 8 * GiB))
+    hook = SimpleNamespace(vmm_runtime_stats=lambda: stats(),
+                           vmm_device_memory=lambda: {"local_budget_bytes": next(budgets),
+                                                      "local_usage_bytes": 4 * GiB})
+    observation = build(nn.Linear(2, 2), hook)
+    assert observation["device_budget_bytes"] == int(7.030 * GiB)
+
+
 def test_without_wddm_the_device_total_is_the_budget_source(monkeypatch):
     monkeypatch.setattr(torch.cuda, "mem_get_info", lambda device=None: (6 * GiB, 8 * GiB))
     observation = build(nn.Linear(2, 2), SimpleNamespace(vmm_runtime_stats=lambda: stats()))

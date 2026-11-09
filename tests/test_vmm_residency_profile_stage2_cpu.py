@@ -152,9 +152,30 @@ def test_build_two_keeps_the_ceiling_only_above_threshold_and_noise(ceiling_seco
     assert restarted.vmm_resident_weight_budget_gb == 0.0 and report["build_stage"] == "floor_measured"
 
 
-def test_ceiling_run_over_the_device_budget_falls_back_to_the_floor():
+def test_ceiling_run_over_the_device_budget_trims_the_ceiling():
     build_profile(timed(33.0))
     profile, _, _ = build_profile(timed(25.0, peak_usage_bytes=int(7.6 * GiB)))
+    final = saved(profile)
+    overshoot = int(7.6 * GiB) - (int(7.61 * GiB) - 256 * MiB)
+    assert (final["decision"], final["reason"]) == ("ceiling", "ceiling_trimmed_to_device_budget")
+    assert final["ceiling_trim_bytes"] == overshoot
+    assert final["vmm_resident_weight_budget_bytes"] == final["ceiling_budget_bytes"] - overshoot > FLOOR
+
+
+def test_ceiling_run_checks_the_lowest_budget_of_both_builds():
+    # WDDM lowered the process budget during build 2; build 1's budget alone would pass.
+    build_profile(timed(33.0))
+    lower = int(7.5 * GiB)
+    profile, _, _ = build_profile(timed(25.0, peak_usage_bytes=int(7.3 * GiB), device_budget_bytes=lower))
+    final = saved(profile)
+    assert final["build_min_device_budget_bytes"] == lower
+    assert final["ceiling_trim_bytes"] == int(7.3 * GiB) - (lower - 256 * MiB)
+    assert final["reason"] == "ceiling_trimmed_to_device_budget"
+
+
+def test_ceiling_run_with_no_room_above_the_floor_falls_back_to_the_floor():
+    build_profile(timed(33.0))
+    profile, _, _ = build_profile(timed(25.0, peak_usage_bytes=int(7.61 * GiB) + 3 * GiB))
     final = saved(profile)
     assert (final["decision"], final["reason"]) == ("floor", "ceiling_run_exceeded_device_budget")
     assert final["vmm_resident_weight_budget_bytes"] == FLOOR

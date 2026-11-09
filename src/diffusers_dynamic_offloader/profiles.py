@@ -260,6 +260,7 @@ class _VmmResidencySampler:
         self.device_total_bytes: int | None = None
         self.peak_local_usage_bytes: int | None = None
         self.local_budget_bytes: int | None = None
+        self.min_local_budget_bytes: int | None = None
         self.input_shapes: Any = None
         # Device-complete duration of each component forward (build runs only:
         # the post-forward hook synchronizes the device to time GPU work).
@@ -285,6 +286,10 @@ class _VmmResidencySampler:
         if memory:
             usage = int(memory["local_usage_bytes"])
             self.local_budget_bytes = int(memory["local_budget_bytes"])
+            # WDDM lowers the process budget under the process's own load, so
+            # the lowest budget of the region is the one its peak must fit.
+            self.min_local_budget_bytes = (self.local_budget_bytes if self.min_local_budget_bytes is None
+                                           else min(self.min_local_budget_bytes, self.local_budget_bytes))
             self.peak_local_usage_bytes = usage if self.peak_local_usage_bytes is None else max(self.peak_local_usage_bytes, usage)
 
     def _first_forward(self, module, args, kwargs) -> None:
@@ -329,7 +334,7 @@ class _VmmResidencySampler:
         self.close()
         self._sample()
         if self.local_budget_bytes is not None:
-            budget, source, peak = self.local_budget_bytes, "dxgi_local_budget", self.peak_local_usage_bytes
+            budget, source, peak = self.min_local_budget_bytes, "dxgi_local_budget", self.peak_local_usage_bytes
         elif self.device_total_bytes is not None:
             budget, source, peak = self.device_total_bytes, "cuda_device_total", self.peak_driver_used_bytes
         else:
@@ -477,7 +482,8 @@ class _NamedProfile:
         recommendation = self.report.get("recommendation") or {}
         result.update({key: recommendation.get(key) for key in (
             "reason", "gain_per_gib", "gain_seconds", "noise_seconds", "floor_forward_seconds",
-            "ceiling_forward_seconds", "floor_budget_bytes", "ceiling_budget_bytes")})
+            "ceiling_forward_seconds", "floor_budget_bytes", "ceiling_budget_bytes", "ceiling_trim_bytes",
+            "build_min_device_budget_bytes")})
         result["margin_gb"] = self.config.vmm_profile_margin_gb
         result["min_gain_per_gib"] = self.config.vmm_profile_min_gain_per_gib
         return result
@@ -612,16 +618,28 @@ class _NamedProfile:
                 pending.get("floor_forward_seconds"), steady, floor, ceiling, threshold,
                 floor_spread_seconds=pending.get("floor_forward_spread_seconds"),
                 ceiling_spread_seconds=observation.get("steady_forward_spread_seconds"))
-            peak, budget = observation.get("peak_usage_bytes"), pending.get("device_budget_bytes")
-            if isinstance(peak, int) and isinstance(budget, int) and peak > budget - margin:
-                # Safety: the measured ceiling run must stay under the device budget.
-                decision.update(decision="floor", reason="ceiling_run_exceeded_device_budget", budget_bytes=floor)
+            peak = observation.get("peak_usage_bytes")
+            budgets = [value for value in (pending.get("device_budget_bytes"), observation.get("device_budget_bytes"))
+                       if isinstance(value, int)]
+            budget = min(budgets) if budgets else None
+            if isinstance(peak, int) and budget is not None and peak > budget - margin:
+                # Safety: the ceiling run's peak must fit the lowest device budget
+                # of both builds minus the margin. Trim the ceiling by the
+                # overshoot; fall back to the floor only if nothing remains.
+                overshoot = peak - (budget - margin)
+                trimmed = ceiling - overshoot
+                decision["ceiling_trim_bytes"] = overshoot
+                if trimmed <= floor:
+                    decision.update(decision="floor", reason="ceiling_run_exceeded_device_budget", budget_bytes=floor)
+                elif decision.get("decision") == "ceiling":
+                    decision.update(reason="ceiling_trimmed_to_device_budget", budget_bytes=trimmed)
             chosen = decision.pop("budget_bytes")
             return {**{key: pending[key] for key in ("fit_class", "floor_budget_bytes", "ceiling_budget_bytes",
                                                      "device_budget_bytes",
                                                      "non_weight_peak_bytes", "margin_bytes", "input_shapes")
                        if key in pending},
                     **decision, "ceiling_peak_usage_bytes": peak, "vmm_build_stage": "final",
+                    "build_min_device_budget_bytes": budget,
                     "vmm_resident_weight_budget_bytes": chosen,
                     "vmm_resident_weight_budget_gb": round(chosen / 1024**3, 4)}
         ceiling_info = recommend_vmm_resident_budget(observation, margin)
@@ -670,7 +688,7 @@ class _NamedProfile:
                                                              if sampler.local_budget_bytes is not None
                                                              else sampler.peak_driver_used_bytes),
                                        use_peak_driver_used_bytes=sampler.peak_driver_used_bytes,
-                                       use_device_budget_bytes=sampler.local_budget_bytes)
+                                       use_device_budget_bytes=sampler.min_local_budget_bytes)
                 finally:
                     sampler.close()
                 return

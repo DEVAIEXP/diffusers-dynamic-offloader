@@ -58,7 +58,9 @@ with offload.profile_run():
   includes the initial weight load, and their spread (max - min) is the run's
   own timing noise. At least two steady forwards are needed.
   1. **Floor build.** The arena runs at the structural floor. DDO records the
-     device budget (Windows: DXGI local budget; otherwise the device total),
+     device budget (Windows: the lowest DXGI local budget seen during the
+     region, since WDDM lowers it under the process's own load; otherwise the
+     device total),
      the peak usage (Windows: this process's local usage; otherwise
      driver-visible usage), the resident weight bytes and the first forward's
      tensor input shapes, and derives the hardware ceiling
@@ -73,9 +75,13 @@ with offload.profile_run():
      only when `(floor time - ceiling time) / floor time / extra GiB` reaches
      `vmm_profile_min_gain_per_gib` (default 0.005, that is 0.5 % per GiB) and
      the time saved exceeds the larger steady spread of the two builds;
-     otherwise it saves the floor and leaves the device memory free. A ceiling
-     run whose peak exceeded the device budget minus the margin also saves the
-     floor; different input shapes between the two builds require a restart.
+     otherwise it saves the floor and leaves the device memory free. The
+     ceiling run's peak must fit the lowest device budget of both builds minus
+     the margin: a kept ceiling is trimmed by the overshoot
+     (`ceiling_trimmed_to_device_budget`, `ceiling_trim_bytes`), and the floor
+     is saved only if nothing remains above it
+     (`ceiling_run_exceeded_device_budget`). Different input shapes between the
+     two builds require a restart.
   A further build restarts the calibration. `vmm_profile_margin_gb` defaults to
   0.25 GiB. An explicit residency budget is refused during a build. A future
   native "raise the ceiling during a run" operation could measure both in one

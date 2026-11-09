@@ -589,7 +589,8 @@ intended for text encoders after its own CUDA validation.
 | `resident_budget_gb` | Recommended (build) or applied budget from the profile. |
 | `effective_budget_bytes`, `budget_selection` | Budget the hook actually uses and its origin: `configured`, `profile`, `structural_floor`. |
 | `device_budget_bytes`, `budget_source` | Device budget at the build: `dxgi_local_budget` (Windows) or `cuda_device_total`. |
-| `peak_usage_bytes`, `execution_slots_bytes`, `margin_gb` | Build measurement inputs; missing values are `null` (unavailable, not zero). |
+| `build_peak_usage_bytes`, `execution_slots_bytes`, `margin_gb` | Inputs of the last build run (the ceiling build after a full calibration); missing values are `null` (unavailable, not zero). |
+| `use_peak_usage_bytes`, `use_peak_driver_used_bytes`, `use_device_budget_bytes` | Use runs: peak of the measured `profile_run()` region (Windows: this process's WDDM local usage; otherwise driver-visible usage), the driver-visible peak and the WDDM local budget. Sampled memory only; use runs never synchronize the device. |
 | `shape_check` | Use runs: `match`/`mismatch` of the first forward's tensor input shapes against the build, `pending` before the first forward, `unavailable` without a saved observation. |
 | `build_stage`, `decision`, `reason` | `floor_measured` (pending second build, floor in use), `final`, or `restart_required`; decision `floor`, `ceiling`, `whole_model`, `pending_ceiling_build`; reason such as `gain_below_threshold`, `gain_at_or_above_threshold`, `no_headroom`, `timing_unavailable_use_two_or_more_steps`, `ceiling_run_exceeded_device_budget`. |
 | `floor_forward_seconds`, `ceiling_forward_seconds`, `steady_forward_seconds` | Device-synchronized steady forward times of the floor and ceiling builds (seconds). |

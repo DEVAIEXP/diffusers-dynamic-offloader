@@ -94,6 +94,27 @@ def test_does_not_fit_is_explained_and_unavailable_values_are_named():
     assert "budget_gib=unavailable" in text and "does not fit the device budget" in text
 
 
+def test_use_run_reports_its_own_peak_without_synchronizing(monkeypatch):
+    monkeypatch.setattr(torch.cuda, "mem_get_info", lambda device=None: (3 * GiB, 8 * GiB))
+    module = nn.Linear(2, 2)
+    build(module)  # Build peak 5.24 GiB.
+    synchronizations = []
+    monkeypatch.setattr(torch.cuda, "synchronize", lambda device=None: synchronizations.append(device))
+    profile = _NamedProfile(module, config(), component="transformer")
+    profile.prepare()
+    usage = iter([int(4.2 * GiB)] * 1000)
+    profile.attach_hook(SimpleNamespace(vmm_device_memory=lambda: {"local_budget_bytes": int(7.61 * GiB),
+                                                                   "local_usage_bytes": next(usage)}))
+    with profile.measure():
+        module(torch.zeros(3, 2))
+    assert synchronizations == []  # Use runs never synchronize the device.
+    report = profile.residency_report()
+    assert report["use_peak_usage_bytes"] == int(4.2 * GiB)
+    assert report["build_peak_usage_bytes"] == int(5.24 * GiB)
+    assert report["use_device_budget_bytes"] == int(7.61 * GiB)
+    assert not module._forward_pre_hooks and not module._forward_hooks
+
+
 def test_linear_routes_have_no_residency_profile_section():
     linear = _NamedProfile(nn.Linear(2, 2), DynamicOffloadConfig(execution_mode="linear_runtime", profile_name="w"))
     assert linear.residency_report() is None

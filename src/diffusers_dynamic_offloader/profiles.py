@@ -221,9 +221,11 @@ class _VmmResidencySampler:
     of the component. Missing observations stay ``None`` (unavailable, not zero).
     """
 
-    def __init__(self, hook, module, device: torch.device, interval_seconds: float = 0.05):
+    def __init__(self, hook, module, device: torch.device, interval_seconds: float = 0.05, *, timing: bool = True):
         self.hook = hook
-        self.module = module
+        # Without timing (use runs) no forward hook is installed, so the
+        # device is never synchronized; only memory is sampled.
+        self.module = module if timing else None
         self.device = device
         self.interval_seconds = interval_seconds
         self.peak_driver_used_bytes: int | None = None
@@ -417,8 +419,11 @@ class _NamedProfile:
         keys = ("status", "fit_class", "resident_budget_gb", "shape_check", "path", "build_stage", "decision")
         result = {"name": self.config.profile_name, **{key: self.report.get(key) for key in keys}}
         result.update({key: residency.get(key) for key in (
-            "device_budget_bytes", "budget_source", "peak_usage_bytes", "execution_slots_bytes",
-            "steady_forward_seconds")})
+            "device_budget_bytes", "budget_source", "execution_slots_bytes", "steady_forward_seconds")})
+        # Peak of the last build run (the saved observation), and of this use run.
+        result["build_peak_usage_bytes"] = residency.get("peak_usage_bytes")
+        for key in ("use_peak_usage_bytes", "use_peak_driver_used_bytes", "use_device_budget_bytes"):
+            result[key] = self.report.get(key)
         recommendation = self.report.get("recommendation") or {}
         result.update({key: recommendation.get(key) for key in (
             "reason", "gain_per_gib", "floor_forward_seconds", "ceiling_forward_seconds",
@@ -590,7 +595,24 @@ class _NamedProfile:
         """Measure only the caller's inference region, then persist on success."""
         if self.config.execution_mode == "vmm_fast_runtime":
             if not self.config.build_profile:
-                yield self.report
+                if not self.config.profile_name or self._vmm_hook is None:
+                    yield self.report
+                    return
+                # Use run: observe this region's device peak (memory only).
+                sampler = _VmmResidencySampler(self._vmm_hook, None, torch.device(self.config.execution_device),
+                                               timing=False)
+                try:
+                    sampler.start()
+                    yield self.report
+                    sampler.close()
+                    sampler._sample()
+                    self.report.update(use_peak_usage_bytes=(sampler.peak_local_usage_bytes
+                                                             if sampler.local_budget_bytes is not None
+                                                             else sampler.peak_driver_used_bytes),
+                                       use_peak_driver_used_bytes=sampler.peak_driver_used_bytes,
+                                       use_device_budget_bytes=sampler.local_budget_bytes)
+                finally:
+                    sampler.close()
                 return
             if self._vmm_hook is None:
                 raise RuntimeError("VMM capacity profiling requires an applied dynamic-offload hook.")

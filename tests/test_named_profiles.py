@@ -117,7 +117,6 @@ class NamedProfileTests(unittest.TestCase):
             execution_device="cuda",
             profile_name="vmm-example",
             build_profile=True,
-            vmm_resident_weight_budget_gb=4,
         )
         profile = _NamedProfile(nn.Linear(2, 2), config)
         prepared = profile.prepare()
@@ -142,7 +141,8 @@ class NamedProfileTests(unittest.TestCase):
         with profile.measure() as report:
             pass
 
-        self.assertEqual(prepared.vmm_resident_weight_budget_gb, 4)
+        # The first VMM build measures at the structural floor (budget left to DDO).
+        self.assertEqual(prepared.vmm_resident_weight_budget_gb, 0.0)
         self.assertEqual(report["status"], "saved")
         saved = load_dynamic_offload_profile(profile.context)
         observation = saved["observations"][-1]
@@ -160,7 +160,7 @@ class NamedProfileTests(unittest.TestCase):
     def test_vmm_components_have_independent_capacity_observations(self):
         config = DynamicOffloadConfig(execution_mode="vmm_fast_runtime",
                                      execution_device="cuda", profile_name="shared-name",
-                                     build_profile=True, vmm_resident_weight_budget_gb=4)
+                                     build_profile=True)
         profiles = []
         for component, size in (("transformer", 1024), ("text_encoder", 2048)):
             profile = _NamedProfile(nn.Linear(2, 2), config, component=component)
@@ -178,7 +178,7 @@ class NamedProfileTests(unittest.TestCase):
             self.assertEqual(saved["observations"][-1]["vmm"]["virtual_bytes"], size)
             self.assertEqual(profile.context["identity_version"], 4)
             self.assertEqual(profile.context["runtime"], "vmm")
-            self.assertEqual(config.vmm_resident_weight_budget_gb, 4)
+            self.assertEqual(config.vmm_resident_weight_budget_gb, 0.0)
 
     def test_linear_profile_identities_are_preserved_and_vmm_uses_identity_4(self):
         for mode in ("linear_runtime", "sdnq_runtime"):

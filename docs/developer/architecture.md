@@ -111,9 +111,10 @@ Boxes 15 and 16 apply to the native fast route only.
 14. **Public report.** Exposes configuration, capacity and execution observations
     through `DynamicOffloadMetrics`, `as_dict()` and `format_profile()`. Linear
     and SDNQ profiles describe capacity; they do not tune GPU residency in Python.
-    The VMM residency profile is separate: a named build measures one region
-    (typically one step) and DDO derives the native residency ceiling from the
-    device budget and the measured non-weight peak; later runs with the same
+    The VMM residency profile is separate: two named builds (two steps each)
+    measure the floor and the hardware ceiling derived from the device budget
+    and the measured non-weight peak, and DDO keeps the ceiling only when its
+    measured speedup per GiB reaches a threshold; later runs with the same
     profile identity create the native arena with that ceiling once, at
     attachment. Python never moves weights or changes residency during
     execution. Hosts consume this public interface, not internal hook or
@@ -126,9 +127,10 @@ Boxes 15 and 16 apply to the native fast route only.
     without these features is refused, not downgraded. Bounded capacity
     transactions release idle units under pressure and keep ownership on
     partial failure.
-16. **VMM residency profile.** A named build run measures one region and saves a
-    residency budget for the model, component and machine (RAM/VRAM, native
-    library). Later runs create the arena with it once; an explicit budget wins,
+16. **VMM residency profile.** Two named build runs (floor, then hardware
+    ceiling) measure the steady forward time and save the smaller budget unless
+    the larger one is worth its memory, for the model, component and machine
+    (RAM/VRAM, native library). Later runs create the arena with it once; an explicit budget wins,
     and without a profile the arena starts at the structural floor. See
     [VMM residency profile](../user/native-vmm.md#vmm-residency-profile).
 

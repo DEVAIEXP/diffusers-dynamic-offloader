@@ -33,7 +33,7 @@ def stats(**overrides):
 def build(module, hook, *, run=None):
     config = DynamicOffloadConfig(execution_mode="vmm_fast_runtime", execution_device="cuda",
                                   profile_name="ltx-video-1280x704-8s", build_profile=True,
-                                  vmm_resident_weight_budget_gb=0.625)
+                                  vmm_resident_weight_budget_gb=0.0)
     profile = _NamedProfile(module, config, component="transformer")
     assert profile.prepare() is config  # Stage 1 never changes the configured budget.
     profile.attach_hook(hook)
@@ -62,7 +62,9 @@ def test_windows_build_records_wddm_budget_peak_floor_and_first_forward_shapes(m
     assert observation["arena_resident_bytes"] == 40 * 1024**2
     assert observation["first_forward_seen"] is True
     assert observation["input_shapes"] == {"args": [[3, 4]], "kwargs": None}  # First forward only.
-    assert not module._forward_pre_hooks  # Observation hook removed.
+    assert len(observation["forward_seconds"]) == 2
+    assert observation["steady_forward_seconds"] == observation["forward_seconds"][1]  # After the first.
+    assert not module._forward_pre_hooks and not module._forward_hooks  # Observation hooks removed.
 
 
 def test_without_wddm_the_device_total_is_the_budget_source(monkeypatch):
@@ -73,6 +75,7 @@ def test_without_wddm_the_device_total_is_the_budget_source(monkeypatch):
     assert observation["peak_usage_bytes"] == 2 * GiB
     assert observation["peak_local_usage_bytes"] is None
     assert observation["first_forward_seen"] is False and observation["input_shapes"] is None
+    assert observation["forward_seconds"] == [] and observation["steady_forward_seconds"] is None
 
 
 def test_unavailable_observations_stay_null_not_zero(monkeypatch):
@@ -93,7 +96,7 @@ def test_failed_region_removes_the_hook_and_saves_nothing(monkeypatch):
     monkeypatch.setattr(torch.cuda, "mem_get_info", lambda device=None: (6 * GiB, 8 * GiB))
     module = nn.Linear(2, 2)
     config = DynamicOffloadConfig(execution_mode="vmm_fast_runtime", execution_device="cuda",
-                                  profile_name="failing", build_profile=True, vmm_resident_weight_budget_gb=1)
+                                  profile_name="failing", build_profile=True, vmm_resident_weight_budget_gb=0.0)
     profile = _NamedProfile(module, config, component="transformer")
     profile.prepare()
     profile.attach_hook(SimpleNamespace(vmm_runtime_stats=lambda: stats()))

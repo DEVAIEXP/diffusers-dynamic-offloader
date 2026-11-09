@@ -131,8 +131,13 @@ class DynamicOffloadMetrics:
                 f"device_budget_gib={gib(residency.get('device_budget_bytes'))} "
                 f"({residency.get('budget_source') or 'unavailable'}) "
                 f"peak_gib={gib(residency.get('peak_usage_bytes'))} "
-                f"shapes={residency.get('shape_check') or 'unavailable'}"
+                f"shapes={residency.get('shape_check') or 'unavailable'} "
+                f"build={residency.get('build_stage') or 'unavailable'} "
+                f"decision={residency.get('decision') or 'unavailable'}"
             )
+            if residency.get("build_stage") == "floor_measured":
+                lines.append("  vmm_residency_profile: build 1/2 saved; the floor budget is used until the "
+                             "same build runs again to measure the hardware ceiling")
             if residency.get("fit_class") == "does_not_fit":
                 lines.append("  vmm_residency_profile: the workload does not fit the device budget even at the "
                              "structural floor; it runs at the floor (Windows may demote memory and run slower; "

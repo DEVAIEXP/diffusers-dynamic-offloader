@@ -13,6 +13,7 @@ import math
 import os
 import sys
 import threading
+import time
 import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
@@ -230,8 +231,13 @@ class _VmmResidencySampler:
         self.peak_local_usage_bytes: int | None = None
         self.local_budget_bytes: int | None = None
         self.input_shapes: Any = None
+        # Device-complete duration of each component forward (build runs only:
+        # the post-forward hook synchronizes the device to time GPU work).
+        self.forward_seconds: list[float] = []
         self._forward_seen = False
+        self._forward_started: float | None = None
         self._handle = None
+        self._post_handle = None
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
 
@@ -255,10 +261,19 @@ class _VmmResidencySampler:
         if not self._forward_seen:
             self._forward_seen = True
             self.input_shapes = {"args": _tensor_shapes(tuple(args)), "kwargs": _tensor_shapes(dict(kwargs))}
+        torch.cuda.synchronize(self.device)
+        self._forward_started = time.perf_counter()
+
+    def _forward_done(self, module, args, kwargs, output) -> None:
+        if self._forward_started is not None:
+            torch.cuda.synchronize(self.device)
+            self.forward_seconds.append(time.perf_counter() - self._forward_started)
+            self._forward_started = None
 
     def start(self) -> None:
         if isinstance(self.module, torch.nn.Module):
             self._handle = self.module.register_forward_pre_hook(self._first_forward, with_kwargs=True)
+            self._post_handle = self.module.register_forward_hook(self._forward_done, with_kwargs=True)
         self._sample()
 
         def run() -> None:
@@ -274,9 +289,11 @@ class _VmmResidencySampler:
         if self._thread is not None:
             self._thread.join(timeout=self.interval_seconds * 2 + 0.1)
             self._thread = None
-        if self._handle is not None:
-            self._handle.remove()
-            self._handle = None
+        for name in ("_handle", "_post_handle"):
+            handle = getattr(self, name)
+            if handle is not None:
+                handle.remove()
+                setattr(self, name, None)
 
     def stop(self, stats: Mapping[str, Any]) -> dict[str, Any]:
         self.close()
@@ -306,7 +323,35 @@ class _VmmResidencySampler:
             "peak_local_usage_bytes": self.peak_local_usage_bytes,
             "first_forward_seen": self._forward_seen,
             "input_shapes": self.input_shapes,
+            "forward_seconds": [round(value, 6) for value in self.forward_seconds],
+            # Steady forward time: forwards after the first (which includes the
+            # initial weight load). None with fewer than two forwards.
+            "steady_forward_seconds": (round(sum(self.forward_seconds[1:]) / len(self.forward_seconds[1:]), 6)
+                                       if len(self.forward_seconds) >= 2 else None),
         }
+
+
+def decide_vmm_resident_budget(floor_seconds: float | None, ceiling_seconds: float | None,
+                               floor_bytes: int, ceiling_bytes: int,
+                               min_gain_per_gib: float) -> dict[str, Any]:
+    """Choose between the structural floor and the hardware ceiling from two builds.
+
+    The ceiling is kept only when the steady-forward speedup per extra GiB is at
+    least ``min_gain_per_gib`` (fraction of the floor forward time per GiB);
+    otherwise the floor is kept and the device memory stays free. Missing timings
+    keep the floor (conservative).
+    """
+    extra_gib = (ceiling_bytes - floor_bytes) / 1024**3
+    result = {"floor_forward_seconds": floor_seconds, "ceiling_forward_seconds": ceiling_seconds,
+              "extra_gib": round(extra_gib, 4), "min_gain_per_gib": min_gain_per_gib}
+    if not floor_seconds or ceiling_seconds is None or extra_gib <= 0:
+        return {**result, "decision": "floor", "reason": "timing_unavailable" if extra_gib > 0 else "no_headroom",
+                "gain_per_gib": None, "budget_bytes": floor_bytes}
+    gain_per_gib = (floor_seconds - ceiling_seconds) / floor_seconds / extra_gib
+    keep = gain_per_gib >= min_gain_per_gib
+    return {**result, "decision": "ceiling" if keep else "floor",
+            "reason": "gain_at_or_above_threshold" if keep else "gain_below_threshold",
+            "gain_per_gib": round(gain_per_gib, 6), "budget_bytes": ceiling_bytes if keep else floor_bytes}
 
 
 class _NamedProfile:
@@ -339,6 +384,9 @@ class _NamedProfile:
         self._vmm_hook = None
         # The component module, for the first-forward input-shape observation.
         self._module = module
+        # Two-build VMM residency calibration: "floor" or "ceiling" while building.
+        self._vmm_build_stage: str | None = None
+        self._vmm_pending: dict[str, Any] | None = None
 
     def attach_hook(self, hook) -> None:
         """Associate the applied runtime so a VMM profile can take a snapshot."""
@@ -366,11 +414,17 @@ class _NamedProfile:
         if self.config.execution_mode != "vmm_fast_runtime" or not self.config.profile_name:
             return None
         residency = self.report.get("vmm_residency") or {}
-        keys = ("status", "fit_class", "resident_budget_gb", "shape_check", "path")
+        keys = ("status", "fit_class", "resident_budget_gb", "shape_check", "path", "build_stage", "decision")
         result = {"name": self.config.profile_name, **{key: self.report.get(key) for key in keys}}
         result.update({key: residency.get(key) for key in (
-            "device_budget_bytes", "budget_source", "peak_usage_bytes", "execution_slots_bytes")})
+            "device_budget_bytes", "budget_source", "peak_usage_bytes", "execution_slots_bytes",
+            "steady_forward_seconds")})
+        recommendation = self.report.get("recommendation") or {}
+        result.update({key: recommendation.get(key) for key in (
+            "reason", "gain_per_gib", "floor_forward_seconds", "ceiling_forward_seconds",
+            "floor_budget_bytes", "ceiling_budget_bytes")})
         result["margin_gb"] = self.config.vmm_profile_margin_gb
+        result["min_gain_per_gib"] = self.config.vmm_profile_min_gain_per_gib
         return result
 
     def prepare(self):
@@ -387,8 +441,23 @@ class _NamedProfile:
                     "Profile calibration requires execution_mode='linear_runtime', 'sdnq_runtime', or 'vmm_fast_runtime'."
                 )
             if config.execution_mode == "vmm_fast_runtime":
-                self.report["status"] = "observing_vmm_capacity"
+                if config.vmm_resident_weight_budget_gb > 0:
+                    raise ValueError("A VMM residency profile build measures its own budgets; "
+                                     "omit vmm_resident_weight_budget_gb.")
                 self.report["profile_measurement_kind"] = "vmm_capacity"
+                pending = get_dynamic_offload_profile_recommendation(load_dynamic_offload_profile(self.context) or {}) or {}
+                ceiling = pending.get("ceiling_budget_bytes")
+                if pending.get("vmm_build_stage") == "floor_measured" and isinstance(ceiling, int) and ceiling > 0:
+                    # Second build: measure at the hardware ceiling found by the first.
+                    self._vmm_build_stage, self._vmm_pending = "ceiling", dict(pending)
+                    self.report.update(status="measuring_ceiling", build_stage="ceiling")
+                    print(f"[dynamic-offload] VMM profile {config.profile_name!r}: build 2/2, measuring at the "
+                          f"hardware ceiling {ceiling / 1024**3:.3f} GiB.")
+                    return replace(config, vmm_resident_weight_budget_gb=ceiling / 1024**3)
+                # First build: measure at the structural floor (DDO sizes it from budget 0).
+                self._vmm_build_stage, self._vmm_pending = "floor", None
+                self.report.update(status="measuring_floor", build_stage="floor")
+                print(f"[dynamic-offload] VMM profile {config.profile_name!r}: build 1/2, measuring at the structural floor.")
                 return config
             if not math.isfinite(config.profile_vram_headroom_gb) or config.profile_vram_headroom_gb < 0:
                 raise ValueError("profile_vram_headroom_gb must be finite and non-negative.")
@@ -420,10 +489,14 @@ class _NamedProfile:
                 print(f"[dynamic-offload] VMM profile {config.profile_name!r}: no saved residency budget; "
                       "running at the structural floor (build it with build_profile=True).")
                 return config
-            self.report.update(status="applied", resident_budget_gb=budget,
-                               fit_class=recommendation.get("fit_class"))
+            self.report.update(status="applied", resident_budget_gb=budget, recommendation=dict(recommendation),
+                               fit_class=recommendation.get("fit_class"),
+                               build_stage=recommendation.get("vmm_build_stage"),
+                               decision=recommendation.get("decision"))
+            pending_note = (" (floor until the second build measures the ceiling)"
+                            if recommendation.get("vmm_build_stage") == "floor_measured" else "")
             print(f"[dynamic-offload] VMM profile {config.profile_name!r}: residency budget={budget:.3f} GiB "
-                  f"({recommendation.get('fit_class')}).")
+                  f"({recommendation.get('fit_class')}, decision={recommendation.get('decision')}){pending_note}.")
             return replace(config, vmm_resident_weight_budget_gb=float(budget), _profile_budget_applied=True)
         # An explicit caller budget has always taken precedence over a saved
         # recommendation.  It is not itself a profile calibration.
@@ -454,6 +527,63 @@ class _NamedProfile:
         if config.auto_budget_policy == "off":
             return replace(config, resident_module_budget_gb=budget, _profile_budget_applied=True)
         return replace(config, profile_resident_module_budget_gb=budget, _profile_budget_applied=True)
+
+    def _vmm_build_recommendation(self, observation: Mapping[str, Any]) -> dict[str, Any] | None:
+        """Recommendation of one VMM build run (two-build calibration), or None.
+
+        Build 1 runs at the structural floor and finds the hardware ceiling; it
+        saves a final floor decision when there is no headroom or no steady
+        timing, a whole-model decision when the model fits under the ceiling,
+        and otherwise a pending record (floor budget usable meanwhile). Build 2
+        runs at that ceiling and keeps it only if the steady-forward speedup per
+        extra GiB reaches ``vmm_profile_min_gain_per_gib``.
+        """
+        margin = int(self.config.vmm_profile_margin_gb * 1024**3)
+        threshold = float(self.config.vmm_profile_min_gain_per_gib)
+        steady = observation.get("steady_forward_seconds")
+        if self._vmm_build_stage == "ceiling":
+            pending = self._vmm_pending or {}
+            if _json_value(observation.get("input_shapes")) != _json_value(pending.get("input_shapes")):
+                self.report.update(build_result="shape_mismatch between the two builds; rebuild from the floor",
+                                   shape_check="mismatch")
+                return {**pending, "vmm_build_stage": "restart_required"} if pending else None
+            floor, ceiling = int(pending["floor_budget_bytes"]), int(pending["ceiling_budget_bytes"])
+            decision = decide_vmm_resident_budget(pending.get("floor_forward_seconds"), steady,
+                                                  floor, ceiling, threshold)
+            peak, budget = observation.get("peak_usage_bytes"), pending.get("device_budget_bytes")
+            if isinstance(peak, int) and isinstance(budget, int) and peak > budget - margin:
+                # Safety: the measured ceiling run must stay under the device budget.
+                decision.update(decision="floor", reason="ceiling_run_exceeded_device_budget", budget_bytes=floor)
+            chosen = decision.pop("budget_bytes")
+            return {**{key: pending[key] for key in ("fit_class", "floor_budget_bytes", "ceiling_budget_bytes",
+                                                     "floor_forward_seconds", "device_budget_bytes",
+                                                     "non_weight_peak_bytes", "margin_bytes", "input_shapes")
+                       if key in pending},
+                    **decision, "ceiling_peak_usage_bytes": peak, "vmm_build_stage": "final",
+                    "vmm_resident_weight_budget_bytes": chosen,
+                    "vmm_resident_weight_budget_gb": round(chosen / 1024**3, 4)}
+        ceiling_info = recommend_vmm_resident_budget(observation, margin)
+        if ceiling_info is None:
+            return None
+        floor, ceiling = ceiling_info["floor_bytes"], ceiling_info["vmm_resident_weight_budget_bytes"]
+        base = {"fit_class": ceiling_info["fit_class"], "floor_budget_bytes": floor, "ceiling_budget_bytes": ceiling,
+                "floor_forward_seconds": steady, "device_budget_bytes": ceiling_info["device_budget_bytes"],
+                "non_weight_peak_bytes": ceiling_info["non_weight_peak_bytes"], "margin_bytes": margin,
+                "min_gain_per_gib": threshold, "input_shapes": observation.get("input_shapes")}
+        virtual = observation.get("arena_virtual_bytes")
+        if isinstance(virtual, int) and virtual > 0 and ceiling >= floor + virtual:
+            final = {"decision": "whole_model", "reason": "model_fits_under_the_ceiling", "budget": ceiling}
+        elif ceiling <= floor:
+            final = {"decision": "floor", "reason": "no_headroom", "budget": floor}
+        elif steady is None:
+            final = {"decision": "floor", "reason": "timing_unavailable_use_two_or_more_steps", "budget": floor}
+        else:
+            return {**base, "vmm_build_stage": "floor_measured", "decision": "pending_ceiling_build",
+                    "vmm_resident_weight_budget_bytes": floor,
+                    "vmm_resident_weight_budget_gb": round(floor / 1024**3, 4)}
+        chosen = final.pop("budget")
+        return {**base, **final, "gain_per_gib": None, "vmm_build_stage": "final",
+                "vmm_resident_weight_budget_bytes": chosen, "vmm_resident_weight_budget_gb": round(chosen / 1024**3, 4)}
 
     @contextmanager
     def measure(self):
@@ -498,24 +628,36 @@ class _NamedProfile:
                     # Device observation of this build region.
                     "vmm_residency": residency_observation,
                 }
-                margin_bytes = int(self.config.vmm_profile_margin_gb * 1024**3)
-                recommendation = recommend_vmm_resident_budget(residency_observation, margin_bytes)
+                recommendation = self._vmm_build_recommendation(residency_observation)
                 path = record_dynamic_offload_profile(self.context, observation, recommendation=recommendation)
                 self.report.update(path=str(path), **observation)
                 self.report["status"] = "saved"
+                name = self.config.profile_name
                 if recommendation is None:
-                    self.report["fit_class"] = "unavailable"
-                    print(f"[dynamic-offload] VMM profile {self.config.profile_name!r}: device observations "
-                          f"unavailable; no residency budget recommended; saved to {path}")
+                    self.report.setdefault("fit_class", "unavailable")
+                    print(f"[dynamic-offload] VMM profile {name!r}: no residency budget saved "
+                          f"({self.report.get('build_result', 'device observations unavailable')}); saved to {path}")
                 else:
-                    self.report.update(fit_class=recommendation["fit_class"],
-                                       resident_budget_gb=recommendation["vmm_resident_weight_budget_gb"])
-                    print(f"[dynamic-offload] VMM profile {self.config.profile_name!r}: "
-                          f"peak non-weight={recommendation['non_weight_peak_bytes'] / 1024**3:.2f} GiB, "
-                          f"device budget={recommendation['device_budget_bytes'] / 1024**3:.2f} GiB "
-                          f"({residency_observation.get('budget_source')}), margin={margin_bytes / 1024**3:.2f} GiB, "
-                          f"residency budget={recommendation['vmm_resident_weight_budget_gb']:.3f} GiB "
-                          f"({recommendation['fit_class']}); saved to {path}")
+                    self.report.update(fit_class=recommendation["fit_class"], recommendation=dict(recommendation),
+                                       resident_budget_gb=recommendation["vmm_resident_weight_budget_gb"],
+                                       build_stage=recommendation["vmm_build_stage"],
+                                       decision=recommendation.get("decision"))
+                    if recommendation["vmm_build_stage"] == "restart_required":
+                        print(f"[dynamic-offload] VMM profile {name!r}: the two builds saw different input "
+                              f"shapes; the next build restarts from the floor; saved to {path}")
+                    elif recommendation["vmm_build_stage"] == "floor_measured":
+                        print(f"[dynamic-offload] VMM profile {name!r}: build 1/2 done; floor forward="
+                              f"{recommendation['floor_forward_seconds']:.3f} s, hardware ceiling="
+                              f"{recommendation['ceiling_budget_bytes'] / 1024**3:.3f} GiB "
+                              f"({recommendation['fit_class']}); run the same build again to measure the ceiling; "
+                              f"saved to {path}")
+                    else:
+                        gain = recommendation.get("gain_per_gib")
+                        print(f"[dynamic-offload] VMM profile {name!r}: residency budget="
+                              f"{recommendation['vmm_resident_weight_budget_gb']:.3f} GiB "
+                              f"(decision={recommendation['decision']}, reason={recommendation['reason']}, "
+                              f"gain_per_gib={'unavailable' if gain is None else f'{gain * 100:.3f}%'}, "
+                              f"threshold={recommendation['min_gain_per_gib'] * 100:.3f}%); saved to {path}")
             except BaseException:
                 self.report["status"] = "failed"
                 raise

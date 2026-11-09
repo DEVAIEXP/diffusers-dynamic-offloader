@@ -591,6 +591,10 @@ intended for text encoders after its own CUDA validation.
 | `device_budget_bytes`, `budget_source` | Device budget at the build: `dxgi_local_budget` (Windows) or `cuda_device_total`. |
 | `peak_usage_bytes`, `execution_slots_bytes`, `margin_gb` | Build measurement inputs; missing values are `null` (unavailable, not zero). |
 | `shape_check` | Use runs: `match`/`mismatch` of the first forward's tensor input shapes against the build, `pending` before the first forward, `unavailable` without a saved observation. |
+| `build_stage`, `decision`, `reason` | `floor_measured` (pending second build, floor in use), `final`, or `restart_required`; decision `floor`, `ceiling`, `whole_model`, `pending_ceiling_build`; reason such as `gain_below_threshold`, `gain_at_or_above_threshold`, `no_headroom`, `timing_unavailable_use_two_or_more_steps`, `ceiling_run_exceeded_device_budget`. |
+| `floor_forward_seconds`, `ceiling_forward_seconds`, `steady_forward_seconds` | Device-synchronized steady forward times of the floor and ceiling builds (seconds). |
+| `gain_per_gib`, `min_gain_per_gib` | Measured speedup per extra GiB (fraction of the floor forward time) and the threshold. |
+| `floor_budget_bytes`, `ceiling_budget_bytes` | Structural floor and hardware ceiling compared by the two builds. |
 | `path` | Saved profile file of a build. |
 
 The runner may merge this payload into its own run tracker, but it must not

@@ -593,6 +593,10 @@ class DynamicOffloadConfig:
     # recommends the residency budget. Without an explicit budget and without
     # a saved profile, vmm_fast_runtime runs at the structural floor.
     vmm_profile_margin_gb: float = 0.25
+    # Two-build calibration: keep the hardware ceiling only when the steady
+    # forward speedup per extra GiB reaches this fraction of the floor forward
+    # time (0.005 = 0.5 % per GiB); otherwise keep the structural floor.
+    vmm_profile_min_gain_per_gib: float = 0.005
     vmm_dxgi_local_headroom_gb: float = 0.0
     vmm_execution_backing_reclaim: bool = False
     vmm_dxgi_shared_headroom_gb: float = 0.0
@@ -1606,6 +1610,8 @@ class DynamicOffloadHook(ModelHook):
             raise ValueError("vmm_fast_runtime requires a positive vmm_staging_buffer_gb")
         if not math.isfinite(self.config.vmm_profile_margin_gb) or self.config.vmm_profile_margin_gb < 0:
             raise ValueError("vmm_profile_margin_gb must be finite and non-negative")
+        if not math.isfinite(self.config.vmm_profile_min_gain_per_gib) or self.config.vmm_profile_min_gain_per_gib < 0:
+            raise ValueError("vmm_profile_min_gain_per_gib must be finite and non-negative")
         if self.config.vmm_page_mb < 0:
             raise ValueError("vmm_fast page size must be non-negative")
         re.compile(self.config.vmm_module_pattern)

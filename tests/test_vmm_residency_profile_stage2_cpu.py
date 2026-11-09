@@ -77,9 +77,10 @@ def config(**overrides):
     return DynamicOffloadConfig(**values)
 
 
-def build_profile(observed):
-    profile = _NamedProfile(nn.Linear(2, 2), config(build_profile=True), component="transformer")
-    profile.prepare()
+def build_profile(observed, **overrides):
+    """One build run whose sampler returns ``observed``; returns (profile, prepared config, report)."""
+    profile = _NamedProfile(nn.Linear(2, 2), config(build_profile=True, **overrides), component="transformer")
+    prepared = profile.prepare()
     profile.attach_hook(SimpleNamespace(vmm_runtime_stats=lambda: {}))
     original = profiles._VmmResidencySampler.stop
     profiles._VmmResidencySampler.stop = lambda self, stats: (self.close(), observed)[1]
@@ -88,7 +89,18 @@ def build_profile(observed):
             pass
     finally:
         profiles._VmmResidencySampler.stop = original
-    return profile, report
+    return profile, prepared, report
+
+
+SHAPES = {"args": [[1, 22000, 128]], "kwargs": None}
+
+
+def timed(seconds, **overrides):
+    return observation(**{"steady_forward_seconds": seconds, "input_shapes": SHAPES, **overrides})
+
+
+def saved(profile):
+    return load_dynamic_offload_profile(profile.context)["recommendation"]
 
 
 def test_vmm_identity_uses_its_own_prefix_and_never_collides_with_linear():
@@ -102,22 +114,95 @@ def test_vmm_identity_uses_its_own_prefix_and_never_collides_with_linear():
     assert dynamic_offload_profile_path(vmm.context) != dynamic_offload_profile_path(linear.context)
 
 
-def test_build_then_use_applies_the_saved_budget_and_explicit_wins():
-    profile, report = build_profile(observation())
-    assert report["status"] == "saved" and report["fit_class"] == "fits_with_headroom"
-    saved = load_dynamic_offload_profile(profile.context)
-    budget = saved["recommendation"]["vmm_resident_weight_budget_gb"]
+FLOOR = SLOTS + VMM_FLOOR_ARENA_HEADROOM_BYTES
+
+
+def test_build_one_measures_the_floor_and_saves_a_pending_ceiling():
+    profile, prepared, report = build_profile(timed(33.0))
+    assert prepared.vmm_resident_weight_budget_gb == 0.0  # DDO sizes the structural floor.
+    assert report["build_stage"] == "floor_measured" and report["decision"] == "pending_ceiling_build"
+    pending = saved(profile)
+    assert pending["vmm_resident_weight_budget_bytes"] == FLOOR == pending["floor_budget_bytes"]
+    assert pending["ceiling_budget_bytes"] > FLOOR and pending["floor_forward_seconds"] == 33.0
     used = _NamedProfile(nn.Linear(2, 2), config(), component="transformer")
-    prepared = used.prepare()
-    assert used.report["status"] == "applied"
-    assert prepared.vmm_resident_weight_budget_gb == budget and prepared._profile_budget_applied
+    assert used.prepare().vmm_resident_weight_budget_gb == round(FLOOR / GiB, 4)  # Floor meanwhile.
+    assert used.report["build_stage"] == "floor_measured"
+
+
+@pytest.mark.parametrize("ceiling_seconds, decision, reason", [
+    (32.9, "floor", "gain_below_threshold"),
+    (30.0, "ceiling", "gain_at_or_above_threshold"),
+])
+def test_build_two_keeps_the_ceiling_only_above_the_gain_threshold(ceiling_seconds, decision, reason):
+    first, _, _ = build_profile(timed(33.0))
+    ceiling = saved(first)["ceiling_budget_bytes"]
+    profile, prepared, report = build_profile(timed(ceiling_seconds))
+    assert prepared.vmm_resident_weight_budget_gb == ceiling / GiB  # Measured at the ceiling.
+    final = saved(profile)
+    assert final["vmm_build_stage"] == "final" and (final["decision"], final["reason"]) == (decision, reason)
+    assert final["vmm_resident_weight_budget_bytes"] == (ceiling if decision == "ceiling" else FLOOR)
+    used = _NamedProfile(nn.Linear(2, 2), config(), component="transformer")
+    assert used.prepare().vmm_resident_weight_budget_gb == final["vmm_resident_weight_budget_gb"]
+    assert used.report["decision"] == decision
+    # A third build restarts the calibration from the floor.
+    _, restarted, report = build_profile(timed(33.0))
+    assert restarted.vmm_resident_weight_budget_gb == 0.0 and report["build_stage"] == "floor_measured"
+
+
+def test_ceiling_run_over_the_device_budget_falls_back_to_the_floor():
+    build_profile(timed(33.0))
+    profile, _, _ = build_profile(timed(25.0, peak_usage_bytes=int(7.6 * GiB)))
+    final = saved(profile)
+    assert (final["decision"], final["reason"]) == ("floor", "ceiling_run_exceeded_device_budget")
+    assert final["vmm_resident_weight_budget_bytes"] == FLOOR
+
+
+def test_shape_mismatch_between_builds_requires_a_restart():
+    build_profile(timed(33.0))
+    profile, _, report = build_profile(timed(30.0, input_shapes={"args": [[1, 9, 128]], "kwargs": None}))
+    assert report["shape_check"] == "mismatch"
+    assert saved(profile)["vmm_build_stage"] == "restart_required"
+    _, restarted, _ = build_profile(timed(33.0))
+    assert restarted.vmm_resident_weight_budget_gb == 0.0  # Restarted from the floor.
+
+
+def test_single_build_decisions_without_a_second_build():
+    whole, _, _ = build_profile(timed(33.0, arena_virtual_bytes=100 * MiB))
+    assert (saved(whole)["decision"], saved(whole)["vmm_build_stage"]) == ("whole_model", "final")
+    assert saved(whole)["vmm_resident_weight_budget_bytes"] == FLOOR + 100 * MiB
+
+
+def test_no_headroom_or_no_timing_keeps_the_floor(tmp_path, monkeypatch):
+    profile, _, _ = build_profile(timed(33.0, peak_usage_bytes=int(7.61 * GiB) + SLOTS))
+    assert (saved(profile)["decision"], saved(profile)["reason"]) == ("floor", "no_headroom")
+    monkeypatch.setenv("DDO_PROFILE_DIR", str(tmp_path / "other"))
+    profile, _, _ = build_profile(timed(None))
+    assert saved(profile)["reason"] == "timing_unavailable_use_two_or_more_steps"
+
+
+def test_explicit_budget_is_refused_during_a_build_and_wins_otherwise():
+    with pytest.raises(ValueError, match="measures its own budgets"):
+        _NamedProfile(nn.Linear(2, 2), config(build_profile=True, vmm_resident_weight_budget_gb=0.625),
+                      component="transformer").prepare()
+    build_profile(timed(33.0))
     explicit = _NamedProfile(nn.Linear(2, 2), config(vmm_resident_weight_budget_gb=0.625), component="transformer")
     assert explicit.prepare().vmm_resident_weight_budget_gb == 0.625
     assert explicit.report["status"] == "explicit"
 
 
+@pytest.mark.parametrize("floor_s, ceiling_s, extra_gib, decision", [
+    (33.0, 32.9, 3.0, "floor"),      # 0.1 % per GiB < 0.5 %.
+    (33.0, 32.4, 3.0, "ceiling"),    # 0.61 % per GiB.
+    (None, 30.0, 3.0, "floor"),      # Missing floor timing.
+    (33.0, 30.0, 0.0, "floor"),      # No extra memory.
+])
+def test_decide_budget_threshold(floor_s, ceiling_s, extra_gib, decision):
+    result = profiles.decide_vmm_resident_budget(floor_s, ceiling_s, FLOOR, FLOOR + int(extra_gib * GiB), 0.005)
+    assert result["decision"] == decision
+
+
 def test_other_machine_or_component_does_not_reuse_the_profile(monkeypatch):
-    build_profile(observation())
+    build_profile(timed(33.0))
     monkeypatch.setattr(profiles, "_vmm_machine_identity", lambda config: {**MACHINE, "host_ram_gib": 32})
     other_ram = _NamedProfile(nn.Linear(2, 2), config(), component="transformer")
     assert other_ram.prepare().vmm_resident_weight_budget_gb == 0.0
@@ -128,7 +213,7 @@ def test_other_machine_or_component_does_not_reuse_the_profile(monkeypatch):
 
 
 def test_unavailable_observations_save_without_recommendation():
-    profile, report = build_profile(observation(device_budget_bytes=None))
+    profile, _, report = build_profile(timed(33.0, device_budget_bytes=None))
     assert report["fit_class"] == "unavailable"
     saved = load_dynamic_offload_profile(profile.context)
     assert not saved.get("recommendation")

@@ -78,6 +78,11 @@ def test_default_child_allocator_configuration_is_the_validated_native_setting(t
     assert environment["DDO_VMM_TORCH_CACHE_MIB"] == "4096"
     assert environment["DDO_VMM_SEGMENTED_AUTO"] == "1"
     assert environment["DDO_VMM_GROWABLE_RESERVE_BYTES"] == str(8 * 1024**3)
+    assert environment["DDO_SHOW_RECOVERY_WARNS"] == "0"
+
+
+def test_recovery_warning_request_reaches_fresh_child(tmp_path):
+    assert _relaunch_environment(tmp_path, show_recovery_warns=True)["DDO_SHOW_RECOVERY_WARNS"] == "1"
 
 
 def test_explicit_child_allocator_configuration_overrides_defaults(tmp_path):

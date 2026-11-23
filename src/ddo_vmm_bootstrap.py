@@ -8,6 +8,7 @@ install the native allocator before the runner imports Torch or Diffusers.
 from __future__ import annotations
 
 import os
+import logging
 from importlib.util import find_spec
 import subprocess
 import sys
@@ -16,6 +17,8 @@ from typing import Mapping, Sequence
 
 _CHILD_MARKER = "DDO_VMM_FAST_CHILD"
 _BOOTSTRAP = """
+from ddo_vmm_bootstrap import configure_bootstrap_logging
+configure_bootstrap_logging()
 from ddo_vmm_allocator.torch_allocator import install_pytorch_vmm_allocator
 import runpy
 import sys
@@ -27,6 +30,22 @@ sys.path.insert(0, str(Path(target).resolve().parent))
 sys.argv = [target, *sys.argv[2:]]
 runpy.run_path(target, run_name='__main__')
 """
+
+
+class _TorchImportNoticeFilter(logging.Filter):
+    def filter(self, record):
+        message = record.getMessage()
+        return not (record.levelno == logging.WARNING
+                    and message.startswith(("<enum 'KernelPreference'> is an Enum subclass",
+                                            "<enum 'ScaleCalculationMode'> is an Enum subclass"))
+                    and "register_constant() on Enum subclasses is deprecated" in message)
+
+
+def configure_bootstrap_logging():
+    """Hide two known dependency notices before allocator/Torch imports."""
+    logger = logging.getLogger("torch.utils._pytree")
+    if not any(isinstance(item, _TorchImportNoticeFilter) for item in logger.filters):
+        logger.addFilter(_TorchImportNoticeFilter())
 
 
 def vmm_fast_requested(argv: Sequence[str] | None = None, *, default_backend: str = "linear") -> bool:
@@ -94,6 +113,7 @@ def ensure_vmm_fast_process(
     allocator_cache_mib: int = DEFAULT_ALLOCATOR_CACHE_MIB,
     segmented_pool: bool = True,
     growable_reserve_gib: int = DEFAULT_GROWABLE_RESERVE_GIB,
+    show_recovery_warns: bool | None = None,
     argv: Sequence[str] | None = None,
     environ: Mapping[str, str] | None = None,
 ) -> None:
@@ -115,6 +135,13 @@ def ensure_vmm_fast_process(
     environment = os.environ if environ is None else environ
     if environment.get(_CHILD_MARKER) == "1":
         return
+    if show_recovery_warns is None:
+        value = environment.get("DDO_SHOW_RECOVERY_WARNS", "0").strip().lower()
+        if value not in ("0", "1", "false", "true", "no", "yes", "off", "on"):
+            raise ValueError("DDO_SHOW_RECOVERY_WARNS must be a boolean")
+        show_recovery_warns = value in ("1", "true", "yes", "on")
+    if type(show_recovery_warns) is not bool:
+        raise ValueError("show_recovery_warns must be a boolean")
     if allocator_cache_mib < 0:
         raise ValueError("allocator_cache_mib must be non-negative")
     if isinstance(growable_reserve_gib, bool) or not isinstance(growable_reserve_gib, int):
@@ -148,6 +175,7 @@ def ensure_vmm_fast_process(
         raise RuntimeError("vmm_fast requires the ddo-vmm-allocator submodule or installed package")
     child_environment = dict(environment)
     child_environment[_CHILD_MARKER] = "1"
+    child_environment["DDO_SHOW_RECOVERY_WARNS"] = "1" if show_recovery_warns else "0"
     child_environment["DDO_VMM_LIBRARY_PATH"] = library
     child_environment["DDO_VMM_TORCH_CACHE_MIB"] = str(allocator_cache_mib)
     # Read only by install_pytorch_vmm_allocator in the child bootstrap.

@@ -513,13 +513,14 @@ class DynamicOffloadPresetTests(unittest.TestCase):
         )
         self.assertEqual(result["reason"], "disabled")
 
-    def test_maybe_purge_is_disabled_by_default_for_off_preset(self):
-        settings = load_dynamic_offload_settings_from_env(
-            running_on_wsl=False,
-            environ={"DDO_PRESET": "off"},
-        )
-        result = maybe_purge_windows_standby_cache(settings, "before_run", print_message=False)
-        self.assertEqual(result["reason"], "disabled")
+    def test_maybe_purge_is_disabled_by_default(self):
+        for preset in ("off", "one_shot_fast", "low_ram_safe"):
+            env = {"DDO_PRESET": preset}
+            settings = load_dynamic_offload_settings_from_env(running_on_wsl=False, environ=env)
+            for phase in ("before_run", "after_text_encoder", "before_transformer", "after_run"):
+                with self.subTest(preset=preset, phase=phase):
+                    result = maybe_purge_windows_standby_cache(settings, phase, environ=env, print_message=False)
+                    self.assertEqual(result["reason"], "disabled")
 
     def test_vmm_settings_use_lifecycle_defaults_without_linear_preset_lookup(self):
         settings = load_dynamic_offload_settings_from_env(

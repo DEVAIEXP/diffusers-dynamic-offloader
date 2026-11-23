@@ -68,6 +68,9 @@ class DynamicOffloadBackend:
                     effective_preset=self.effective_preset,
                 ).strip().lower() in {"1", "true", "yes", "on"}
             ),
+            show_recovery_warns=dynamic_offload_preset_env_value(
+                "DDO_SHOW_RECOVERY_WARNS", "0", effective_preset=self.effective_preset,
+            ).strip().lower() in {"1", "true", "yes", "on"},
             vmm_source_dispatcher=dynamic_offload_preset_env_value(
                 "DDO_VMM_SOURCE_DISPATCHER", "1", effective_preset=self.effective_preset,
             ).strip().lower() in {"1", "true", "yes", "on"},
@@ -134,7 +137,7 @@ def add_dynamic_offload_lifecycle_arguments(
             "--purge-" + phase.replace("_", "-"),
             action=argparse.BooleanOptionalAction,
             default=None,
-            help="Windows standby purge: explicit CLI overrides environment/preset; omitted inherits them.",
+            help="Windows standby purge (off by default). Explicit CLI overrides environment settings.",
         )
     return parser
 

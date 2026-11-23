@@ -337,9 +337,6 @@ _DYNAMIC_OFFLOAD_PRESET_VALUES: dict[str, dict[str, str]] = {
         "DDO_RESIDENT_MODULE_SELECTION": "spread",
         "DDO_SMALL_TENSOR_THRESHOLD_KB": "1024",
         "DDO_RUNNER_PRE_VAE_CLEANUP_REPEATS": "1",
-        "DDO_PURGE_WINDOWS_STANDBY_BEFORE_RUN": "1",
-        "DDO_PURGE_WINDOWS_STANDBY_AFTER_TEXT_ENCODER": "1",
-        "DDO_PURGE_WINDOWS_STANDBY_BEFORE_TRANSFORMER": "1",
     },
     "wsl_compat": {
         "DDO_RUNNER_TEXT_ENCODER_GROUP_OFFLOAD": "1",
@@ -647,9 +644,12 @@ class DynamicOffloadConfig:
     resident_module_selection: str = "spread"
     load_safetensors_backend: str = ""
     verbose: bool = False
+    show_recovery_warns: bool = False
     show_profile: bool = True
 
     def __post_init__(self):
+        if type(self.show_recovery_warns) is not bool:
+            raise ValueError("show_recovery_warns must be a boolean")
         if self.linear_convolution_offload:
             if self.execution_mode != "linear_runtime":
                 raise ValueError("Convolution offload is only available in linear_runtime")
@@ -752,6 +752,7 @@ class DynamicOffloadSettings:
             "dynamic_offload_resident_module_selection": config.resident_module_selection,
             "dynamic_offload_load_safetensors_backend": config.load_safetensors_backend or None,
             "dynamic_offload_show_profile": config.show_profile,
+            "dynamic_offload_show_recovery_warns": config.show_recovery_warns,
             "dynamic_offload_component_policies": dict(self.component_policies),
         }
 
@@ -980,6 +981,12 @@ class DynamicOffloadApplyResult:
             if collect_completed:
                 runtime["completion_collection"] = self.hook.collect_completed_runtime_resources()
             runtime["state"] = self.hook.state.as_dict()
+            if getattr(getattr(self.hook, "config", None), "execution_mode", None) == "vmm_fast_runtime":
+                runtime["recovery_notifications"] = {
+                    "requested": self.hook.config.show_recovery_warns,
+                    "control_available": getattr(self.hook, "_recovery_warns_control_available", None),
+                    "scope": "native_library_process",
+                }
             vmm_stats = self.hook.vmm_runtime_stats()
             if vmm_stats is not None:
                 runtime["vmm"] = vmm_stats
@@ -1659,12 +1666,22 @@ class DynamicOffloadHook(ModelHook):
             from ddo_vmm_allocator.model_arena_adapter import estimate_execution_slot_bytes
             from .profiles import vmm_structural_floor_bytes
 
-            slot = estimate_execution_slot_bytes(module, self.config.vmm_module_pattern)
-            if slot <= 0:
-                raise ValueError("vmm_fast_runtime found no execution unit to size the structural floor")
             # Page-aware: native admission page-aligns each slot and needs a free page.
             page = int(self.config.vmm_page_mb) * 1024**2 or None
-            self.vmm_resident_weight_budget_bytes = vmm_structural_floor_bytes(slot, page)
+            if self.config.vmm_component_tensor_ownership:
+                from .profiles import vmm_component_structural_floor
+
+                self.vmm_resident_weight_budget_bytes, geometry = vmm_component_structural_floor(
+                    module, getattr(module, "_ddo_safetensor_slices", None),
+                    float8_weight_only=self.config.vmm_float8_weight_only,
+                    buffer_limit_bytes=self.config.vmm_component_buffer_limit_mb * 1024**2,
+                    page_bytes=page)
+                self.state.planner_decisions["vmm_structural_floor_geometry"] = geometry
+            else:
+                slot = estimate_execution_slot_bytes(module, self.config.vmm_module_pattern)
+                if slot <= 0:
+                    raise ValueError("vmm_fast_runtime found no execution unit to size the structural floor")
+                self.vmm_resident_weight_budget_bytes = vmm_structural_floor_bytes(slot, page)
             budget_source = "structural_floor"
         else:
             budget_source = "profile" if self.config._profile_budget_applied else "configured"
@@ -1717,6 +1734,10 @@ class DynamicOffloadHook(ModelHook):
         from .vmm_weight_store import PinnedStagingPool, SafetensorSliceRegistry
 
         library, _arena_type = _load_native_allocator(None)
+        notification_control = getattr(library, "set_recovery_warns", None)
+        self._recovery_warns_control_available = (
+            bool(notification_control(self.config.show_recovery_warns)) if callable(notification_control) else False
+        )
         if budget_source == "profile":
             self._recheck_vmm_profile_budget(library)
         headrooms = (self.config.vmm_dxgi_local_headroom_gb, self.config.vmm_dxgi_shared_headroom_gb,
@@ -3077,6 +3098,7 @@ def load_dynamic_offload_settings_from_env(
         resident_module_selection=preset_env("DDO_RESIDENT_MODULE_SELECTION", "spread").lower(),
         load_safetensors_backend=load_safetensors_backend,
         verbose=preset_bool("DDO_VERBOSE", "0"),
+        show_recovery_warns=preset_bool("DDO_SHOW_RECOVERY_WARNS", "0"),
         show_profile=preset_bool("DDO_SHOW_PROFILE", "0"),
     )
     return DynamicOffloadSettings(

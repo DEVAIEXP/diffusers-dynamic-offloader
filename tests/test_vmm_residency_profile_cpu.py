@@ -89,6 +89,13 @@ def test_without_wddm_the_device_total_is_the_budget_source(monkeypatch):
     assert observation["forward_seconds"] == [] and observation["steady_forward_seconds"] is None
 
 
+def test_component_root_capacity_is_observed(monkeypatch):
+    monkeypatch.setattr(torch.cuda, 'mem_get_info', lambda device=None: (6 * GiB, 8 * GiB))
+    module = nn.Linear(2, 2)
+    hook = SimpleNamespace(vmm_runtime_stats=lambda: stats(fast_component_lifetime_capacity_bytes=2 * 1024**2))
+    assert build(module, hook)['component_lifetime_capacity_bytes'] == 2 * 1024**2
+
+
 def test_unavailable_observations_stay_null_not_zero(monkeypatch):
     def unavailable(device=None):
         raise RuntimeError("no device query")

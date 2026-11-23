@@ -52,7 +52,8 @@ VMM_FLOOR_ARENA_HEADROOM_BYTES = 64 * 1024**2
 _VMM_DEFAULT_PAGE_BYTES = 2 * 1024**2
 
 
-def vmm_structural_floor_bytes(slot_bytes: int, page_bytes: int | None, *, slots: int = 2) -> int:
+def vmm_structural_floor_bytes(slot_bytes: int, page_bytes: int | None, *, slots: int = 2,
+                               persistent_bytes: int = 0) -> int:
     """Smallest residency budget the native arena accepts with ``slots`` execution slots.
 
     Native admission page-aligns each slot and requires at least one free arena
@@ -64,7 +65,34 @@ def vmm_structural_floor_bytes(slot_bytes: int, page_bytes: int | None, *, slots
     def align(value: int) -> int:
         return -(-value // page) * page
 
-    return align(slots * align(slot_bytes) + max(VMM_FLOOR_ARENA_HEADROOM_BYTES, page))
+    return align(slots * align(slot_bytes) + align(persistent_bytes)
+                 + max(VMM_FLOOR_ARENA_HEADROOM_BYTES, page))
+
+
+def vmm_component_structural_floor(module, file_slices, *, float8_weight_only=False,
+                                   buffer_limit_bytes=1024**2, page_bytes=None):
+    """Size the attachment's component geometry without native allocation or tensor copies."""
+    if float8_weight_only:
+        from ddo_vmm_allocator.quantized_arena_adapter import discover_float8_component_layout
+
+        layout, composites = discover_float8_component_layout(
+            module, file_slices, buffer_limit_bytes=buffer_limit_bytes)
+        del composites
+    else:
+        from ddo_vmm_allocator.component_arena_adapter import discover_component_layout
+
+        layout = discover_component_layout(module, file_slices, buffer_limit_bytes=buffer_limit_bytes)
+    slot = layout.capacity_snapshot()["execution_slot_payload_bytes"]
+    persistent = 0
+    for group, _descriptor in layout.component_lifetime_parameters:
+        persistent = ((persistent + 511) // 512) * 512 + group.nbytes
+    if type(slot) is not int or slot <= 0:
+        raise ValueError("component ownership has no execution unit for its structural floor")
+    floor = vmm_structural_floor_bytes(slot, page_bytes, persistent_bytes=persistent)
+    # Return detached sizes only; do not retain loaded CPU tensor owners.
+    return floor, {"layout": "float8_component" if float8_weight_only else "component",
+                   "execution_slot_payload_bytes": slot, "execution_slots": 2,
+                   "component_lifetime_payload_bytes": persistent, "floor_bytes": floor}
 _SDNQ_DEFAULT_RESIDENT_CEILING_GB = 6.0
 _SDNQ_PROBE_MIN_SAFE_BUDGET_GB = 2.0
 
@@ -218,7 +246,11 @@ def recommend_vmm_resident_budget(observation: Mapping[str, Any], margin_bytes: 
         return None
     # ``slots`` is the measured total of the (already page-aligned) slots.
     page = observation.get("page_bytes")
-    floor = vmm_structural_floor_bytes(slots, page, slots=1) if slots else VMM_FLOOR_ARENA_HEADROOM_BYTES
+    persistent = observation.get("component_lifetime_capacity_bytes", 0)
+    if type(persistent) is not int or persistent < 0:
+        return None
+    floor = (vmm_structural_floor_bytes(slots, page, slots=1, persistent_bytes=persistent)
+             if slots else VMM_FLOOR_ARENA_HEADROOM_BYTES)
     non_weight = max(0, peak - weights)
     available = budget - margin_bytes - non_weight
     virtual = observation.get("arena_virtual_bytes")
@@ -383,6 +415,8 @@ class _VmmResidencySampler:
         return {
             "schema_version": VMM_RESIDENCY_OBSERVATION_SCHEMA_VERSION,
             "execution_slots_bytes": stat("fast_execution_buffer_capacity_bytes"),
+            **({"component_lifetime_capacity_bytes": stat("fast_component_lifetime_capacity_bytes")}
+               if "fast_component_lifetime_capacity_bytes" in stats else {}),
             "page_bytes": stat("fast_page_bytes"),
             "arena_resident_bytes": stat("fast_resident_bytes"),
             "arena_virtual_bytes": stat("fast_virtual_bytes"),

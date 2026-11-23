@@ -15,6 +15,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from ddo_vmm_bootstrap import _discover_library, _installed_allocator_root
+
 from .vmm_weight_store import PinnedStagingPool, RegisteredHostWeightRegistry, SafetensorSliceRegistry, _round_up
 
 if TYPE_CHECKING:
@@ -100,9 +102,8 @@ def _load_native_allocator(library_path: str | None):
     # and the model arena can silently use distinct native global state.
     resolved_library = library_path if library_path is not None else os.environ.get("DDO_VMM_LIBRARY_PATH")
     if resolved_library is None:
-        root = _allocator_source_root().parent
-        platform_library = root / "build" / "Release" / "ddo_vmm.dll"
-        if platform_library.exists():
+        platform_library = _discover_library(_allocator_source_root().parent, _installed_allocator_root())
+        if platform_library is not None:
             resolved_library = str(platform_library)
     return load_native_vmm(resolved_library), VmmWeightArena
 

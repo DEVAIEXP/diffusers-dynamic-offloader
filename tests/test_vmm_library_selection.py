@@ -1,4 +1,6 @@
 """CPU-only native DLL selection; no CUDA calls or actual DLL loading."""
+import sys
+
 import pytest
 
 from diffusers_dynamic_offloader import vmm_model_arena
@@ -12,7 +14,7 @@ from ddo_vmm_allocator import native
 ])
 def test_library_precedence_matches_bootstrap(monkeypatch, tmp_path, explicit, environment, expected):
     root = tmp_path / "allocator"
-    default = root / "build" / "Release" / "ddo_vmm.dll"
+    default = root / ("build/Release/ddo_vmm.dll" if sys.platform == "win32" else "build-linux/libddo_vmm.so")
     default.parent.mkdir(parents=True)
     default.touch()
     monkeypatch.setattr(vmm_model_arena, "_allocator_source_root", lambda: root / "src")
@@ -46,7 +48,26 @@ def test_invalid_selected_library_must_not_silently_fall_back(monkeypatch, tmp_p
 def test_no_local_library_delegates_missing_path_to_native_binding(monkeypatch, tmp_path):
     monkeypatch.delenv("DDO_VMM_LIBRARY_PATH", raising=False)
     monkeypatch.setattr(vmm_model_arena, "_allocator_source_root", lambda: tmp_path / "src")
+    monkeypatch.setattr(vmm_model_arena, "_installed_allocator_root", lambda: None)
     selected = []
     monkeypatch.setattr(native, "load_native_vmm", lambda path: selected.append(path))
     vmm_model_arena._load_native_allocator(None)
     assert selected == [None]
+
+
+@pytest.mark.parametrize("platform, relative_path", [
+    ("win32", "native/win32/ddo_vmm.dll"),
+    ("linux", "native/linux/libddo_vmm.so"),
+])
+def test_arena_discovers_installed_library(monkeypatch, tmp_path, platform, relative_path):
+    package = tmp_path / "ddo_vmm_allocator"
+    library = package / relative_path
+    library.parent.mkdir(parents=True)
+    library.touch()
+    monkeypatch.delenv("DDO_VMM_LIBRARY_PATH", raising=False)
+    monkeypatch.setattr(vmm_model_arena, "_allocator_source_root", lambda: tmp_path / "checkout/src")
+    monkeypatch.setattr(vmm_model_arena, "_installed_allocator_root", lambda: package)
+    monkeypatch.setattr(sys, "platform", platform)
+    monkeypatch.setattr(native, "load_native_vmm", lambda path: path)
+    selected, _ = vmm_model_arena._load_native_allocator(None)
+    assert selected == str(library)

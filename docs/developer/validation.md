@@ -134,7 +134,8 @@ wheel. WSL FP8 and unrelated pending source/native changes are not covered.
 At that stage, an additional linear-profile contract failed against both the
 candidate and original Windows RC5 package. The later
 [linear-budget correction](#selected-linear-profile-budget-correction) has its own
-selected validation; it does not imply that the full test suite is green. See [local package scope](releases.md#local-rc5-fp8-floor-consolidation).
+selected validation; it does not imply that the full test suite is green.
+Final distribution follows the separate [package delivery](releases.md#validate-and-publish) process.
 
 ## Earlier validation
 

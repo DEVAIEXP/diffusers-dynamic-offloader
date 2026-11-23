@@ -636,9 +636,13 @@ class _NamedProfile:
             return replace(config, vmm_resident_weight_budget_gb=float(budget), _profile_budget_applied=True,
                            _profile_floor_bytes=floor_bytes if isinstance(floor_bytes, int) else None,
                            _profile_non_weight_peak_bytes=non_weight if isinstance(non_weight, int) else None)
-        # An explicit caller budget has always taken precedence over a saved
-        # recommendation.  It is not itself a profile calibration.
-        if config.resident_module_budget_gb > 0:
+        from .dynamic_offload import _PresetResidentModuleBudget
+
+        preset_budget = (
+            config.execution_mode == "linear_runtime"
+            and isinstance(config.resident_module_budget_gb, _PresetResidentModuleBudget)
+        )
+        if config.resident_module_budget_gb > 0 and not preset_budget:
             return config
         record = load_dynamic_offload_profile(self.context)
         recommendation = get_dynamic_offload_profile_recommendation(record or {}) or {}
@@ -664,7 +668,8 @@ class _NamedProfile:
         print(f"[dynamic-offload] profile {config.profile_name!r}: requested resident budget={budget:.2f} GiB.")
         if config.auto_budget_policy == "off":
             return replace(config, resident_module_budget_gb=budget, _profile_budget_applied=True)
-        return replace(config, profile_resident_module_budget_gb=budget, _profile_budget_applied=True)
+        return replace(config, resident_module_budget_gb=0.0,
+                       profile_resident_module_budget_gb=budget, _profile_budget_applied=True)
 
     def _vmm_build_recommendation(self, observation: Mapping[str, Any]) -> dict[str, Any] | None:
         """Recommendation of one VMM build run (two-build calibration), or None.

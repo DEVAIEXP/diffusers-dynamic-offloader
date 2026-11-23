@@ -9,6 +9,7 @@ import torch.nn as nn
 
 from diffusers_dynamic_offloader import (
     DynamicOffloadConfig,
+    DynamicOffloadSettings,
     enable_offload,
     from_pretrained_with_dynamic_offload,
 )
@@ -57,6 +58,32 @@ class NamedProfileTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "inference failed"), result.profile_run():
             raise RuntimeError("inference failed")
         self.assertEqual(os.listdir(self.directory), [])
+
+    def test_linear_profile_overrides_only_the_preset_budget(self):
+        def enable(settings, **kwargs):
+            return enable_offload(nn.Linear(2, 2), settings=settings, apply_hook=False, **kwargs)
+
+        settings = DynamicOffloadSettings.from_env(environ={}, default_preset="low_ram_safe")
+        self.assertEqual(enable(settings).settings.config.resident_module_budget_gb, 3)
+        self.assertEqual(enable(settings, profile_name="example").settings.config.resident_module_budget_gb, 3)
+        for reserved_gib, expected in ((5.5, 1.0), (7.5, 0.0)):
+            with patch("torch.cuda.max_memory_reserved", return_value=int(reserved_gib * 1024**3)):
+                with enable(settings, profile_name="example", build_profile=True).profile_run() as report:
+                    pass
+            self.assertEqual(report["status"], "saved")
+            reused = enable(settings, profile_name="example")
+            self.assertTrue(reused.settings.config._profile_budget_applied)
+            self.assertEqual(reused.settings.config.resident_module_budget_gb, expected)
+
+        explicit = DynamicOffloadSettings.from_env(
+            environ={"DDO_RESIDENT_MODULE_BUDGET_GB": "3"}, default_preset="low_ram_safe",
+        )
+        for result in (
+            enable(explicit, profile_name="example"),
+            enable(settings, profile_name="example", resident_module_budget_gb=3),
+        ):
+            self.assertFalse(result.settings.config._profile_budget_applied)
+            self.assertEqual(result.settings.config.resident_module_budget_gb, 3)
 
     def test_sdnq_low_baseline_saves_a_bounded_probe_then_refines_it(self):
         config = DynamicOffloadConfig(

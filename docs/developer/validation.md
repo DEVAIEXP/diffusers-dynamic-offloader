@@ -21,6 +21,22 @@ discovery, then simulates the child-process bootstrap without loading the DLL/.s
 or running CUDA. This is a maintainer release check, separate from GPU tests and
 complete model runs.
 
+## Selected linear-profile budget correction
+
+Saved linear profiles replace inherited preset resident-module budgets, including
+a recommendation of zero. Explicit positive caller budgets retain precedence;
+without a saved recommendation the preset default remains in effect.
+
+Twelve named-profile CPU tests passed. Selected Windows LTX Video executions
+with working-tree DDO applied their existing zero-budget profiles without the
+host's budget override and produced byte-identical videos. One Shot Fast retained
+effective CPU pinning and matched its historical performance (333.07 s denoise
+versus 335.02 s). Two Low RAM Safe runs completed correctly but took 499.58–535.41 s
+versus 419.30 s historically; their performance variation remains unexplained.
+This is selected functional acceptance, not a general performance guarantee or
+installed-wheel acceptance. Native binaries and published benchmark rows were
+unchanged.
+
 ## Selected component-profile correction
 
 The Linux DDO candidate `0.1.0rc5+fp8floor.2` has selected installed-wheel CPU

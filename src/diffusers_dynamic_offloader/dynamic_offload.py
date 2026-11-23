@@ -550,6 +550,10 @@ def _native_source_cache_transport_config(
     return config
 
 
+class _PresetResidentModuleBudget(float):
+    """Carry preset provenance through dataclass copies until budget resolution."""
+
+
 @dataclass(frozen=True)
 class DynamicOffloadConfig:
     """Configuration for the experimental dynamic offload planner/runtime."""
@@ -3011,6 +3015,11 @@ def load_dynamic_offload_settings_from_env(
             environ=env,
         )
 
+    resident_budget_key = "DDO_RESIDENT_MODULE_BUDGET_GB"
+    resident_budget = float(preset_env(resident_budget_key, "0.0"))
+    if resident_budget_key not in env:
+        resident_budget = _PresetResidentModuleBudget(resident_budget)
+
     def preset_bool(name: str, default: str = "0") -> bool:
         return _parse_bool_value(preset_env(name, default))
 
@@ -3093,7 +3102,7 @@ def load_dynamic_offload_settings_from_env(
         pin_weight_budget_gb=float(preset_env("DDO_PIN_WEIGHT_BUDGET_GB", "0.0")),
         pin_weight_budget_ratio=float(preset_env("DDO_PIN_WEIGHT_BUDGET_RATIO", "0.0")),
         pin_weight_selection=preset_env("DDO_PIN_WEIGHT_SELECTION", "spread").lower(),
-        resident_module_budget_gb=float(preset_env("DDO_RESIDENT_MODULE_BUDGET_GB", "0.0")),
+        resident_module_budget_gb=resident_budget,
         resident_module_patterns=_parse_pattern_list_value(preset_env("DDO_RESIDENT_MODULE_PATTERNS", "")),
         resident_module_selection=preset_env("DDO_RESIDENT_MODULE_SELECTION", "spread").lower(),
         load_safetensors_backend=load_safetensors_backend,

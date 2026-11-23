@@ -7,6 +7,28 @@ see [Validation](validation.md).
 
 ## Artifacts and ownership
 
+### Published RC5
+
+[DDO 0.1.0rc5](https://pypi.org/project/diffusers-dynamic-offloader/0.1.0rc5/)
+and [allocator 0.1.0rc5](https://pypi.org/project/ddo-vmm-allocator/0.1.0rc5/)
+were published on November 23, 2026. Downloaded PyPI files were checked against
+the original SHA256 values:
+
+| Wheel | SHA256 |
+| --- | --- |
+| `diffusers_dynamic_offloader-0.1.0rc5-py3-none-any.whl` | `d64e0558944a8630868eab6e4f4a8550c3ff497fe2153b4b84b5fe66cc3c5c77` |
+| `ddo_vmm_allocator-0.1.0rc5-py3-none-win_amd64.whl` | `fd35ffbb62c842671b1f5c11d9560745d0af95cef41444e5c80ca85d76d8902e` |
+| `ddo_vmm_allocator-0.1.0rc5-py3-none-manylinux_2_35_x86_64.whl` | `e3da8d27017b35bb8c7cb15cb5cd1357208ef5eeef7e6840c6be657cd9726b0f` |
+
+Package sources are DDO `8fa41d82811c74caabb5ab96b00d4ebedf258c30`
+and allocator `3f7924ce1b27bae4fae70afb478ae4313cc018b6`.
+The Linux wheel was audited and repaired with auditwheel 6.8.2; it requires
+glibc 2.35 or newer and leaves `libcuda.so.1` external. No NVIDIA driver is
+bundled. Final Windows model acceptance and the remaining Linux/WSL CUDA
+validation limit are described in [Validation](validation.md).
+
+### Package contents
+
 DDO provides the pure Python wheel. The allocator provides platform-specific
 wheels containing the native library and, where supported, its matching
 Torch-linked bridge. Model runners and benchmarks belong to DDO examples.

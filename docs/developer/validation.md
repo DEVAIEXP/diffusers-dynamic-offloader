@@ -2,10 +2,13 @@
 
 ## RC5 status
 
-RC5 has selected source, installed-candidate and model validation. The final
-consolidated wheel pair still needs assembly and validation of its exact
-packaged bytes. Candidate suffixes below identify the artifacts tested; they
-do not certify a later rebuild or a package with a different payload.
+RC5 packages were published on PyPI on November 23, 2026. The final Windows
+pair passed installed CPU checks and one LTX Video BF16 VMM Fast generation:
+193 frames with audio and output byte-identical to its selected control.
+The final Linux allocator passed native CPU contracts, ELF auditing and clean
+container installation; CUDA validation of these final Linux/WSL bytes remains
+pending. Earlier candidate suffixes below identify their own tested artifacts,
+not automatic acceptance of every published payload. See [package delivery](releases.md).
 
 | Area | Recorded RC5 validation | Remaining limit |
 | --- | --- | --- |

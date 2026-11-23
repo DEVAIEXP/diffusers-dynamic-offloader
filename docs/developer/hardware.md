@@ -16,7 +16,7 @@ That inspection does not reconstruct every earlier test environment.
 | Target | Recorded environment |
 | --- | --- |
 | Windows | Windows 10 Enterprise build 19045 in the host inspection; exact OS/driver versions were not recorded uniformly for every workload |
-| Native Linux | Ubuntu 26.04.1 x86_64; selected installed-wheel validation records driver 595.99.02 |
+| Native Linux | Ubuntu 26.04.1 x86_64; current RC5 model benchmarks record NVIDIA driver 615.71.09 |
 | WSL2 | Ubuntu 22.04.3; kernel 6.18.33.2-microsoft-standard-WSL2; approximately 39 GiB guest RAM and 32 GiB configured swap; Windows GPU driver |
 
 Configured swap is not evidence that a run used it. WSL guest RAM is not the

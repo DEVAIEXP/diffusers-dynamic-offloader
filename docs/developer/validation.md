@@ -21,6 +21,50 @@ discovery, then simulates the child-process bootstrap without loading the DLL/.s
 or running CUDA. This is a maintainer release check, separate from GPU tests and
 complete model runs.
 
+## Selected component-profile correction
+
+The Linux DDO candidate `0.1.0rc5+fp8floor.2` has selected installed-wheel CPU
+and LTX 2.3 saved FP8 pipeline acceptance. The candidate changes two Python
+modules to derive the structural minimum from component execution geometry
+and preserve persistent root capacity in the final profile recommendation.
+Its 58 CPU contracts include unchanged Linear BF16 sizing, explicit-budget
+preservation, component sizing and large-page root reservations.
+
+One approved calibration and an eight-step, eight-second FP8 measurement
+completed using the installed candidate. The final profile was applied with
+matching shapes; native final-failure counters and quarantined pool bytes were
+zero. Source/dispatcher and media checks passed. Visual quality is unconfirmed.
+Pipeline timings and reproduction belong to the
+[host benchmark](https://github.com/DEVAIEXP/ddo-examples/blob/main/docs/benchmarks/ltx23-video-details.md#fp8-linux).
+
+The allocator remains RC5 with native SHA256
+`8d69af5056ee8c28da6c6e0b0adf1e7e5e23c67b1d66b641c01cfc949d6af459`.
+No native arena, backing segmentation, eviction or fence code changed. This
+selected Linux result alone does not establish general quantization support or
+Windows/WSL acceptance of the correction. The Linux candidate is not a final or
+published RC5 distribution; final assembly and other pending fixes require
+their own review.
+
+The correction also completed a selected installed-package Windows LTX 2.3
+FP8 workload: one three-step calibration finalized at 806 MiB and the
+eight-step, eight-second measurement applied its matching profile. Source
+dispatch was active, reported native final failures and quarantined bytes were
+zero, media checks passed and the user accepted visual quality. The tested
+Python candidate was `0.1.0rc5+fp8floor.win1`; it retained the previously
+installed Windows library-discovery correction. The native DLL remained
+`60f73271cd1552769daf1e02de50702b46ab17a4b99e239b804a26c129ebf815`.
+See the [host measurement](https://github.com/DEVAIEXP/ddo-examples/blob/main/docs/benchmarks/ltx23-video-details.md#fp8-windows).
+
+A local RC5 wheel consolidates those exact 24 tested Python files, changing
+distribution metadata from the candidate version to `0.1.0rc5`. Its installed
+bytes and RECORD were verified, and 14 floor/residency CPU contracts passed
+with CUDA initialization blocked. The selected model run belongs to the
+candidate with identical Python payload, not a second GPU run of the renamed
+wheel. WSL FP8 and unrelated pending source/native changes are not covered.
+One additional linear-profile source contract failed identically against the
+candidate and the original Windows RC5 package; the complete suite is not
+claimed green. See [local package scope](releases.md#local-rc5-fp8-floor-consolidation).
+
 ## Selected installed-wheel acceptance
 
 The current published pair is `0.1.0rc3`; see its

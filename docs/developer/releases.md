@@ -12,6 +12,55 @@ SHA256. Install and validate the actual wheel pair, then distribute those
 same bytes without rebuilding. NVIDIA driver libraries remain external.
 There is no import-time or inference-time build/download.
 
+<a id="local-rc5-fp8-floor-consolidation"></a>
+
+## Local RC5 FP8 floor consolidation
+
+The local `diffusers_dynamic_offloader-0.1.0rc5-py3-none-any.whl` assembled on
+2026-11-19 has SHA256
+`7e914de7e560f5729717c4025cfb26eb70bc07dc09482365336272c4d8a77cab`.
+It preserves the installed Windows RC5 payload plus the validated two-module
+Python component-floor correction. All 24 Python files are byte-identical to
+the selected Windows GPU candidate `0.1.0rc5+fp8floor.win1`; only distribution
+metadata and RECORD were changed for consolidation. It does not package the
+entire dirty source tree or pending native notification changes.
+
+The wheel was installed offline without dependency changes into the Windows
+RC5 environment. Installed payload and 31 hashed RECORD entries passed
+verification; 14 focused CPU contracts passed without CUDA initialization.
+The allocator DLL, API/ABI and native features remain those of the existing
+RC5 artifact; no native rebuild or replacement occurred. Selected pipeline
+acceptance and limitations are recorded in [validation](validation.md#selected-component-profile-correction).
+This is a local artifact, not registry publication or validation of arbitrary
+platforms. Linux and WSL environment updates remain separate work.
+
+## Local Windows purge correction
+
+The subsequent local pair `0.1.0rc5+recovery.win2` preserves this purge correction
+and the accepted FP8 floor, and adds default-quiet native recovery notices.
+The Windows DLL SHA256 is
+`7d4d7e55d8245d5f1af94af5a3e18af389ca9a69aa9f993ba5fdf421a4b5a0d3`.
+It preserves 139 exports and adds the optional notification setter. Offline
+installation passed 23 focused CPU tests, installed payload/RECORD verification
+and unchanged-dependency checks. A selected Windows LTX Image LoRA generation
+subsequently completed after two calibrations, with the final profile applied,
+native source dispatcher enabled and no recorded native failure or quarantined
+pool bytes. The user accepted the adapter's visible effect. This does not validate
+quiet-mode recovery on real GPU pressure, other adapters or other platforms.
+It is not a published release. Allocation policy, backing, fences and budgets
+are unchanged.
+
+The local Windows follow-up `0.1.0rc5+purge.win1` removes the three enabled
+standby-purge defaults from `one_shot_fast` and updates the lifecycle argument
+help. Its SHA256 is
+`4602b0a14c3202ae03ac666179201a20e534e90136abf649c20fb6ce4eb26a3f`.
+The other 22 Python payload files match the consolidated RC5 wheel above.
+Offline installation preserved dependencies and the allocator DLL. Candidate
+and installed checks each passed 48 CPU purge checks, and installed native
+discovery passed without loading the DLL. This establishes the opt-in purge
+default, not new model or native recovery-notification acceptance. It is a local
+package update, not a registry publication.
+
 ## Previous published prerelease
 
 Version `0.1.0rc2` is published on PyPI for

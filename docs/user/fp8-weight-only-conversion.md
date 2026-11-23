@@ -73,7 +73,7 @@ ownership, full `.*` selection and no execution-auxiliary ownership. The default
 is false. Linear and legacy NVMe paths do not accept this opt-in.
 
 Use the existing native bootstrap before importing Torch/Diffusers, as
-documented in [native integration](native-vmm.md). With an already configured
+documented in [integration](integration.md). With an already configured
 native fast component:
 
 ```python

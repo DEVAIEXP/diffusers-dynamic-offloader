@@ -1,119 +1,75 @@
-# Modular Pipeline Usage
+# Modular Diffusers
 
-Modular Diffusers makes phase-staged execution cleaner because the host can build and call only the blocks required for each phase.
+Modular Diffusers lets the host construct only the blocks needed for a phase.
+The offload APIs and choice between linear and VMM Fast are the same as in
+[integration](integration.md); custom blocks still own the model computation.
 
-## Full Modular Pipeline
+Review custom code before enabling `trust_remote_code`. Select a known revision
+and record the resolved code and weight snapshots. Local custom-block checkouts
+and Hub code revisions are different sources; one does not update the other.
+
+## Full pipeline
+
+A modular pipeline can load its components and delegate their routing to DDO:
 
 ```python
 import torch
 from diffusers import ModularPipeline
 from diffusers_dynamic_offloader import enable_pipeline_offload
 
-pipe = ModularPipeline.from_pretrained("your/custom_blocks", trust_remote_code=True)
+pipe = ModularPipeline.from_pretrained(
+    "your/custom_blocks", trust_remote_code=True,
+)
 pipe.load_components(
     pretrained_model_name_or_path="your/model",
     names=["text_encoder", "tokenizer", "transformer", "vae", "scheduler"],
     torch_dtype=torch.bfloat16,
 )
-
-enable_pipeline_offload(pipe, preset="auto", execution_device="cuda:0")
-
-image = pipe(
-    prompt="a small robot holding a lantern",
-    width=1024,
-    height=1024,
-    num_inference_steps=8,
-    output="images",
-)[0]
-image.save("out.png")
+results = enable_pipeline_offload(
+    pipe, preset="one_shot_fast", execution_device="cuda:0",
+    use_environment=False,
+)
 ```
 
-## Phase-Staged Modular Pipeline
+This example selects linear policies. For VMM Fast, bootstrap first and load the
+transformer with DDO's source-aware helper, then inject the prepared component
+using the API exposed by the blocks. Configure remaining components separately;
+do not attach offload twice to the transformer. See the
+[full-pipeline pattern](full-pipeline.md#vmm-fast-setup).
 
-The phase-staged modular pattern keeps each memory-heavy phase explicit:
+## Staged pipeline
+
+The host can instead build prompt-only, denoise-only and decode-only blocks:
+
+| Phase | Components and output | Boundary |
+| --- | --- | --- |
+| Prompt encoding | Encoder/tokenizer produce conditioning embeddings | Keep required embeddings, retire the encoder and drop its state |
+| Denoising | Scheduler and prepared transformer produce latents | Read back needed outputs, collect the report and retire transformer ownership |
+| VAE decode | Decoder consumes latents on its execution device | Convert output and save after the isolated decode phase |
+
+For the denoising block, associate checkpoint sources before attachment.
+The attachment works with either family through the common configuration:
 
 ```python
-import gc
-import torch
-from diffusers import ModularPipeline
-from diffusers_dynamic_offloader import (
-    DynamicOffloadSettings,
-    enable_offload,
-    from_pretrained_with_dynamic_offload,
-    maybe_purge_windows_standby_cache,
-)
-
-device = torch.device("cuda:0")
-blocks_id = "your/custom_blocks"
-model_id = "your/model"
-settings = DynamicOffloadSettings.from_env(
-    execution_device=device,
-    offload_device="cpu",
-    default_preset="auto",
-)
-
-# Pass 0: prompt only
-prompt_pipe = ModularPipeline.from_pretrained(blocks_id, trust_remote_code=True)
-prompt_pipe.load_components(
-    pretrained_model_name_or_path=model_id,
-    names=["text_encoder", "tokenizer"],
-    torch_dtype=torch.bfloat16,
-)
-enable_offload(prompt_pipe.components["text_encoder"], preset="auto", component="text_encoder")
-prompt_state = prompt_pipe(prompt="a small robot holding a lantern", output="state")
-prompt_embeds = prompt_state.prompt_embeds.to("cpu")
-
-del prompt_pipe, prompt_state
-gc.collect()
-torch.cuda.empty_cache()
-maybe_purge_windows_standby_cache("after_text_encoder")
-
-# Pass 1: denoise only. When the block API accepts a prebuilt component,
-# load the transformer independently before attaching it to the denoise block.
-transformer_load = from_pretrained_with_dynamic_offload(
-    model_id,
-    model_loader=YourTransformerClass,
-    dynamic_offload_config=settings.config,
-    apply_dynamic=False,
-    subfolder="transformer",
-    torch_dtype=torch.bfloat16,
-    device_map="cpu",
-)
-denoise_pipe = ModularPipeline.from_pretrained(blocks_id, trust_remote_code=True)
-denoise_pipe.load_components(
-    pretrained_model_name_or_path=model_id,
-    names=["scheduler"],
-    torch_dtype=torch.bfloat16,
-)
-denoise_pipe.update_components(transformer=transformer_load.module)
-enable_offload(denoise_pipe.components["transformer"], settings=settings, component="transformer")
-maybe_purge_windows_standby_cache("before_transformer")
-
-denoise_state = denoise_pipe(
-    prompt_embeds=prompt_embeds.to(device),
-    width=1024,
-    height=1024,
-    num_inference_steps=8,
-    output="state",
-)
-latents = denoise_state.latents.to("cpu")
-
-del denoise_pipe, denoise_state
-gc.collect()
-torch.cuda.empty_cache()
-
-# Pass 2: decode only
-decode_pipe = ModularPipeline.from_pretrained(blocks_id, trust_remote_code=True)
-decode_pipe.load_components(
-    pretrained_model_name_or_path=model_id,
-    names=["vae"],
-    torch_dtype=torch.bfloat16,
-)
-decode_pipe.components["vae"].to(device)
-images = decode_pipe(latents=latents.to(device), output="images")
-images[0].save("out.png")
+# attach_component() is defined in the common integration example.
+result = attach_component(local_transformer_snapshot, TransformerClass)
+denoise_pipe.update_components(transformer=result.module)
+with result.cleanup_on_error():
+    with result.profile_run():
+        state = denoise_pipe(
+            prompt_embeds=prompt_embeds.to("cuda:0"), output="state",
+        )
+    latents = state.latents.to("cpu")
+    report = result.metrics_snapshot(collect_completed=True)
 ```
 
-Names such as `prompt_embeds`, `latents`, and `output="state"` depend on the custom block implementation. The DDO part is the same: call `enable_offload(...)` on the module for that phase and cleanup after the phase finishes.
+Names such as `prompt_embeds`, `latents`, `output="state"` and
+`update_components()` depend on the blocks. Adapt those calls to the selected
+model. DDO owns offload configuration, not modular pipeline construction.
 
-`update_components(...)` is illustrative: attach the preloaded module using the API exposed by the chosen blocks. See [Dynamic module loading](dynamic-loading.md) for the helper contract and the benchmark rule to use one transformer loading path across comparable runners.
+Use the [staged cleanup rules](staged-pipeline.md#cleanup-and-reuse) before
+loading the next component. Drop the returned state as well as pipeline and
+result references. A persistent [capacity profile](capacity-profiles.md) measures
+only the chosen region; stop before decode when calibrating. Model-specific
+chunking, attention and VAE streaming options belong to the blocks/host and
+must be recorded separately from the offload preset.

@@ -82,7 +82,7 @@ Boxes 15 and 16 apply to the native fast route only.
    regions. This selects `vmm_runtime`, the protected fallback.
 8. **Native fast runtime.** `vmm_fast` connects component hooks to the native model
    arena and persistent source storage through `ModelArenaWeightStore`. This
-   selects `vmm_fast_runtime`. See [native integration](../user/native-vmm.md).
+   selects `vmm_fast_runtime`. See [integration](../user/integration.md).
 9. **VMM regions.** Supply stable virtual addresses and physical backing for the
    protected route. Both VMM routes use the same DLL/.so, but different adapters
    and native structures.
@@ -132,7 +132,7 @@ Boxes 15 and 16 apply to the native fast route only.
     the larger one is worth its memory, for the model, component and machine
     (RAM/VRAM, native library). Later runs create the arena with it once; an explicit budget wins,
     and without a profile the arena starts at the structural floor. See
-    [VMM residency profile](../user/native-vmm.md#vmm-residency-profile).
+    [VMM residency profile](../user/capacity-profiles.md#vmm-residency-profile).
 
 ## Native weight loading and transport
 
@@ -142,7 +142,7 @@ supported tensors with immutable checkpoint slices. `enable_offload(...)` then
 connects component hooks to the native arena and transport. The generic loading
 helper alone does not select this transport or replace every loader allocation;
 see [dynamic loading](../user/dynamic-loading.md) and
-[native integration](../user/native-vmm.md).
+[integration](../user/integration.md).
 
 The following expands box 10 for file-backed weights in `vmm_fast_runtime`.
 It does not describe the linear route or the protected NVMe baseline.
@@ -256,7 +256,7 @@ reuse/close; it does not take the normal recreation path shown above. The cycle
 does not evict or compress activations, move them explicitly into WDDM memory,
 or guarantee physical local-VRAM placement. Automatic Windows reclaim may release
 at most one eligible slot per allocation request; shared code does not imply the
-same pressure policy on every platform. See [native configuration and scope](../user/native-vmm.md#optional-execution-slot-backing-reclaim).
+same pressure policy on every platform. See [execution backing reclaim](../user/configuration.md#execution-backing-reclaim).
 
 See the complementary [runner-level architecture](https://github.com/DEVAIEXP/ddo-examples/blob/main/docs/developer/architecture.md)
 for Modular Diffusers phase orchestration and output reporting.

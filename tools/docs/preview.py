@@ -28,6 +28,12 @@ def on_files(files, config):
 
 def on_page_content(html, page, config, files):
     """Keep wide tables scrollable without wrapping their column headings."""
+    if page.file.src_uri == "docs/user/configuration.md":
+        html = re.sub(
+            r"<table>(?=\s*<thead>\s*<tr>\s*<th>Field</th>\s*<th>Default</th>\s*<th>Environment variable</th>\s*<th>Notes</th>)",
+            '<table class="configuration-reference">',
+            html,
+        )
     return re.sub(
         r"(<table\b[^>]*>.*?</table>)",
         r'<div class="table-scroll" role="region" aria-label="Scrollable table" tabindex="0">\1</div>',

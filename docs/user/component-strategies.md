@@ -1,4 +1,4 @@
-# Component strategies and memory trade-offs
+# Component strategies
 
 DDO aims to improve low-VRAM inference throughput. A faster route can increase
 the sampled GPU memory peak; offloading weights does not remove activation or

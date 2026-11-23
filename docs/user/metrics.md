@@ -75,7 +75,7 @@ not GPU/RAM use or proof of numerical support.
 The selected component contracts, real text-only encoder and staged pipeline
 passed their Windows gates. Linux passed selected contracts and one staged
 real-model generation; coverage is not identical and is not general encoder or
-multimodal support. See [current usage and support](native-vmm.md).
+multimodal support. See [integration](integration.md) and [support](../developer/support.md).
 
 | Field | Unit / collection | Meaning / action |
 | --- | --- | --- |
@@ -576,7 +576,7 @@ VMM `build_profile=True` does not tune a linear resident-module budget. It saves
 a capacity observation for the component (native virtual/page/resident bytes,
 weight-source mix, platform, fault/signature/upload activity, fallback volume)
 and a `vmm_residency` observation from which DDO recommends the native
-residency budget (see [VMM residency profile](native-vmm.md#vmm-residency-profile)).
+residency budget (see [VMM residency profile](capacity-profiles.md#vmm-residency-profile)).
 The transformer is the first validated component; the same contract is
 intended for text encoders after its own CUDA validation.
 

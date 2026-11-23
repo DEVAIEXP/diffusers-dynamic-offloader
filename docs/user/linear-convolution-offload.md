@@ -1,4 +1,4 @@
-# Experimental eager convolution offload
+# Dense convolution offload
 
 `DynamicOffloadConfig(linear_convolution_offload=True)` explicitly extends
 `linear_runtime` to dense `Conv1d`, `Conv2d` and `Conv3d` children. It is disabled

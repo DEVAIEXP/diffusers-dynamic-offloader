@@ -1,14 +1,15 @@
-# Configuration Reference
+# Configuration
 
 DDO is designed to work with a small public surface:
 
-- call `enable_offload(module_or_pipeline, preset="auto")` for the default behavior;
+- call `enable_offload(module, preset="auto")` for one component or
+  `enable_pipeline_offload(pipeline, preset="auto")` for a pipeline;
 - pass `DynamicOffloadSettings` only when application code wants explicit control;
 - use `DDO_*` environment variables as optional overrides for experiments, launch scripts, or CI.
 
 Python arguments should be preferred for reusable application code. Environment variables are best treated as runtime overrides: useful while benchmarking, but less explicit than code.
 
-## Override Order
+## Configuration precedence
 
 ### Host CLI lifecycle and capacity controls
 
@@ -27,20 +28,27 @@ This CLI contract does not change runtime math, allocation policy or budgets.
 See the examples [shared runner controls](https://github.com/DEVAIEXP/ddo-examples/blob/main/docs/user/runner-controls.md)
 for the model-host vocabulary.
 
-This catalog includes linear defaults and the protected legacy VMM route.
-For the current experimental native route, start with
-[native VMM usage](native-vmm.md): runner backend/preset selection, fresh-process
-bootstrap and independent host/GPU capacities are part of its contract.
-The retained-source configuration does not turn VMM into the linear default.
+This reference covers both linear and VMM configuration. Start with
+[runtimes and presets](presets-and-platforms.md) for route selection and
+[integration](integration.md) for the shared setup and native bootstrap.
 
-Configuration is resolved in this order:
+Choose one configuration path and make its precedence explicit:
 
-1. Built-in preset defaults.
-2. Explicit `DynamicOffloadSettings` / `DynamicOffloadConfig` values passed by Python code.
-3. Recognized `DDO_*` environment variables, when `DynamicOffloadSettings.from_env(...)` is used.
-4. Component-specific policy overrides passed to `enable_pipeline_offload(...)` or `enable_offload(...)`.
+- `preset` supplies defaults; `DynamicOffloadSettings.from_env()` merges recognized
+  environment overrides into those defaults. `DDO_PRESET` can override its
+  `default_preset` argument.
+- An explicit `config` passed to `enable_offload()` is used instead of
+  `settings.config`; explicit config keyword overrides are then applied to it.
+- An explicit component `route` wins over component policy. Component policies
+  can select a different route without changing other components.
+- `use_environment=False` disables environment loading and component environment
+  overrides. It does not undo values already resolved into a supplied settings
+  object.
 
-Component-specific environment variables can override a route for one component without changing the rest of the pipeline.
+`build_config_from_args()` reads the common capacity arguments and selected
+native environment controls. It is not a complete `from_env()` merge. An explicit
+host CLI selection must be passed through to settings/configuration; simply
+registering the CLI does not change calls elsewhere in the application.
 
 ### VAE component policy
 
@@ -49,7 +57,7 @@ Diffusers leaf offload without a stream. `one_shot_fast`, `low_ram_safe` and
 resolved `vmm_fast` settings use the same VAE policy. This is component routing,
 not a change to the transformer runtime, residency budgets or allocator.
 `warm_process`, `wsl_compat` and `nvme_baseline` keep the resident staged-host
-resident VAE; `off` remains unmanaged. See [component strategies](component-strategies.md)
+VAE; `off` remains unmanaged. See [component strategies](component-strategies.md)
 for overrides, lifecycle boundaries and acceptance limitations.
 
 An explicit `route` wins over a component policy. Explicit component policies
@@ -59,6 +67,23 @@ arguments bypass the new preset route fallback; they are not silently replaced
 with leaf. `use_environment=False` disables environment route overrides as well
 as environment config loading. The low-level `enable_dynamic_offload` API does
 not select component routes.
+
+## Native recovery notifications
+
+`DynamicOffloadConfig(show_recovery_warns=False)` keeps successful native
+allocation recovery quiet. Set `show_recovery_warns=True` for diagnostic console
+details, or use `DDO_SHOW_RECOVERY_WARNS=1` before starting a native bootstrap.
+The setting controls presentation only: recovery, receipts, counters, budgets
+and ownership rules are unchanged. Failed capacity transactions and final
+allocation errors are still printed and exceptions still propagate.
+
+Native notification control is process-wide for the loaded allocator library.
+Use a consistent value across components sharing that library. The runtime
+report records the requested value and `recovery_notifications.control_available`.
+Older artifacts without `ddo_vmm_set_recovery_warns_v1` remain compatible and
+retain their previous console behavior; they cannot honor quiet mode. Source
+changes alone do not update an installed DLL or shared library. This additive
+control has CPU contract coverage, not a new installed-wheel GPU acceptance.
 
 ## DynamicOffloadSettings
 
@@ -114,16 +139,17 @@ The defaults below are the `DynamicOffloadConfig(...)` dataclass defaults. `Dyna
 | `pin_weight_budget_gb` | `0.0` | `DDO_PIN_WEIGHT_BUDGET_GB` | Explicit pinned weight budget. |
 | `pin_weight_budget_ratio` | `0.0` | `DDO_PIN_WEIGHT_BUDGET_RATIO` | Fraction of candidate weights to pin; values are clamped to the range `0.0` through `1.0`. |
 | `pin_weight_selection` | `"spread"` | `DDO_PIN_WEIGHT_SELECTION` | Supported values: `first`, `spread`, `largest`. |
-| `resident_module_budget_gb` | `0.0` | `DDO_RESIDENT_MODULE_BUDGET_GB` | Explicit resident module budget. |
+| `resident_module_budget_gb` | `0.0` | `DDO_RESIDENT_MODULE_BUDGET_GB` | A positive explicit budget overrides a named linear profile. A compatible profile takes precedence over the preset budget. |
 | `resident_module_patterns` | `()` | `DDO_RESIDENT_MODULE_PATTERNS` | Comma-separated regex patterns; `auto` lets DDO infer common block patterns. |
 | `resident_module_selection` | `"spread"` | `DDO_RESIDENT_MODULE_SELECTION` | Supported values: `first`, `spread`, `largest`. |
 | `load_safetensors_backend` | `""` | `DDO_LOAD_SAFETENSORS_BACKEND` | Loading backend: `""` preserves the library default; `mmap` and `pread` are the supported overrides. Only use an override after measuring the target host. |
 | `verbose` | `False` | `DDO_VERBOSE` | Prints additional setup details. |
+| `show_recovery_warns` | `False` | `DDO_SHOW_RECOVERY_WARNS` | Show successful native allocation-recovery notices and transient materialization details. Final failed transactions and allocation errors remain visible. Requires a native library with the optional notification-control export. |
 | `show_profile` | `True` | `DDO_SHOW_PROFILE` | Prints the dynamic offload profile summary. `from_env(...)` resolves this to false unless enabled. |
 
 `DDO_SAFETENSORS_BACKEND` is also accepted as a compatibility alias for `DDO_LOAD_SAFETENSORS_BACKEND`.
 
-### Experimental CUDA VMM runtime
+### NVMe baseline configuration
 
 The following subsection describes the protected `vmm_runtime` / NVMe route,
 not the current native retained-source route. Both are preserved; the linear
@@ -156,7 +182,7 @@ not support quantized/custom linear forwards, embeddings, or a zero mapping
 budget. VMM reduces weight-residency pressure; activation and KV/cache memory
 must still fit independently.
 
-### Native VMM fast configuration
+### VMM Fast configuration
 
 Use `--ddo-backend vmm --ddo-preset auto` to select `vmm_fast_runtime`.
 `auto` here selects a route, not a calibrated residency or performance preset.
@@ -172,7 +198,7 @@ are consumed by `DynamicOffloadSettings.from_env(...)`.
 | Config field | Default | Environment | Generic DDO CLI / meaning |
 | --- | --- | --- | --- |
 | `vmm_native_transport` | `False` | `DDO_VMM_NATIVE_TRANSPORT` | `--ddo-vmm-native-transport`; native reusable registered-host windows. Source retention also selects this transport. |
-| `vmm_resident_weight_budget_gb` | `0.0` | `DDO_VMM_RESIDENT_WEIGHT_BUDGET_GB` | `--ddo-vmm-resident-weight-budget-gb`; active weight capacity (two execution slots plus the model arena), not complete driver GPU usage. A positive value is authoritative. Omitted or 0 on `vmm/auto`: a saved [VMM residency profile](native-vmm.md#vmm-residency-profile) supplies it, otherwise the structural floor (two execution slots plus 64 MiB arena headroom). The CLI helper omits it by default; `vmm/nvme_baseline` keeps 4 GiB when omitted. |
+| `vmm_resident_weight_budget_gb` | `0.0` | `DDO_VMM_RESIDENT_WEIGHT_BUDGET_GB` | `--ddo-vmm-resident-weight-budget-gb`; active weight capacity (two execution slots plus the model arena), not complete driver GPU usage. A positive value is authoritative. Omitted or 0 on `vmm/auto`: a saved [VMM residency profile](capacity-profiles.md#vmm-residency-profile) supplies it, otherwise the adapter's structural floor (page-aligned slots, arena headroom and any persistent component state). The CLI helper omits it by default; `vmm/nvme_baseline` keeps 4 GiB when omitted. |
 | `vmm_profile_margin_gb` | `0.25` | Not currently parsed from ENV | Python/config; device-budget margin kept free when a VMM residency profile build recommends the budget. |
 | `vmm_profile_min_gain_per_gib` | `0.02` | Not currently parsed from ENV | Python/config; the second VMM residency build keeps the hardware ceiling only if the steady forward speeds up by at least this fraction of the floor time per extra GiB (2 % per GiB) and by more than the builds' own timing spread; otherwise the floor is saved. Lower it to trade more device memory for small gains. |
 | `vmm_staging_buffer_gb` | `0.625` | `DDO_VMM_STAGING_BUFFER_GB` | `--ddo-vmm-staging-buffer-gb`; TOTAL host staging, rounded to native windows, not per slot. |
@@ -197,7 +223,8 @@ source registration. Keep legacy controls available for the routes that use them
 
 CLI, config and environment are not three universally interchangeable inputs
 today: `build_config_from_args()` constructs config from the namespace and does
-not itself merge `DDO_*` variables. `use_environment=False` deliberately avoids
+not perform a complete merge of `DDO_*` variables. It reads the native execution-unit,
+source-dispatcher, reclaim and recovery-notification controls explicitly. `use_environment=False` deliberately avoids
 environment overrides. Some host parsers replace environment values with their
 own defaults. Application code must explicitly select one resolution path and
 document precedence; do not assume an environment value wins over a supplied
@@ -213,7 +240,7 @@ Bootstrap controls are process setup, not residency presets/config fields:
 | Bootstrap `growable_reserve_gib` | Virtual address reservation of one growable shared pool owner per device; default 8, `0` disables, at most 64; requires `segmented_pool`. Requests that do not fit fall back to request-sized owners. |
 | `DDO_VMM_ALLOCATOR_ROOT` | Host-harness checkout locator where supported, not a universal `DynamicOffloadConfig` option. |
 
-See [native usage](native-vmm.md) for bootstrap/lifecycle, and
+See [integration](integration.md) for bootstrap/lifecycle, and
 [metrics](metrics.md) for requested capacities versus executed routes and observed
 bytes. Host-specific arguments and model recipes belong to
 [DDO examples](https://github.com/DEVAIEXP/ddo-examples); the generic argument
@@ -228,7 +255,7 @@ an explicit `DDO_RESIDENT_MODULE_BUDGET_GB` to override DDO's automatic or store
 choice. A stored capacity profile can internally supply a conservative residual CUDA budget
 while preserving full CPU pinning; it is not a separate environment setting.
 
-## Global Environment Variables
+## Global environment variables
 
 These variables are recognized directly by DDO:
 
@@ -243,7 +270,7 @@ These variables are recognized directly by DDO:
 
 Boolean variables accept `1`, `true`, `yes`, or `on` as true values. Every other value, including `0`, `false`, `no`, `off`, and an empty value, resolves to false.
 
-## Component Overrides
+## Component overrides
 
 For pipeline-level setup, DDO can route each component independently. Component names are uppercased in environment variables.
 
@@ -264,25 +291,16 @@ The same pattern works for other component names, for example `DDO_TEXT_ENCODER_
 
 `DDO_RUNNER_<COMPONENT>_*` is accepted as a compatibility alias for existing experiments, but new applications should use `DDO_<COMPONENT>_*` or Python `component_policies`.
 
-## Preset Selection
+## Runtime selection
 
-The common public presets are:
+Backend, preset and executed runtime are defined in
+[runtimes and presets](presets-and-platforms.md). Use the common selector instead
+of duplicating that resolution in a host. A named capacity profile does not select
+the runtime.
 
-| Preset | Intent |
-| --- | --- |
-| `auto` | Platform-aware default. Resolves to a safe DDO preset for the detected environment. |
-| `one_shot_fast` | Optimized for one-shot generation when enough system RAM is available. |
-| `low_ram_safe` | Lower VRAM/RAM pressure, slower than `one_shot_fast`. |
-| `wsl_compat` | WSL-friendly route that avoids pinned CPU memory by default. |
-| `diffusers_offload_compat` | Uses official Diffusers group offload compatibility routing. |
-| `diffusers_leaf_offload_compat` | Uses official Diffusers leaf-level group offload compatibility routing. |
-| `off` | Disables offloading and moves unmanaged modules to the execution device when hooks are applied. |
+## Windows standby purge
 
-For quantized backends with custom forward paths, prefer `diffusers_offload_compat` or `diffusers_leaf_offload_compat` unless a backend-specific DDO adapter has been validated.
-
-## Windows Standby Purge
-
-DDO exposes standby-list purge as an optional Windows-only lifecycle helper. It is useful when a staged application frees one large component before loading another.
+DDO exposes standby-list purge as an optional Windows-only lifecycle helper. All presets leave it off by default. Enable the desired phase explicitly in the runner or through the corresponding environment setting.
 
 Example:
 
@@ -295,3 +313,18 @@ maybe_purge_windows_standby_cache("before_transformer", settings=settings)
 The helper is safe to call on Linux, native Windows without purge support, and WSL. On unsupported platforms it returns no-op metadata. On Windows, the process token must be able to enable `SeProfileSingleProcessPrivilege`; this normally requires starting the terminal as Administrator. If that privilege is unavailable, DDO returns `purged: false` with `reason: PermissionError` and continues the run safely.
 
 The standby purge only asks Windows to discard reclaimable standby pages. It does not release weights pinned by PyTorch/CUDA; stage-local pinned-memory cleanup is a separate concern.
+
+## Execution backing reclaim
+
+`DynamicOffloadConfig(vmm_execution_backing_reclaim=True)` enables the
+experimental Windows DXGI pressure policy on VMM Fast. It defaults to
+`False`; the environment selector is `DDO_VMM_EXECUTION_BACKING_RECLAIM=1`.
+It can release completed idle execution-slot backing and rematerialize it when
+needed, while retaining the virtual address. Live or pending consumers remain
+protected.
+
+This policy does not unload live activations, and it is not needed to enable the
+segmented allocator pool. Automatic DXGI triggering is Windows-only; Linux
+refuses automatic enablement. Native release/recreation support on another
+platform is a separate capability. Do not infer a performance improvement from
+enabling it. See [validation](../developer/validation.md) for selected coverage.

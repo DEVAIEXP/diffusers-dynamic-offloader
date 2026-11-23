@@ -24,22 +24,23 @@ watch:
   - AGENTS.md
 nav:
   - Project: README.md
-  - Benchmarks: https://devaiexp.github.io/ddo-examples/docs/benchmarks/summary/
+  - Benchmarks: https://devaiexp.github.io/ddo-examples/docs/benchmarks/
   - User guides:
       - Overview: docs/user/README.md
       - Installation: docs/user/installation.md
+      - Runtimes and presets: docs/user/presets-and-platforms.md
+      - Integration: docs/user/integration.md
       - Full pipeline: docs/user/full-pipeline.md
       - Staged pipeline: docs/user/staged-pipeline.md
       - Modular Diffusers: docs/user/modular-pipeline.md
-      - Presets and platforms: docs/user/presets-and-platforms.md
       - Configuration: docs/user/configuration.md
       - Component strategies: docs/user/component-strategies.md
       - Dynamic loading: docs/user/dynamic-loading.md
       - Capacity profiles: docs/user/capacity-profiles.md
       - Metrics: docs/user/metrics.md
-      - Native VMM: docs/user/native-vmm.md
-      - Linear convolution: docs/user/linear-convolution-offload.md
-      - Saved FP8: docs/user/fp8-weight-only.md
+      - Errors and troubleshooting: docs/user/troubleshooting.md
+      - Dense convolution offload: docs/user/linear-convolution-offload.md
+      - Saved FP8 weight-only: docs/user/fp8-weight-only.md
       - FP8 conversion: docs/user/fp8-weight-only-conversion.md
   - Developer guides:
       - Overview: docs/developer/README.md

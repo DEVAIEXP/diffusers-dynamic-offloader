@@ -8,6 +8,16 @@
   margin-bottom: 0;
 }
 
+.table-scroll > .configuration-reference {
+  min-width: 76rem;
+}
+
+.configuration-reference th:last-child,
+.configuration-reference td:last-child {
+  min-width: 28rem;
+  width: 40%;
+}
+
 [role="main"] > table {
   display: block;
   max-width: 100%;

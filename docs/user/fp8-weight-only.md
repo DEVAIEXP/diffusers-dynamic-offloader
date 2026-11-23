@@ -1,4 +1,4 @@
-# Experimental FP8 weight-only support
+# Saved FP8 weight-only
 
 DDO's FP8 transport is model-agnostic, not an LTX backend. The host supplies a
 Diffusers `ModelMixin` class and a supported saved component; DDO inspects its

@@ -88,7 +88,7 @@ Version `0.1.0rc3` was published on 2026-10-30 for
 
 The local `0.1.0rc3` Linux wheel pair has selected installed-wheel image
 functional acceptance on native Linux and WSL using the same packaged bytes.
-See [validation and artifact identities](validation.md#local-rc3-linux-wheel-pair).
+See [historical validation and artifact identities](validation-history.md#local-rc3-linux-wheel-pair).
 The candidate contains shared execution-slot release/recreation support;
 automatic pressure-triggered reclaim is Windows-only, opt-in and separately
 validated. Activation NVMe eviction and compression experiments are not part of

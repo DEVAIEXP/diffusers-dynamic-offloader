@@ -23,7 +23,7 @@ validation on both targets, with exact reference images. This is development
 candidate acceptance, not package-index availability, a general speed guarantee
 or full-video coverage. The shared explicit execution-slot reclaim mechanism is
 distinct from the Windows-only, default-off automatic DXGI policy. See the
-[rc3 validation scope](validation.md#local-rc3-linux-wheel-pair).
+[historical RC3 validation scope](validation-history.md#local-rc3-linux-wheel-pair).
 
 An 8 GiB GPU result does not establish low-system-RAM support. Host callbacks
 are not completed CUDA timings, and pre-unload snapshots do not prove final

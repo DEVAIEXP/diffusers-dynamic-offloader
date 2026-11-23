@@ -49,6 +49,7 @@ nav:
       - Support: docs/developer/support.md
       - Test hardware: docs/developer/hardware.md
       - Validation: docs/developer/validation.md
+      - Validation history: docs/developer/validation-history.md
       - Native builds: docs/developer/builds.md
       - Package delivery: docs/developer/releases.md
       - Manual validation: docs/developer/manual-validation.md

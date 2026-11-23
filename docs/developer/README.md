@@ -5,6 +5,7 @@
 - [Architecture and ownership](architecture.md)
 - [Support and limitations](support.md)
 - [Validation](validation.md)
+- [Validation history](validation-history.md)
 - [Test hardware and environments](hardware.md)
 
 ## Development tools
